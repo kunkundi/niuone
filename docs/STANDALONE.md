@@ -11,9 +11,9 @@ cd /path/to/NiuOne
 
 | 系统 | 启动方式 |
 |---|---|
-| macOS | 双击 `run.command`，或终端执行 `./run.sh` |
-| Windows | 双击 `run.bat`，或 PowerShell 执行 `.\run.ps1` |
-| Linux | 终端执行 `./run.sh`，桌面环境可尝试双击 `run.desktop` |
+| macOS | 终端执行 `./run.sh` |
+| Windows | PowerShell 执行 `.\run.ps1` |
+| Linux | 终端执行 `./run.sh` |
 
 首次运行会自动完成：
 

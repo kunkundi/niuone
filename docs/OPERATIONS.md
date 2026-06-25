@@ -13,10 +13,7 @@
 ├── config/                 # 运行策略说明
 ├── .local-data/            # 本机真实运行数据，Git ignored
 ├── run.sh                  # macOS/Linux 一键启动
-├── run.command             # macOS 双击启动
-├── run.bat                 # Windows 双击启动
 ├── run.ps1                 # Windows PowerShell 启动
-├── run.desktop             # Linux 桌面启动
 ├── run-dashboard.sh        # 网页服务启动入口
 ├── run-niuone-cron-scheduler.sh
 └── run-x-watchlist-daemon.sh

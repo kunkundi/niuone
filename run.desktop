@@ -1,7 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=NiuOne Dashboard
-Comment=Start the local NiuOne dashboard
-Exec=sh -c 'cd "$(dirname "$1")" && ./run.sh' sh %k
-Terminal=true
-Categories=Development;Finance;
