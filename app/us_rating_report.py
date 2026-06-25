@@ -56,6 +56,7 @@ def load_dashboard_env() -> None:
 load_dashboard_env()
 DASHBOARD_HOME = get_dashboard_home(PROJECT_ROOT)
 os.environ.setdefault("DASHBOARD_HOME", str(DASHBOARD_HOME))
+CN_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
 
 try:
     import push_history
@@ -157,7 +158,7 @@ def build_system_prompt():
 
 
 def build_user_prompt():
-    beijing_now = datetime.now(timezone.utc) + timedelta(hours=8)
+    beijing_now = datetime.now(timezone.utc).astimezone(CN_TZ)
     date_str = beijing_now.strftime("%Y\u5e74%m\u6708%d\u65e5")  # 年月日
 
     LQ = "\u201c"  # "
@@ -257,7 +258,7 @@ def generate_report(test_mode: bool = False) -> str:
 def archive_report(content: str, now: datetime | None = None) -> Path:
     if now is None:
         now = datetime.now(timezone.utc)
-    local_dt = now.astimezone()
+    local_dt = now.astimezone(CN_TZ)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUTPUT_DIR / f"{local_dt.strftime('%Y-%m-%d_%H-%M-%S')}.md"
     run_time = local_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -278,7 +279,7 @@ def write_report_to_db(content: str, archive_path: Path | None, now: datetime | 
         return 0
     if now is None:
         now = datetime.now(timezone.utc)
-    local_dt = now.astimezone()
+    local_dt = now.astimezone(CN_TZ)
     source_id = f"cron_output_{JOB_ID}_{archive_path.stem}" if archive_path else f"cron_output_{JOB_ID}_{local_dt.strftime('%Y-%m-%d_%H-%M-%S')}"
     message = {
         "timestamp": now.timestamp(),
