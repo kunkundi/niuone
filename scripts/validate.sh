@@ -39,6 +39,15 @@ for script in *.sh scripts/*.sh *.command; do
   bash -n "$script"
 done
 
+echo "== PowerShell syntax checks =="
+if command -v pwsh >/dev/null 2>&1; then
+  pwsh -NoLogo -NoProfile -Command "\$errors = \$null; [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw run.ps1), [ref]\$errors) > \$null; if (\$errors) { \$errors | Format-List; exit 1 }"
+elif command -v powershell >/dev/null 2>&1; then
+  powershell -NoLogo -NoProfile -Command "\$errors = \$null; [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw run.ps1), [ref]\$errors) > \$null; if (\$errors) { \$errors | Format-List; exit 1 }"
+else
+  echo "PowerShell not found; skipping run.ps1 syntax check"
+fi
+
 echo "== Unit tests =="
 PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" -m unittest discover -s tests -p 'test_*.py'
 

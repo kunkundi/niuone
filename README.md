@@ -5,7 +5,7 @@
 - 项目根目录：克隆后的仓库目录
 - 线上源码：`app/`
 - 本机/线上运行数据：默认在工程目录内 `.local-data/runtime/`
-- 一键启动入口：`run.sh`（macOS 可双击 `run.command`）
+- 一键启动入口：`run.sh` / `run.command` / `run.bat`
 - 生产启动入口：`run-dashboard.sh`
 - 环境配置：默认读取工程目录内 `.local-data/dashboard.env`，可从 `dashboard.env.example` 复制后填写
 
@@ -30,8 +30,11 @@
 ├── scripts/                # validate / standalone / deploy 脚本
 ├── config/                 # 策略和运行说明
 ├── dashboard.env.example   # 可提交的环境变量样例
-├── run.sh                  # 一键本地启动：建 venv、装依赖、生成私有 env、启动网页
+├── run.sh                  # macOS/Linux 一键启动：建 venv、装依赖、生成私有 env、启动网页
 ├── run.command             # macOS 双击启动入口
+├── run.bat                 # Windows 双击启动入口
+├── run.ps1                 # Windows PowerShell 启动入口
+├── run.desktop             # Linux 桌面启动入口
 └── run-dashboard.sh        # 生产启动脚本
 ```
 
@@ -47,9 +50,11 @@
 
 ## 快速开始
 
-```bash
-./run.sh
-```
+| 系统 | 一键启动方式 |
+|---|---|
+| macOS | 双击 `run.command`，或终端执行 `./run.sh` |
+| Windows | 双击 `run.bat`，或 PowerShell 执行 `.\run.ps1` |
+| Linux | 终端执行 `./run.sh`，桌面环境可尝试双击 `run.desktop` |
 
 启动后浏览器会自动打开：
 
@@ -64,10 +69,10 @@ http://127.0.0.1:8787/
 - 生成 `.local-data/dashboard.env`
 - 把真实 DB、token、日志和缓存写入 `.local-data/runtime/`
 
-macOS 用户也可以直接双击：
+Linux 如果提示没有执行权限：
 
-```text
-run.command
+```bash
+chmod +x run.sh run.desktop
 ```
 
 本地一键运行默认只监听 `127.0.0.1`，并关闭访问认证，方便新用户开箱体验。若要公网或长期运行，请编辑 `.local-data/dashboard.env`，至少把 `DASHBOARD_AUTH_ENABLED=1` 并配置访问控制。

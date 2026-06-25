@@ -13,7 +13,15 @@ cd /path/to/NiuOne
 ```
 
 首次运行会自动创建 `.local-data/.venv`、安装依赖、生成 `.local-data/dashboard.env`，
-并启动 Dashboard。macOS 用户可以双击根目录的 `run.command`。
+并启动 Dashboard。
+
+系统入口：
+
+| 系统 | 一键启动方式 |
+|---|---|
+| macOS | 双击 `run.command`，或终端执行 `./run.sh` |
+| Windows | 双击 `run.bat`，或 PowerShell 执行 `.\run.ps1` |
+| Linux | 终端执行 `./run.sh`，桌面环境可尝试双击 `run.desktop` |
 
 访问：
 
