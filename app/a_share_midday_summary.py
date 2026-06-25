@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A-share midday / post-close deterministic summary cron script.
 
-Script-only cron output: prints a Telegram/WeChat-friendly report and exits 0.
+Generates a deterministic market report and mirrors it to the dashboard.
 Mode is selected from filename:
 - contains 'midday' -> 午盘总结
 - contains 'close' or 'post' -> 盘后总结
@@ -32,7 +32,7 @@ try:
     import akshare as ak  # type: ignore
 except Exception as e:
     print(f"牛牛大王，A股盘中/盘后总结生成失败：本机 akshare 不可用：{e}")
-    sys.exit(0)
+    sys.exit(1)
 
 CN_TZ = dt.timezone(dt.timedelta(hours=8))
 NOW = dt.datetime.now(CN_TZ)
@@ -485,14 +485,14 @@ def main():
     try:
         text = build_report()
         if text:
-            from niuniu_dashboard_archive import archive_market_report
+            from niuone_dashboard_archive import archive_market_report
             archive_market_report(text, job_id="192abba7eeb5", title=f"A股{TITLE}", run_dt=NOW)
             print(text)
         else:
             print("")
     except Exception as e:
         print(f"牛牛大王，A股{TITLE}今天没有成功生成：{type(e).__name__}: {e}\n建议先手动看交易软件，稍后我可以帮你补一版。")
-        sys.exit(0)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

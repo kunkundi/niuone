@@ -175,11 +175,15 @@ def run_job(job: Job, run_time: datetime) -> None:
         )
         elapsed = time.monotonic() - start
         status = "ok" if proc.returncode == 0 else "script failed"
+        archive_marker = re.search(r"archived:\s*(.+)", proc.stderr or "")
+        if not job.archive_stdout and proc.returncode == 0 and not archive_marker:
+            status = "script failed"
         if job.archive_stdout:
             archive_path = archive_job_output(job, run_time, status, proc.stdout or "", proc.stderr or "")
             log(f"finish job={job.job_id} status={status} exit={proc.returncode} elapsed={elapsed:.1f}s archive={archive_path}")
         else:
-            log(f"finish job={job.job_id} status={status} exit={proc.returncode} elapsed={elapsed:.1f}s stderr={(proc.stderr or '').strip()[:500]!r}")
+            detail = f" archive={archive_marker.group(1).strip()}" if archive_marker else " missing_archive_marker=true"
+            log(f"finish job={job.job_id} status={status} exit={proc.returncode} elapsed={elapsed:.1f}s{detail} stderr={(proc.stderr or '').strip()[:500]!r}")
     except subprocess.TimeoutExpired as exc:
         if job.archive_stdout:
             archive_path = archive_job_output(job, run_time, "script failed", exc.stdout or "", f"timeout after {job.timeout_seconds}s\n{exc.stderr or ''}")

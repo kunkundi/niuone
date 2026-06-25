@@ -125,7 +125,7 @@ def _call_api(base_url, api_key, messages, max_tokens=8192):
     )
     last_err = None
     # Keep our own wall clock bounded so slow upstream model/web-search runs end
-    # silently instead of producing a noisy visible failure.
+    # as a clear cron failure instead of a stale dashboard.
     deadline = time.monotonic() + 105
     for attempt in range(1, 4):
         remaining = deadline - time.monotonic()
@@ -135,16 +135,16 @@ def _call_api(base_url, api_key, messages, max_tokens=8192):
             with urlopen(req, timeout=min(55, max(10, remaining - 2)), context=_SSL_CONTEXT) as resp:
                 data = json.loads(resp.read().decode("utf-8", "ignore"))
                 content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                return content
+                if str(content or "").strip():
+                    return content
+                last_err = RuntimeError("API returned empty content")
         except Exception as e:
             last_err = e
             if attempt < 3 and (deadline - time.monotonic()) > 8:
                 time.sleep(min(3 * attempt, max(0, deadline - time.monotonic() - 5)))
-    if last_err and _is_transient_error(last_err):
-        return ""
     if last_err:
         raise RuntimeError(f"API call failed after 3 attempts: {last_err}")
-    return ""
+    raise RuntimeError("API call did not complete before the local deadline")
 
 
 def build_system_prompt():
@@ -233,6 +233,19 @@ def clean_report_content(content: str) -> str:
     return content
 
 
+def build_status_report(reason: str, *, now: datetime | None = None) -> str:
+    if now is None:
+        now = datetime.now(timezone.utc)
+    date_str = now.astimezone(CN_TZ).strftime("%Y年%m月%d日")
+    reason = (reason or "上游未返回可归档内容").strip()
+    return (
+        f"牛牛大王，美股机构买入评级日报（{date_str}）\n\n"
+        "今天的美股机构买入评级日报没有成功生成。\n\n"
+        f"原因：{reason}\n\n"
+        "处理状态：已写入 dashboard 失败记录，cron 会标记为失败，避免页面继续显示旧日报并误判为已更新。"
+    )
+
+
 def generate_report(test_mode: bool = False) -> str:
     base_url, api_key = _get_crossdesk_credentials()
     if not base_url or not api_key:
@@ -304,25 +317,62 @@ def write_report_to_db(content: str, archive_path: Path | None, now: datetime | 
     return push_history.upsert_many([message])
 
 
+def persist_report(content: str, *, now: datetime, no_archive: bool, no_db: bool) -> Path | None:
+    archive_path = None
+    if not no_archive:
+        archive_path = archive_report(content, now=now)
+    if not no_db:
+        write_report_to_db(content, archive_path, now=now)
+    return archive_path
+
+
 def main():
     test_mode = "--test" in sys.argv
     archive_only = "--archive-only" in sys.argv
     no_archive = "--no-archive" in sys.argv
     no_db = "--no-db" in sys.argv
 
-    content = generate_report(test_mode=test_mode)
+    try:
+        content = generate_report(test_mode=test_mode)
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        if test_mode:
+            print(f"ERROR: {reason}", file=sys.stderr)
+            sys.exit(1)
+        now = datetime.now(timezone.utc)
+        status_content = build_status_report(reason, now=now)
+        archive_path = persist_report(status_content, now=now, no_archive=no_archive, no_db=no_db)
+        if archive_path:
+            print(f"archived: {archive_path}", file=sys.stderr)
+        print(f"ERROR: {reason}", file=sys.stderr)
+        if archive_only:
+            sys.exit(1)
+        print(status_content)
+        sys.exit(1)
+
     if not content:
-        # Empty content means the upstream model/search gateway was slow or
-        # transiently unavailable. For a daily monitor this should be a silent
-        # miss, not a visible cron failure/alert.
-        return
+        reason = "API returned empty content"
+        if test_mode:
+            print(f"ERROR: {reason}", file=sys.stderr)
+            sys.exit(1)
+        now = datetime.now(timezone.utc)
+        content = build_status_report(reason, now=now)
+        archive_path = persist_report(content, now=now, no_archive=no_archive, no_db=no_db)
+        if archive_path:
+            print(f"archived: {archive_path}", file=sys.stderr)
+        print(f"ERROR: {reason}", file=sys.stderr)
+        if archive_only:
+            sys.exit(1)
+        print(content)
+        sys.exit(1)
+
+    if content.strip() == "[SILENT]":
+        content = build_status_report("上游检索结果为 [SILENT]，未发现足够可靠的新增买入评级。")
 
     archive_path = None
-    if not test_mode and not no_archive:
+    if not test_mode:
         now = datetime.now(timezone.utc)
-        archive_path = archive_report(content, now=now)
-        if not no_db:
-            write_report_to_db(content, archive_path, now=now)
+        archive_path = persist_report(content, now=now, no_archive=no_archive, no_db=no_db)
 
     if archive_only:
         if archive_path:

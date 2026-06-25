@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A-share 9:25 auction summary cron script.
 
-Script-only cron output: prints a WeChat-friendly report and exits 0.
+Generates a deterministic market-open report and mirrors it to the dashboard.
 Designed to avoid LLM/model-gateway calls during market-open peak load.
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ try:
     import pandas as pd  # type: ignore
 except Exception as e:  # durable environment problem: still alert user briefly
     print(f"牛牛大王，A股竞价总结生成失败：本机 akshare/pandas 不可用：{e}")
-    sys.exit(0)
+    sys.exit(1)
 
 CN_TZ = dt.timezone(dt.timedelta(hours=8))
 NOW = dt.datetime.now(CN_TZ)
@@ -615,16 +615,15 @@ def main():
     try:
         text = build_report()
         if text:
-            from niuniu_dashboard_archive import archive_market_report
+            from niuone_dashboard_archive import archive_market_report
             archive_market_report(text, job_id="8453b3f28cd3", title="A股竞价盘前总结", run_dt=NOW)
             print(text)
         else:
             # Weekend/holiday silence.
             print("")
     except Exception as e:
-        # Do not fail cron noisily for transient data issues; send concise diagnostic instead.
         print(f"牛牛大王，A股竞价总结今天没有成功生成：{type(e).__name__}: {e}\n建议先手动看东方财富涨停池/行业板块，稍后我可以帮你补一版盘中总结。")
-        sys.exit(0)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
