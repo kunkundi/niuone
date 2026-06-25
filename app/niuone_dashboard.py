@@ -2743,7 +2743,7 @@ const fmtDurationSeconds = s => {
   return n >= 3600 ? (n/3600).toFixed(1)+'h' : n >= 60 ? (n/60).toFixed(0)+'m' : n.toFixed(0)+'s';
 };
 const upCls = v => v > 0 ? 'up' : v < 0 ? 'down' : 'flat';
-const CATEGORY_ORDER = ['indices', 'b1_screen', 'x_monitor', 'market_monitor', 'us_ratings'];
+const CATEGORY_ORDER = ['b1_screen', 'indices', 'market_monitor', 'x_monitor', 'us_ratings'];
 const CATEGORY_LABELS = {all:'全部', indices:'指数行情', b1_screen:'牛牛实战', us_ratings:'美股机构买入评级', x_monitor:'推特监控', market_monitor:'盘面监控', other:'其他'};
 const US_FEATURE_CATEGORIES = new Set(['x_monitor', 'us_ratings']);
 const MESSAGE_CATEGORIES = ['x_monitor', 'market_monitor', 'us_ratings'];
