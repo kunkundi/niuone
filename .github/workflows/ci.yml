@@ -23,28 +23,27 @@ jobs:
 
     env:
       PYTHONUNBUFFERED: "1"
-      DASHBOARD_HOME: ${{ runner.temp }}/niuone-runtime
+      DASHBOARD_HOME: /tmp/niuone-runtime
       DASHBOARD_AUTH_ENABLED: "0"
       NIUONE_DISABLE_AUTO_RESTART: "1"
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.11"
           cache: pip
           cache-dependency-path: requirements.txt
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
-          node-version: "24"
-          package-manager-cache: false
+          node-version: "20"
 
       - name: Install Python dependencies
         run: |
