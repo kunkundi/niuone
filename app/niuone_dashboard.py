@@ -190,6 +190,8 @@ ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
     {"name": "DASHBOARD_B1_SCAN_TIMEOUT_SECONDS", "label": "B1 扫描超时秒数", "group": "任务调度", "kind": "int", "default": "360", "effect": "restart"},
     {"name": "DASHBOARD_B1_SCHEDULE_CATCHUP_MINUTES", "label": "B1 漏触发补跑窗口分钟", "group": "任务调度", "kind": "int", "default": "35", "effect": "restart"},
     {"name": "DASHBOARD_B1_SCHEDULE_STALE_SECONDS", "label": "B1 运行中陈旧秒数", "group": "任务调度", "kind": "int", "default": "900", "effect": "restart"},
+    {"name": "DASHBOARD_CRON_MAX_ATTEMPTS", "label": "Cron 失败最大运行次数", "group": "任务调度", "kind": "int", "default": "2", "effect": "next_run"},
+    {"name": "DASHBOARD_CRON_RETRY_DELAY_SECONDS", "label": "Cron 失败重试间隔秒数", "group": "任务调度", "kind": "int", "default": "300", "effect": "next_run"},
     {"name": "DASHBOARD_PENDING_DECISION_POLL_SECONDS", "label": "延迟成交检查秒数", "group": "任务调度", "kind": "int", "default": "5", "effect": "restart"},
     {"name": "DASHBOARD_DECISION_MAX_TOKENS", "label": "决策最大输出长度", "group": "买卖决策模型", "kind": "int", "default": "6000", "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_TIMEOUT", "label": "决策请求超时", "group": "买卖决策模型", "kind": "int", "default": "180", "effect": "next_run"},
@@ -245,6 +247,8 @@ ADMIN_VISIBLE_ENV_NAMES = [
     "DASHBOARD_MARKET_CLOSE_CRON",
     "X_WATCHLIST_DAEMON_INTERVAL_SECONDS",
     "DASHBOARD_US_RATING_CRON",
+    "DASHBOARD_CRON_MAX_ATTEMPTS",
+    "DASHBOARD_CRON_RETRY_DELAY_SECONDS",
     "DASHBOARD_INDICES_TTL_SECONDS",
 ]
 TRADER_RUNTIME_ENV_NAMES = {
@@ -1692,6 +1696,12 @@ def validate_business_updates(updates: dict[str, str]) -> None:
         elif name in {"X_WATCHLIST_DAEMON_INTERVAL_SECONDS", "DASHBOARD_INDICES_TTL_SECONDS"} and str(value or "").strip():
             if int(value) <= 0:
                 raise ValueError(f"{name} 必须大于 0")
+        elif name == "DASHBOARD_CRON_MAX_ATTEMPTS" and str(value or "").strip():
+            if int(value) < 1:
+                raise ValueError(f"{name} 必须大于等于 1")
+        elif name == "DASHBOARD_CRON_RETRY_DELAY_SECONDS" and str(value or "").strip():
+            if int(value) < 0:
+                raise ValueError(f"{name} 必须大于等于 0")
 
 
 def sync_business_runtime_settings(changed: dict[str, str] | list[str] | set[str] | tuple[str, ...] | None) -> dict[str, Any]:

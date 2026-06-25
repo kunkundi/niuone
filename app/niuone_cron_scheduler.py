@@ -39,6 +39,16 @@ class Job:
     archive_stdout: bool = True
 
 
+@dataclass(frozen=True)
+class JobRunResult:
+    success: bool
+    status: str
+    exit_code: int | None = None
+    elapsed: float = 0.0
+    archive_path: str = ""
+    error: str = ""
+
+
 JOBS = (
     Job("DASHBOARD_MARKET_AUCTION_CRON", "25 9 * * 1-5", "8453b3f28cd3", "A股竞价盘前总结", ("a_share_auction_summary.py",), 180, True),
     Job("DASHBOARD_MARKET_MIDDAY_CRON", "40 11 * * 1-5", "192abba7eeb5", "A股午盘总结", ("a_share_midday_summary.py",), 180, True),
@@ -71,6 +81,30 @@ def parse_env_file(path: Path = DASHBOARD_ENV_FILE) -> dict[str, str]:
         key, value = line.split("=", 1)
         values[key.strip()] = value.strip().strip("\"'")
     return values
+
+
+def read_int_setting(env_values: dict[str, str], name: str, default: int, *, min_value: int, max_value: int) -> int:
+    raw = env_values.get(name) or os.environ.get(name) or str(default)
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        log(f"invalid int setting name={name} value={raw!r}; using default={default}")
+        value = default
+    return max(min_value, min(max_value, value))
+
+
+def retry_settings(job: Job, env_values: dict[str, str] | None = None) -> tuple[int, int]:
+    values = env_values if env_values is not None else parse_env_file()
+    max_attempts = read_int_setting(values, "DASHBOARD_CRON_MAX_ATTEMPTS", 2, min_value=1, max_value=5)
+    retry_delay = read_int_setting(values, "DASHBOARD_CRON_RETRY_DELAY_SECONDS", 300, min_value=0, max_value=3600)
+    return max_attempts, retry_delay
+
+
+def sleep_interruptibly(seconds: int) -> bool:
+    deadline = time.monotonic() + max(0, int(seconds))
+    while not STOP and time.monotonic() < deadline:
+        time.sleep(min(1, max(0, deadline - time.monotonic())))
+    return not STOP
 
 
 def expand_field(part: str, low: int, high: int, *, dow: bool = False) -> set[int]:
@@ -134,10 +168,11 @@ def save_state(state: dict[str, object]) -> None:
     STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def archive_job_output(job: Job, run_time: datetime, status: str, stdout: str, stderr: str) -> Path:
+def archive_job_output(job: Job, run_time: datetime, status: str, stdout: str, stderr: str, *, attempt: int = 1) -> Path:
     out_dir = OUTPUT_DIR / job.job_id
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{run_time.strftime('%Y-%m-%d_%H-%M-%S')}.md"
+    suffix = "" if attempt <= 1 else f"_retry{attempt - 1}"
+    path = out_dir / f"{run_time.strftime('%Y-%m-%d_%H-%M-%S')}{suffix}.md"
     body = (stdout or "").strip()
     if stderr.strip():
         body = f"{body}\n\n```stderr\n{stderr.strip()}\n```".strip()
@@ -146,6 +181,7 @@ def archive_job_output(job: Job, run_time: datetime, status: str, stdout: str, s
         f"**Job ID:** {job.job_id}\n"
         f"**Run Time:** {run_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"**Mode:** niuone scheduler\n"
+        f"**Attempt:** {attempt}\n"
         f"**Status:** {status}\n\n"
         "---\n\n"
         f"{body}\n"
@@ -154,7 +190,7 @@ def archive_job_output(job: Job, run_time: datetime, status: str, stdout: str, s
     return path
 
 
-def run_job(job: Job, run_time: datetime) -> None:
+def run_job_once(job: Job, run_time: datetime, *, attempt: int = 1, max_attempts: int = 1) -> JobRunResult:
     env = os.environ.copy()
     env.update(parse_env_file())
     env.setdefault("DASHBOARD_HOME", str(DASHBOARD_HOME))
@@ -162,7 +198,7 @@ def run_job(job: Job, run_time: datetime) -> None:
     env.setdefault("DASHBOARD_PUSH_HISTORY_DB", str(DASHBOARD_HOME / "push_history.db"))
     command = [sys.executable, str(SCRIPT_DIR / job.command[0]), *job.command[1:]]
     start = time.monotonic()
-    log(f"start job={job.job_id} title={job.title} command={command}")
+    log(f"start job={job.job_id} title={job.title} attempt={attempt}/{max_attempts} command={command}")
     try:
         proc = subprocess.run(
             command,
@@ -178,24 +214,52 @@ def run_job(job: Job, run_time: datetime) -> None:
         archive_marker = re.search(r"archived:\s*(.+)", proc.stderr or "")
         if not job.archive_stdout and proc.returncode == 0 and not archive_marker:
             status = "script failed"
+        success = status == "ok"
         if job.archive_stdout:
-            archive_path = archive_job_output(job, run_time, status, proc.stdout or "", proc.stderr or "")
-            log(f"finish job={job.job_id} status={status} exit={proc.returncode} elapsed={elapsed:.1f}s archive={archive_path}")
+            archive_path = archive_job_output(job, run_time, status, proc.stdout or "", proc.stderr or "", attempt=attempt)
+            log(f"finish job={job.job_id} status={status} exit={proc.returncode} attempt={attempt}/{max_attempts} elapsed={elapsed:.1f}s archive={archive_path}")
+            return JobRunResult(success, status, proc.returncode, elapsed, str(archive_path))
         else:
             detail = f" archive={archive_marker.group(1).strip()}" if archive_marker else " missing_archive_marker=true"
-            log(f"finish job={job.job_id} status={status} exit={proc.returncode} elapsed={elapsed:.1f}s{detail} stderr={(proc.stderr or '').strip()[:500]!r}")
+            log(f"finish job={job.job_id} status={status} exit={proc.returncode} attempt={attempt}/{max_attempts} elapsed={elapsed:.1f}s{detail} stderr={(proc.stderr or '').strip()[:500]!r}")
+            archive_path = archive_marker.group(1).strip() if archive_marker else ""
+            return JobRunResult(success, status, proc.returncode, elapsed, archive_path, (proc.stderr or "").strip()[:500])
     except subprocess.TimeoutExpired as exc:
         if job.archive_stdout:
-            archive_path = archive_job_output(job, run_time, "script failed", exc.stdout or "", f"timeout after {job.timeout_seconds}s\n{exc.stderr or ''}")
-            log(f"timeout job={job.job_id} archive={archive_path}")
+            archive_path = archive_job_output(job, run_time, "script failed", exc.stdout or "", f"timeout after {job.timeout_seconds}s\n{exc.stderr or ''}", attempt=attempt)
+            log(f"timeout job={job.job_id} attempt={attempt}/{max_attempts} archive={archive_path}")
+            return JobRunResult(False, "script failed", None, time.monotonic() - start, str(archive_path), f"timeout after {job.timeout_seconds}s")
         else:
-            log(f"timeout job={job.job_id} after {job.timeout_seconds}s")
+            log(f"timeout job={job.job_id} attempt={attempt}/{max_attempts} after {job.timeout_seconds}s")
+            return JobRunResult(False, "script failed", None, time.monotonic() - start, "", f"timeout after {job.timeout_seconds}s")
     except Exception as exc:
         if job.archive_stdout:
-            archive_path = archive_job_output(job, run_time, "script failed", "", f"{type(exc).__name__}: {exc}")
-            log(f"exception job={job.job_id} archive={archive_path} error={type(exc).__name__}: {exc}")
+            archive_path = archive_job_output(job, run_time, "script failed", "", f"{type(exc).__name__}: {exc}", attempt=attempt)
+            log(f"exception job={job.job_id} attempt={attempt}/{max_attempts} archive={archive_path} error={type(exc).__name__}: {exc}")
+            return JobRunResult(False, "script failed", None, time.monotonic() - start, str(archive_path), f"{type(exc).__name__}: {exc}")
         else:
-            log(f"exception job={job.job_id} error={type(exc).__name__}: {exc}")
+            log(f"exception job={job.job_id} attempt={attempt}/{max_attempts} error={type(exc).__name__}: {exc}")
+            return JobRunResult(False, "script failed", None, time.monotonic() - start, "", f"{type(exc).__name__}: {exc}")
+
+
+def run_job(job: Job, run_time: datetime) -> JobRunResult:
+    env_values = parse_env_file()
+    max_attempts, retry_delay = retry_settings(job, env_values)
+    result = run_job_once(job, run_time, attempt=1, max_attempts=max_attempts)
+    attempt = 1
+    while not result.success and attempt < max_attempts and not STOP:
+        attempt += 1
+        log(
+            f"retry scheduled job={job.job_id} title={job.title} "
+            f"next_attempt={attempt}/{max_attempts} delay={retry_delay}s previous_status={result.status}"
+        )
+        if retry_delay > 0 and not sleep_interruptibly(retry_delay):
+            log(f"retry cancelled job={job.job_id} attempt={attempt}/{max_attempts} reason=stopping")
+            return result
+        result = run_job_once(job, run_time, attempt=attempt, max_attempts=max_attempts)
+    if not result.success and max_attempts > 1:
+        log(f"retry exhausted job={job.job_id} attempts={max_attempts} final_status={result.status}")
+    return result
 
 
 def main() -> None:
