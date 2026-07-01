@@ -1,6 +1,6 @@
-# 运行数据和 secrets 处理策略
+# 运行数据和敏感信息处理策略
 
-本文档定义 NiuOne 的运行数据、模型密钥和本地私有文件处理规则。目标是让真实数据可以留在工程目录内，同时确保上传 GitHub 的内容不包含用户数据或 secrets。
+本文档定义 NiuOne 的运行数据、模型密钥和本地私有文件处理规则。目标是让真实数据可以留在工程目录内，同时确保上传到公开仓库的内容不包含用户数据或敏感信息。
 
 ## 目录边界
 
@@ -20,19 +20,19 @@
 └── backups/
 ```
 
-`.local-data/`、`dashboard.env`、数据库、token、日志和备份文件都已在 `.gitignore` 中忽略。
+`.local-data/`、`dashboard.env`、数据库、本地凭据、日志和备份文件都已在 `.gitignore` 中忽略。
 
 ## 不应提交或外传的内容
 
 | 路径 | 说明 |
 |---|---|
-| `.local-data/dashboard.env` | 本机环境变量、路径和可能存在的 secrets |
+| `.local-data/dashboard.env` | 本机环境变量、路径和可能存在的模型密钥或管理员密码 |
 | `.local-data/.venv/` | 本机 Python 虚拟环境 |
-| `.local-data/runtime/dashboard_admin_token.txt` | 管理员 token |
-| `.local-data/runtime/dashboard_users.db` | 邀请码和 viewer 数据库 |
+| `.local-data/runtime/dashboard_admin_token.txt` | 本地备用管理员凭据 |
+| `.local-data/runtime/dashboard_users.db` | 本地访问用户和认证数据 |
 | `.local-data/runtime/push_history.db` | 消息历史 |
 | `.local-data/runtime/niuniu.db` | 牛牛实战交易和账户数据 |
-| `.local-data/runtime/config.yaml` | provider、模型和 API key 配置 |
+| `.local-data/runtime/config.yaml` | 模型服务商、模型和模型密钥配置 |
 | `.local-data/runtime/cron/state/` | 定时任务、X 监控和补跑状态 |
 | `.local-data/runtime/cron/output/` | B1、市场监控、美股评级、X 监控等任务输出 |
 | `.local-data/runtime/logs/` | 服务和任务日志 |
@@ -53,7 +53,7 @@
 
 X 关注列表监控和美股机构评级日报由 `DASHBOARD_US_FEATURES_ENABLED` 总开关控制。关闭时设置页隐藏相关配置，后台 X 守护进程和美股评级定时任务跳过执行。
 
-API key 只允许保存在 `.local-data/dashboard.env`、`.local-data/runtime/config.yaml` 或受控的系统环境变量中。提交前必须确认没有新增 `.env`、`*.key`、`*.token`、`*.secret`、数据库或备份文件。
+模型密钥只允许保存在 `.local-data/dashboard.env`、`.local-data/runtime/config.yaml` 或受控的系统环境变量中。提交前必须确认没有新增 `.env`、`*.key`、`*.token`、`*.secret`、数据库或备份文件。
 
 ## 本地副本和测试
 
@@ -84,10 +84,10 @@ git status --ignored --short
 
 ## 处理疑似泄露
 
-如果 API key、token 或数据库误入公开位置：
+如果模型密钥、本地凭据或数据库误入公开位置：
 
-1. 立即撤销或轮换对应 key/token。
+1. 立即撤销或轮换对应密钥或凭据。
 2. 从代码和文档中删除泄露内容。
 3. 检查 `git status --ignored --short` 和最近提交。
-4. 必要时重建 `.local-data/runtime/dashboard_admin_token.txt`、邀请码和相关数据库。
+4. 必要时重建 `.local-data/runtime/dashboard_admin_token.txt` 和相关数据库。
 5. 对已经推送到远端的敏感内容，按远端平台的泄露处理流程清理历史。
