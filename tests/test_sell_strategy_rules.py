@@ -18,6 +18,18 @@ os.environ["DASHBOARD_HOME"] = _tmp_home.name
 import niuniu_practice_trader as trader  # noqa: E402
 
 
+def permissive_market_context() -> dict:
+    return {
+        "tone_label": "中性",
+        "max_open_positions": trader.MAX_OPEN_POSITIONS,
+        "max_new_buys_per_decision": trader.MAX_NEW_BUYS_PER_DECISION,
+        "max_total_position_pct": trader.MAX_TOTAL_POSITION_PCT,
+        "min_cash_reserve_pct": trader.MIN_CASH_RESERVE_PCT,
+        "buy_budget_multiplier": 1.0,
+        "allow_new_buys": True,
+    }
+
+
 class SellStrategyRuleTests(unittest.TestCase):
     def test_trading_time_tracks_auction_and_static_period(self):
         allowed, reason = trader.is_a_share_trading_time(datetime(2026, 6, 24, 9, 15))
@@ -263,7 +275,14 @@ class SellStrategyRuleTests(unittest.TestCase):
                 "risk_flags": [],
             }]
 
-            executed = trader.execute_actions(state, decision, candidates, True, "连续竞价交易时段")
+            executed = trader.execute_actions(
+                state,
+                decision,
+                candidates,
+                True,
+                "连续竞价交易时段",
+                permissive_market_context(),
+            )
         finally:
             trader.is_a_share_execution_time = original_execution_time
             trader.execution_quote = original_quote
@@ -295,7 +314,14 @@ class SellStrategyRuleTests(unittest.TestCase):
                 "hard_blockers": ["B1核心J未≤-10"],
             }]
 
-            executed = trader.execute_actions(state, decision, candidates, True, "连续竞价交易时段")
+            executed = trader.execute_actions(
+                state,
+                decision,
+                candidates,
+                True,
+                "连续竞价交易时段",
+                permissive_market_context(),
+            )
         finally:
             trader.is_a_share_execution_time = original_execution_time
             trader.execution_quote = original_quote
@@ -335,7 +361,14 @@ class SellStrategyRuleTests(unittest.TestCase):
                 "hard_blockers": [],
             }]
 
-            executed = trader.execute_actions(state, decision, candidates, True, "连续竞价交易时段")
+            executed = trader.execute_actions(
+                state,
+                decision,
+                candidates,
+                True,
+                "连续竞价交易时段",
+                permissive_market_context(),
+            )
         finally:
             trader.is_a_share_execution_time = original_execution_time
             trader.execution_quote = original_quote
@@ -343,6 +376,115 @@ class SellStrategyRuleTests(unittest.TestCase):
         self.assertEqual(executed, [])
         self.assertNotIn("601999", state["positions"])
         self.assertIn("持仓已达", decision["execution_blocked_reason"])
+
+    def test_execute_actions_blocks_model_buy_size_over_budget_without_clipping(self):
+        original_execution_time = trader.is_a_share_execution_time
+        original_quote = trader.execution_quote
+        try:
+            trader.is_a_share_execution_time = lambda dt=None: (True, "连续竞价交易时段")
+            trader.execution_quote = lambda code: {"price": 10.0, "name": "测试股", "source": "test"}
+            state = {"cash": 100000.0, "positions": {}, "trade_log": []}
+            decision = {
+                "actions": [{"action": "BUY", "code": "600000", "name": "测试股", "shares": 2000}]
+            }
+            candidates = [{
+                "code": "600000",
+                "name": "测试股",
+                "best_strategy": "b3_accelerate",
+                "best_score": 10.0,
+                "entry_threshold": 8.5,
+                "distance_pct": 1.0,
+                "actionable": True,
+                "hard_blockers": [],
+            }]
+
+            executed = trader.execute_actions(
+                state,
+                decision,
+                candidates,
+                True,
+                "连续竞价交易时段",
+                permissive_market_context(),
+            )
+        finally:
+            trader.is_a_share_execution_time = original_execution_time
+            trader.execution_quote = original_quote
+
+        self.assertEqual(executed, [])
+        self.assertEqual(state["positions"], {})
+        self.assertIn("模型买入仓位2000股超出风控预算", decision["execution_blocked_reason"])
+        self.assertIn("不自动缩小", decision["execution_blocked_reason"])
+
+    def test_execute_actions_blocks_non_lot_model_size_without_rounding(self):
+        original_execution_time = trader.is_a_share_execution_time
+        original_quote = trader.execution_quote
+        try:
+            trader.is_a_share_execution_time = lambda dt=None: (True, "连续竞价交易时段")
+            trader.execution_quote = lambda code: {"price": 10.0, "name": "测试股", "source": "test"}
+            state = {"cash": 100000.0, "positions": {}, "trade_log": []}
+            decision = {
+                "actions": [{"action": "BUY", "code": "600000", "name": "测试股", "shares": 150}]
+            }
+            candidates = [{
+                "code": "600000",
+                "name": "测试股",
+                "best_strategy": "b3_accelerate",
+                "best_score": 10.0,
+                "entry_threshold": 8.5,
+                "distance_pct": 1.0,
+                "actionable": True,
+                "hard_blockers": [],
+            }]
+
+            executed = trader.execute_actions(
+                state,
+                decision,
+                candidates,
+                True,
+                "连续竞价交易时段",
+                permissive_market_context(),
+            )
+        finally:
+            trader.is_a_share_execution_time = original_execution_time
+            trader.execution_quote = original_quote
+
+        self.assertEqual(executed, [])
+        self.assertEqual(state["positions"], {})
+        self.assertIn("不是100股整数倍", decision["execution_blocked_reason"])
+
+    def test_execute_actions_blocks_model_sell_size_over_available_without_clipping(self):
+        original_execution_time = trader.is_a_share_execution_time
+        original_quote = trader.execution_quote
+        try:
+            trader.is_a_share_execution_time = lambda dt=None: (True, "连续竞价交易时段")
+            trader.execution_quote = lambda code: {"price": 10.0, "name": "测试股", "source": "test"}
+            state = {
+                "cash": 0.0,
+                "positions": {
+                    "600000": {
+                        "code": "600000",
+                        "name": "测试股",
+                        "qty": 1000,
+                        "avg_cost": 9.0,
+                        "last_price": 10.0,
+                        "buy_date_lots": {"2026-06-23": 1000},
+                    }
+                },
+                "trade_log": [],
+            }
+            decision = {
+                "actions": [{"action": "SELL", "code": "600000", "name": "测试股", "shares": 1200}]
+            }
+
+            executed = trader.execute_actions(state, decision, [], True, "连续竞价交易时段", permissive_market_context())
+        finally:
+            trader.is_a_share_execution_time = original_execution_time
+            trader.execution_quote = original_quote
+
+        self.assertEqual(executed, [])
+        self.assertEqual(state["positions"]["600000"]["qty"], 1000)
+        self.assertIn("模型卖出仓位1200股超过可卖1000股", decision["execution_blocked_reason"])
+        self.assertIn("不自动缩小", decision["execution_blocked_reason"])
 
     def test_market_guidance_derives_morning_position_pace(self):
         reports = [{
@@ -691,6 +833,7 @@ class SellStrategyRuleTests(unittest.TestCase):
         original_sync_decision = trader._sync_decision_to_db
         original_sync_trades = trader._sync_trades_to_db
         original_sync_positions = trader._sync_positions_to_db
+        original_market_context = trader.current_market_strategy_context
         with tempfile.TemporaryDirectory() as td:
             try:
                 trader.STATE_FILE = Path(td) / "portfolio.json"
@@ -699,6 +842,7 @@ class SellStrategyRuleTests(unittest.TestCase):
                 trader._sync_decision_to_db = lambda log: None
                 trader._sync_trades_to_db = lambda items: None
                 trader._sync_positions_to_db = lambda state: None
+                trader.current_market_strategy_context = lambda now=None: permissive_market_context()
                 trader.save_state({
                     "initial_cash": 100000.0,
                     "cash": 100000.0,
@@ -739,6 +883,7 @@ class SellStrategyRuleTests(unittest.TestCase):
                 trader._sync_decision_to_db = original_sync_decision
                 trader._sync_trades_to_db = original_sync_trades
                 trader._sync_positions_to_db = original_sync_positions
+                trader.current_market_strategy_context = original_market_context
 
         self.assertEqual(result["attempted"], 1)
         self.assertEqual(len(result["executed"]), 1)
@@ -974,6 +1119,10 @@ class SellStrategyRuleTests(unittest.TestCase):
         self.assertIn("内置策略偏好本轮不生效", prompt)
         self.assertIn("基础策略只作为候选池", prompt)
         self.assertIn("本轮设置页未启用人格策略", prompt)
+        self.assertIn("每条 BUY/SELL 的仓位大小由你决定", prompt)
+        self.assertIn("执行层不会替你补默认仓位", prompt)
+        self.assertIn("不会把过大的买入/卖出自动缩小", prompt)
+        self.assertIn('"target_position_pct"', prompt)
 
     def test_b3_next_day_no_progress_exits(self):
         pos = {

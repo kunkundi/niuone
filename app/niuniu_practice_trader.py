@@ -1214,6 +1214,20 @@ def position_qty(pos: dict[str, Any]) -> int:
     return int(pos.get("qty") or pos.get("shares") or 0)
 
 
+def parse_model_action_shares(action: dict[str, Any]) -> int | None:
+    raw = (action or {}).get("shares")
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw) if raw.is_integer() else None
+    text = str(raw).strip()
+    if re.fullmatch(r"\d+(?:\.0+)?", text):
+        return int(float(text))
+    return None
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None or value == "":
@@ -3611,16 +3625,17 @@ Z哥卖出风控（属于Z哥体系）：
 - 单次决策最多给2条新买入；当前持仓达到{MAX_OPEN_POSITIONS}只时只允许卖出/持有，不能继续开新仓，避免“开超市”。
 - 单票目标仓位不超过总资产{MAX_SINGLE_POSITION_PCT:g}%；总持仓不超过{MAX_TOTAL_POSITION_PCT:g}%；至少保留{MIN_CASH_RESERVE_PCT:g}%现金。
 - 今日盘面监控指引优先收紧买入节奏；若动态上限低于静态上限，必须按动态上限决策，不能上午把{MAX_OPEN_POSITIONS}只买满。
-- 首次建仓必须小仓试错；按注册策略仓位上限执行：{position_limit_desc}；尾盘(14:30后)原则上不新开仓。
+- 每条 BUY/SELL 的仓位大小由你决定：必须给出100股整数倍 shares，并在 reason 里说明仓位依据；执行层不会替你补默认仓位，也不会把过大的买入/卖出自动缩小，超出现金、单票、总仓、动态盘面或可卖数量会直接拦截。
+- 首次建仓、加仓、减仓比例由你结合评分、战法确定性、风险标记、盘面级别、现有仓位和盈亏状态决定；按注册策略仓位上限执行：{position_limit_desc}；尾盘(14:30后)原则上不新开仓。
 - 系统底线风控：买入K线/前低止损、-4%硬止损、持仓超25日退出；防卖飞、卤煮、S1/S2/S3、出货五式、白线/黄线等归属于下方 Z哥卖出风控
 - 移动止损：盈利>5%后进入回撤保护，回到成本附近自动退出
 - 信号恶化退出：持有>10天仍未站回BBI且盈利不足，或持有>12天仍亏>3%，自动离场
 - 同板块持仓不超过2只（避免集中风险）
 - 必须按候选自带的“基准”判断是否达标；未达各自基准只能观察，不能因为裸分接近8就买
 - 策略共识只能用于排序，不能突破持仓数、单票仓位、总仓位、现金储备硬上限。
-- 当前自适应模式：{adaptive.get('label','中性')}（止损{adaptive.get('stop_loss',STOP_LOSS_PCT)}% 仓位{adaptive.get('position_mult',1.0)}x） ← 新增
+- 当前自适应模式：{adaptive.get('label','中性')}（止损{adaptive.get('stop_loss',STOP_LOSS_PCT)}%，仓位系数{adaptive.get('position_mult',1.0)}x，仅作为你决定 shares 的参考）
 - 盈亏比过滤：优先选盈亏比≥2:1的票（上涨空间/下跌空间），盈亏比<1.5自动标记风险 ← 新增
-- 波动率仓位：20日波动>3.5%→仓位×0.7，波动<1.5%→仓位×1.3 ← 新增
+- 波动率提示：20日波动>3.5%时应倾向缩小你输出的 shares，波动<1.5%时可在硬上限内酌情提高 shares
 - 融资+大宗信号：优先买入融资净买入+大宗溢价的票，谨慎对待融资偿还+大宗折价的票 ← 新增
 
 当前激活策略来源：{strategy_source_label}
@@ -3667,7 +3682,7 @@ Z哥卖出风控（属于Z哥体系）：
 {{
   "summary":"一句中文结论（含战法偏好+总体判断）",
   "actions":[
-    {{"action":"BUY|SELL|HOLD","code":"600000","name":"股票名","shares":100,"reason":"中文理由（含战法名）"}}
+    {{"action":"BUY|SELL|HOLD","code":"600000","name":"股票名","shares":100,"target_position_pct":3.5,"reason":"中文理由（含战法名和仓位依据）"}}
   ]
 }}
 如果不适合交易，返回 actions 为空或 HOLD。
@@ -3730,9 +3745,12 @@ def execute_actions(
         name = action.get("name") or q.get("name") or candidate.get("name") or ""
         reason = _fallback_action_reason(action, candidate, act, name)
         action["reason"] = reason
-        shares = int(action.get("shares") or 0)
-        shares = max(0, shares // 100 * 100)
-        if shares <= 0:
+        shares = parse_model_action_shares(action)
+        if shares is None or shares <= 0:
+            add_execution_block(decision, code, "模型未给出有效仓位 shares，本轮不自动补默认仓位")
+            continue
+        if shares % 100 != 0:
+            add_execution_block(decision, code, f"模型仓位{shares}股不是100股整数倍，本轮不自动取整")
             continue
         if act == "BUY":
             if not allow_market_guidance_buys:
@@ -3773,19 +3791,25 @@ def execute_actions(
                     f"仓位预算不足：单票/盘面总仓/现金储备约束({strategy_position_limit_pct(buy_strategy):g}%/{effective_max_total_position_pct:g}%/{effective_min_cash_reserve_pct:g}%)",
                 )
                 continue
-
-            # Max affordable includes buy-side fees and the portfolio-level cash reserve discipline.
-            per_lot_gross = price * 100
-            per_lot_fees = calc_trade_fees(per_lot_gross, "BUY")["total_fee"]
-            max_affordable = int(max_buy_budget // (per_lot_gross + per_lot_fees)) * 100
-            qty = min(shares, max_affordable)
-            if qty <= 0:
-                add_execution_block(decision, code, "仓位预算不足以买入1手")
+            requested_gross = shares * float(price)
+            if requested_gross > max_buy_budget + 0.01:
+                max_allowed_shares = int(max_buy_budget // float(price)) // 100 * 100
+                add_execution_block(
+                    decision,
+                    code,
+                    (
+                        f"模型买入仓位{shares}股超出风控预算约{max_buy_budget:.0f}元"
+                        f"（约≤{max_allowed_shares}股），本轮不自动缩小"
+                    ),
+                )
                 continue
+
+            qty = shares
             gross = qty * float(price)
             fees = calc_trade_fees(gross, "BUY")
             total_cost = gross + fees["total_fee"]
             if total_cost > cash:
+                add_execution_block(decision, code, f"模型买入仓位{shares}股现金不足，本轮不自动缩小")
                 continue
             pos = positions.setdefault(code, {"code": code, "name": name, "qty": 0, "avg_cost": 0.0, "buy_date_lots": {}, "last_price": price})
             old_cost = old_qty * float(pos.get("avg_cost") or 0)
@@ -3826,10 +3850,15 @@ def execute_actions(
             if not pos:
                 continue
             avg_cost = float(pos.get("avg_cost") or 0)
-            qty = min(shares, available_to_sell(pos))
-            qty = qty // 100 * 100
-            if qty <= 0:
+            available_qty = available_to_sell(pos)
+            if shares > available_qty:
+                add_execution_block(
+                    decision,
+                    code,
+                    f"模型卖出仓位{shares}股超过可卖{available_qty}股，本轮不自动缩小",
+                )
                 continue
+            qty = shares
             gross = qty * float(price)
             fees = calc_trade_fees(gross, "SELL")
             net_proceeds = gross - fees["total_fee"]
@@ -3964,8 +3993,8 @@ def decision_has_executable_actions(decision: dict[str, Any]) -> bool:
     for action in decision.get("actions") or []:
         act = str(action.get("action") or "HOLD").upper()
         code = normalize_code(action.get("code") or "")
-        shares = int(action.get("shares") or 0)
-        if act in {"BUY", "SELL"} and code and shares > 0:
+        shares = parse_model_action_shares(action)
+        if act in {"BUY", "SELL"} and code and shares is not None and shares > 0 and shares % 100 == 0:
             return True
     return False
 
