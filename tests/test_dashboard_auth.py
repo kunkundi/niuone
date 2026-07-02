@@ -250,7 +250,7 @@ class DashboardAuthTests(unittest.TestCase):
         original_trading_day_status = dashboard.trading_day_status
         try:
             dashboard.get_trader_module = lambda: TraderStub()
-            dashboard.trading_day_status = lambda: {'is_trading_day': True}
+            dashboard.trading_day_status = lambda *args, **kwargs: {'is_trading_day': True, 'date': '2026-06-24'}
             payload = dashboard.get_practice_payload_fast()
         finally:
             dashboard.get_trader_module = original_get_trader
@@ -260,6 +260,54 @@ class DashboardAuthTests(unittest.TestCase):
             [p['time'] for p in payload['daily_equity_history']],
             ['2026-06-22 15:00:00', '2026-06-23 15:00:00', '2026-06-24 15:00:00'],
         )
+
+    def test_fast_practice_payload_exposes_current_beijing_date(self):
+        class TraderStub:
+            def load_state(self):
+                return {
+                    'initial_cash': 1000000,
+                    'cash': 1000000,
+                    'positions': {},
+                    'equity_history': [
+                        {'time': '2026-07-02 09:30:00', 'equity': 1000000, 'pnl_pct': 0},
+                        {'time': '2026-07-02 15:00:00', 'equity': 1008000, 'pnl_pct': 0.8},
+                    ],
+                    'daily_equity_history': [],
+                    'trade_log': [{'time': '2026-07-03 00:03:00', 'action': 'CHECK'}],
+                    'decision_log': [{'time': '2026-07-02 14:30:00', 'trade_reason': '旧日志'}],
+                }
+
+            def enrich_portfolio(self, state):
+                return {
+                    'initial_cash': state['initial_cash'],
+                    'cash': state['cash'],
+                    'positions': [],
+                    'trade_log': state['trade_log'],
+                    'decision_log': state['decision_log'],
+                }
+
+        original_get_trader = dashboard.get_trader_module
+        original_trading_day_status = dashboard.trading_day_status
+        original_current_cn_datetime = dashboard.current_cn_datetime
+        try:
+            dashboard.get_trader_module = lambda: TraderStub()
+            dashboard.current_cn_datetime = lambda: datetime(2026, 7, 3, 0, 5, 0)
+            dashboard.trading_day_status = lambda value=None, **kwargs: {
+                'date': value.strftime('%Y-%m-%d') if value else '',
+                'is_trading_day': True,
+            }
+
+            payload = dashboard.get_practice_payload_fast()
+        finally:
+            dashboard.get_trader_module = original_get_trader
+            dashboard.trading_day_status = original_trading_day_status
+            dashboard.current_cn_datetime = original_current_cn_datetime
+
+        self.assertEqual(payload['current_date'], '2026-07-03')
+        self.assertEqual(payload['current_time'], '2026-07-03 00:05:00')
+        self.assertEqual(payload['trading_calendar']['date'], '2026-07-03')
+        self.assertEqual([row['time'] for row in payload['trade_log']], ['2026-07-03 00:03:00'])
+        self.assertEqual(payload['decision_log'], [])
 
     def test_compact_strategy_performance_truncates_exit_details(self):
         perf = {
@@ -281,14 +329,13 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(compacted['exit_rule']['stop_loss']['items_truncated'], 15)
 
     def test_filter_today_log_entries_keeps_today_items(self):
-        today = datetime.now().strftime('%Y-%m-%d')
         rows = [
-            {'time': f'{today} 09:31:00', 'action': 'BUY', 'code': '600000'},
+            {'time': '2026-07-03 09:31:00', 'action': 'BUY', 'code': '600000'},
             {'time': '2026-01-01 09:31:00', 'action': 'SELL', 'code': '000001'},
-            {'time': f'{today} 10:00:00', 'trade_reason': '测试决策'},
+            {'time': '2026-07-03 10:00:00', 'trade_reason': '测试决策'},
         ]
 
-        filtered = dashboard.filter_today_log_entries(rows)
+        filtered = dashboard.filter_today_log_entries(rows, now=datetime(2026, 7, 3, 0, 5, 0))
 
         self.assertEqual([row['time'] for row in filtered], [rows[0]['time'], rows[2]['time']])
 
@@ -316,7 +363,7 @@ class DashboardAuthTests(unittest.TestCase):
         original_trading_day_status = dashboard.trading_day_status
         try:
             dashboard.get_trader_module = lambda: FakeTrader()
-            dashboard.trading_day_status = lambda: {'is_trading_day': True}
+            dashboard.trading_day_status = lambda *args, **kwargs: {'is_trading_day': True, 'date': '2026-06-24'}
 
             payload = dashboard.get_practice_payload_fast()
         finally:
@@ -375,6 +422,14 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertIn('isNonTradingCalendarDay', dashboard.INDEX_HTML)
         self.assertIn('tradingCalendar.is_trading_day === false', dashboard.INDEX_HTML)
         self.assertIn('（${esc(latestDay)}）', dashboard.INDEX_HTML)
+        self.assertIn('currentDateKey', dashboard.INDEX_HTML)
+        self.assertIn("timeZone: 'Asia/Shanghai'", dashboard.INDEX_HTML)
+        self.assertIn('practicePayloadDateKey', dashboard.INDEX_HTML)
+        self.assertIn('等待今日盘中净值点', dashboard.INDEX_HTML)
+        self.assertIn('最近已有分时点', dashboard.INDEX_HTML)
+        self.assertIn('收益曲线 · 累计收益', dashboard.INDEX_HTML)
+        self.assertNotIn('每日总收益', dashboard.INDEX_HTML)
+        self.assertNotIn('if (points.length < 2) points = rawPoints.slice(-180);', dashboard.INDEX_HTML)
         self.assertIn('交易日历', dashboard.INDEX_HTML)
         self.assertIn('openPracticeCalendar(event)', dashboard.INDEX_HTML)
         self.assertIn('buildPracticeCalendarRows', dashboard.INDEX_HTML)

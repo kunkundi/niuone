@@ -20,7 +20,7 @@ import sys
 import threading
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 class ReusableThreadingHTTPServer(ThreadingHTTPServer):
@@ -124,6 +124,7 @@ TRADER_MODULE_MTIME = 0.0
 PRACTICE_DECISION_KEYS: set[str] = set()
 BENCHMARK_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
 BENCHMARK_TTL_SECONDS = 20
+CN_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
 
 # Public dashboard concurrency protection: cache expensive JSON payloads in-process
 # so 1000 viewers do not trigger 1000 identical DB/行情/akshare computations.
@@ -662,6 +663,31 @@ def run_dashboard_helper(script_name: str, fallback: dict[str, Any], timeout: in
         return {**fallback, "error": str(exc)}
 
 
+def current_cn_datetime() -> datetime:
+    return datetime.now(CN_TZ).replace(tzinfo=None)
+
+
+def current_cn_date_key(now: datetime | None = None) -> str:
+    return (now or current_cn_datetime()).strftime("%Y-%m-%d")
+
+
+def dashboard_trading_day_status(now: datetime | None = None) -> dict[str, Any]:
+    current = now or current_cn_datetime()
+    return trading_day_status(current)
+
+
+def annotate_practice_payload_clock(payload: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    current = now or current_cn_datetime()
+    current_date = current_cn_date_key(current)
+    payload["current_date"] = current_date
+    payload["current_time"] = current.strftime("%Y-%m-%d %H:%M:%S")
+    calendar = payload.get("trading_calendar")
+    if not isinstance(calendar, dict) or str(calendar.get("date") or "") != current_date:
+        calendar = dashboard_trading_day_status(current)
+    payload["trading_calendar"] = calendar
+    return payload
+
+
 def produce_indices_data() -> dict[str, Any]:
     try:
         import importlib.util
@@ -700,6 +726,7 @@ def get_practice_payload() -> dict[str, Any]:
         if hasattr(trader, "maybe_record_session_equity_heartbeat"):
             trader.maybe_record_session_equity_heartbeat()
         payload = trader.get_dashboard_payload()
+        annotate_practice_payload_clock(payload)
         try:
             refresh_b1_candidate_cache_from_current_pool()
         except Exception as refresh_exc:
@@ -707,9 +734,10 @@ def get_practice_payload() -> dict[str, Any]:
         return payload
     except Exception as exc:
         print(f"[WARN] practice payload error: {type(exc).__name__}: {exc}", flush=True)
-        return {"positions": [], "cash": 0, "total_equity": 0, "initial_cash": 0,
-                "total_pnl": 0, "total_pnl_pct": 0, "trade_log": [], "decision_log": [],
-                "equity_history": [], "last_error": str(exc), "decision_model": "", "decision_provider": ""}
+        payload = {"positions": [], "cash": 0, "total_equity": 0, "initial_cash": 0,
+                   "total_pnl": 0, "total_pnl_pct": 0, "trade_log": [], "decision_log": [],
+                   "equity_history": [], "last_error": str(exc), "decision_model": "", "decision_provider": ""}
+        return annotate_practice_payload_clock(payload)
 
 def downsample_sequence(items: list[Any], max_points: int) -> list[Any]:
     items = list(items or [])
@@ -746,14 +774,14 @@ def filter_future_equity_points(
     now: datetime | None = None,
     grace_seconds: int = 120,
 ) -> list[dict[str, Any]]:
-    now = now or datetime.now()
-    cutoff = now.timestamp() + max(0, int(grace_seconds or 0))
+    now = now or current_cn_datetime()
+    cutoff = now + timedelta(seconds=max(0, int(grace_seconds or 0)))
     filtered: list[dict[str, Any]] = []
     for point in history or []:
         if not isinstance(point, dict):
             continue
         dt = parse_dashboard_ts(str(point.get("time") or ""))
-        if dt is not None and (dt.date() > now.date() or (dt.date() == now.date() and dt.timestamp() > cutoff)):
+        if dt is not None and (dt.date() > now.date() or (dt.date() == now.date() and dt > cutoff)):
             continue
         if dt is not None and not is_a_share_trading_day_for_dashboard(dt):
             continue
@@ -822,8 +850,13 @@ def compact_strategy_performance(perf: dict[str, Any], *, max_exit_items: int = 
     return result
 
 
-def filter_today_log_entries(entries: list[Any], *, max_items: int | None = None) -> list[dict[str, Any]]:
-    today = datetime.now().strftime("%Y-%m-%d")
+def filter_today_log_entries(
+    entries: list[Any],
+    *,
+    max_items: int | None = None,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    today = current_cn_date_key(now)
     rows = [
         item for item in (entries or [])
         if isinstance(item, dict) and str(item.get("time") or "").startswith(today)
@@ -834,6 +867,7 @@ def filter_today_log_entries(entries: list[Any], *, max_items: int | None = None
 def get_practice_payload_fast() -> dict[str, Any]:
     """Return a local portfolio snapshot without network quote refresh or auto trading checks."""
     try:
+        now = current_cn_datetime()
         trader = get_trader_module()
         state = trader.load_state()
         payload = trader.enrich_portfolio(state)
@@ -842,11 +876,11 @@ def get_practice_payload_fast() -> dict[str, Any]:
         # Keep the same intraday point density as the full payload. Otherwise the
         # chart first renders a downsampled fast response, then visibly jumps when
         # the full response arrives a few seconds later.
-        payload["equity_history"] = compact_intraday_equity_history(equity_history, max_points=0)
-        payload["daily_equity_history"] = compact_daily_equity_history([*equity_history, *daily_equity_history])
-        payload["trade_log"] = filter_today_log_entries(payload.get("trade_log") or [])
-        payload["decision_log"] = filter_today_log_entries(payload.get("decision_log") or [])
-        payload["trading_calendar"] = trading_day_status()
+        payload["equity_history"] = compact_intraday_equity_history(equity_history, max_points=0, now=now)
+        payload["daily_equity_history"] = compact_daily_equity_history([*equity_history, *daily_equity_history], now=now)
+        payload["trade_log"] = filter_today_log_entries(payload.get("trade_log") or [], now=now)
+        payload["decision_log"] = filter_today_log_entries(payload.get("decision_log") or [], now=now)
+        payload["trading_calendar"] = dashboard_trading_day_status(now)
         payload["trading_paused"] = state.get("trading_paused", False)
         payload["pause_reason"] = state.get("pause_reason", "")
         payload["pause_since"] = state.get("pause_since", "")
@@ -855,12 +889,14 @@ def get_practice_payload_fast() -> dict[str, Any]:
         if hasattr(trader, "build_trade_rule_note"):
             payload["trade_rule_note"] = trader.build_trade_rule_note()
         payload["snapshot_mode"] = "fast"
+        annotate_practice_payload_clock(payload, now=now)
         return payload
     except Exception as exc:
         print(f"[WARN] fast practice payload error: {type(exc).__name__}: {exc}", flush=True)
-        return {"positions": [], "cash": 0, "total_equity": 0, "initial_cash": 0,
-                "total_pnl": 0, "total_pnl_pct": 0, "trade_log": [], "decision_log": [],
-                "equity_history": [], "last_error": str(exc), "snapshot_mode": "fast"}
+        payload = {"positions": [], "cash": 0, "total_equity": 0, "initial_cash": 0,
+                   "total_pnl": 0, "total_pnl_pct": 0, "trade_log": [], "decision_log": [],
+                   "equity_history": [], "last_error": str(exc), "snapshot_mode": "fast"}
+        return annotate_practice_payload_clock(payload)
 
 def normalize_b1_payload_for_trader(b1_payload: dict[str, Any]) -> dict[str, Any]:
     items = b1_payload.get("trade_items") or b1_payload.get("items") or b1_payload.get("candidates") or []
@@ -4108,6 +4144,25 @@ function compactPracticeDailyPoints(points) {
   }
   return [...byDate.values()].sort((a, b) => (new Date(a.time).getTime() || 0) - (new Date(b.time).getTime() || 0));
 }
+function currentDateKey(date=new Date()) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(date);
+    const get = type => (parts.find(part => part.type === type) || {}).value || '';
+    const year = get('year'), month = get('month'), day = get('day');
+    if (year && month && day) return `${year}-${month}-${day}`;
+  } catch (err) {}
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+function practicePayloadDateKey() {
+  const p = niuniuPracticeData || {};
+  const tradingCalendar = p.trading_calendar || {};
+  return String(p.current_date || tradingCalendar.date || currentDateKey()).slice(0, 10);
+}
 function buildPracticeCalendarRows(history, dailyHistory, initialCash=1000000) {
   const normalizedHistory = normalizePracticeEquityPoints(history);
   const normalizedDailyHistory = normalizePracticeEquityPoints(dailyHistory);
@@ -4137,6 +4192,9 @@ function renderPracticeCurve(history, dailyHistory, initialCash=1000000, benchma
   const isDailyMode = practiceCurveMode === 'daily';
   const normalizedHistory = normalizePracticeEquityPoints(history);
   const normalizedDailyHistory = normalizePracticeEquityPoints(dailyHistory);
+  const tradingCalendar = (niuniuPracticeData && niuniuPracticeData.trading_calendar) || {};
+  const isNonTradingCalendarDay = tradingCalendar.is_trading_day === false;
+  const targetDate = practicePayloadDateKey();
   let rawPoints = [];
   let dailyCompactedPoints = [];
   let intradayBasePoint = null;
@@ -4160,10 +4218,9 @@ function renderPracticeCurve(history, dailyHistory, initialCash=1000000, benchma
   }
   rawPoints = [...rawPoints].sort((a, b) => (new Date(a.time).getTime() || 0) - (new Date(b.time).getTime() || 0));
   if (rawPoints.length < 2) return '<div class="empty" style="padding:18px">收益曲线等待更多净值点…</div>';
-  const tradingCalendar = (niuniuPracticeData && niuniuPracticeData.trading_calendar) || {};
-  const isNonTradingCalendarDay = tradingCalendar.is_trading_day === false;
   const latestTradingClockPoint = rawPoints.filter(p => tradingClockMinuteOfDay(p.time) != null).at(-1);
-  const latestDay = (latestTradingClockPoint || rawPoints[rawPoints.length - 1]).time.slice(0, 10);
+  const latestDataDay = (latestTradingClockPoint || rawPoints[rawPoints.length - 1]).time.slice(0, 10);
+  const latestDay = !isDailyMode && !isNonTradingCalendarDay && targetDate ? targetDate : latestDataDay;
   if (!isDailyMode) {
     const priorByDate = new Map();
     for (const p of [...compactPracticeDailyPoints(normalizedHistory), ...compactPracticeDailyPoints(normalizedDailyHistory)]) {
@@ -4187,7 +4244,7 @@ function renderPracticeCurve(history, dailyHistory, initialCash=1000000, benchma
   
   if (isDailyMode) {
     points = dailyCompactedPoints;
-    if (points.length < 2) return '<div class="empty" style="padding:18px">每日总收益等待更多交易日净值点…</div>';
+    if (points.length < 2) return '<div class="empty" style="padding:18px">累计收益等待更多交易日净值点…</div>';
     // 横轴按日期
     const totalDays = points.length;
     xFromTime = time => {
@@ -4213,10 +4270,40 @@ function renderPracticeCurve(history, dailyHistory, initialCash=1000000, benchma
       }
     }
   } else {
-    points = rawPoints.filter(p => p.time.slice(0, 10) === latestDay);
-    const sessionPoints = points.filter(p => tradingClockMinuteOfDay(p.time) != null);
-    if (sessionPoints.length >= 2) points = sessionPoints;
-    if (points.length < 2) points = rawPoints.slice(-180);
+    const dayPoints = rawPoints.filter(p => p.time.slice(0, 10) === latestDay);
+    const sessionPoints = dayPoints.filter(p => tradingClockMinuteOfDay(p.time) != null);
+    if (sessionPoints.length >= 2) {
+      points = sessionPoints;
+    } else if (isNonTradingCalendarDay && dayPoints.length >= 2) {
+      points = dayPoints;
+    } else {
+      points = [];
+    }
+    if (points.length < 2) {
+      const modeButtons = `<div class="practice-mode-control" aria-label="收益曲线模式">
+        <button class="practice-mode-btn active" type="button" onclick="setPracticeCurveMode('intraday')">当日收益</button>
+        <button class="practice-mode-btn" type="button" onclick="setPracticeCurveMode('daily')">累计收益</button>
+      </div>`;
+      const calendarButton = `<button class="practice-calendar-open-btn" type="button" onclick="openPracticeCalendar(event)">交易日历</button>`;
+      const latestHint = latestDataDay && latestDataDay !== latestDay ? ` · 最近已有分时点 ${esc(latestDataDay)}` : '';
+      const emptyTitle = isNonTradingCalendarDay && latestDay ? `今日收益曲线（${esc(latestDay)}）` : '今日收益曲线';
+      const emptySub = isNonTradingCalendarDay
+        ? `非交易日展示最近交易日 · ${latestHint.replace(/^ · /, '') || '等待交易日'}`
+        : `北京时间 ${esc(latestDay || targetDate || '--')} · 等待今日盘中净值点${latestHint}`;
+      return `<div class="practice-chart-card">
+        <div class="practice-chart-head">
+          <div>
+            <div class="practice-chart-title-row">
+              <div class="practice-chart-title">${emptyTitle}</div>
+              ${modeButtons}
+              ${calendarButton}
+            </div>
+            <div class="practice-chart-sub">${emptySub}</div>
+          </div>
+        </div>
+        <div class="empty" style="padding:18px">今日收益曲线等待北京时间 ${esc(latestDay || targetDate || '--')} 的盘中净值点…</div>
+      </div>`;
+    }
     
     // 按时间排序并去重
     points = [...points].sort((a,b) => (new Date(a.time).getTime() || 0) - (new Date(b.time).getTime() || 0));
@@ -4327,7 +4414,7 @@ function renderPracticeCurve(history, dailyHistory, initialCash=1000000, benchma
     const cls = idx === 0 ? 'start' : (idx === timeTicks.length - 1 ? 'end' : 'mid');
     return `<span class="practice-time-label ${cls}" style="left:${((t.x / w) * 100).toFixed(2)}%">${esc(t.label)}</span>`;
   }).join('');
-  const chartTitle = isDailyMode ? '收益曲线 · 每日总收益' : `今日收益曲线${isNonTradingCalendarDay && latestDay ? `（${esc(latestDay)}）` : ''}`;
+  const chartTitle = isDailyMode ? '收益曲线 · 累计收益' : `今日收益曲线${isNonTradingCalendarDay && latestDay ? `（${esc(latestDay)}）` : ''}`;
   const intradayBaseLabel = intradayBasePoint
     ? `0轴为上一交易日净值(${esc(String(intradayBasePoint.time || '').slice(5, 16))})`
     : '0轴为今日首个净值';
@@ -4341,7 +4428,7 @@ function renderPracticeCurve(history, dailyHistory, initialCash=1000000, benchma
   const secondaryKpiCls = secondaryKpiPnl >= 0 ? 'up' : 'down';
   const modeButtons = `<div class="practice-mode-control" aria-label="收益曲线模式">
     <button class="practice-mode-btn ${!isDailyMode ? 'active' : ''}" type="button" onclick="setPracticeCurveMode('intraday')">当日收益</button>
-    <button class="practice-mode-btn ${isDailyMode ? 'active' : ''}" type="button" onclick="setPracticeCurveMode('daily')">每日总收益</button>
+    <button class="practice-mode-btn ${isDailyMode ? 'active' : ''}" type="button" onclick="setPracticeCurveMode('daily')">累计收益</button>
   </div>`;
   const calendarButton = `<button class="practice-calendar-open-btn" type="button" onclick="openPracticeCalendar(event)">交易日历</button>`;
   return `<div class="practice-chart-card">
@@ -4401,7 +4488,7 @@ function monthKeyFromDate(value) {
   return text.length >= 7 ? text.slice(0, 7) : '';
 }
 function localDateKey(date=new Date()) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  return currentDateKey(date);
 }
 function shiftMonthKey(monthKey, delta) {
   const m = String(monthKey || '').match(/^(\d{4})-(\d{2})$/);

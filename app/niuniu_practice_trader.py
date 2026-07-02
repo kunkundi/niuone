@@ -5010,14 +5010,15 @@ def build_trade_rule_note() -> str:
 
 def get_dashboard_payload() -> dict[str, Any]:
     state = load_state()
-    prune_future_intraday_equity_points(state)
+    now = datetime.now()
+    prune_future_intraday_equity_points(state, now=now)
     # 看板读取必须是无交易副作用的：只刷新行情/指标和权益曲线。
     # 自动止盈止损只能由明确的交易调度流程触发，避免页面刷新造成非预定成交。
     refresh_realtime_prices(state)
     refresh_position_intraday(state)
     _refresh_position_bbi(state)
     refresh_today_sold_stocks(state)
-    if not rebuild_intraday_equity_curve(state):
+    if not rebuild_intraday_equity_curve(state, now=now) and is_a_share_session_clock(now):
         record_equity(state)
     _sync_positions_to_db(state)
     save_state(state)
