@@ -2570,7 +2570,8 @@ INDEX_HTML = r"""<!doctype html>
     .header-row { display:flex; align-items:center; justify-content:space-between; gap:14px; }
     .header-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
     h1 { margin:0; font-size: clamp(26px, 4vw, 42px); letter-spacing:-.04em; }
-    .settings-link, .refresh-pill, .visit-pill { display:inline-flex; align-items:baseline; gap:8px; flex:0 0 auto; border:1px solid rgba(148,163,184,.16); background:rgba(15,23,42,.58); border-radius:999px; padding:7px 11px; color:#cbd5e1; box-shadow:inset 0 1px 0 rgba(255,255,255,.035); }
+    .settings-link, .header-text, .refresh-pill, .visit-pill { display:inline-flex; align-items:baseline; gap:8px; flex:0 0 auto; border:1px solid rgba(148,163,184,.16); background:rgba(15,23,42,.58); border-radius:999px; padding:7px 11px; color:#cbd5e1; box-shadow:inset 0 1px 0 rgba(255,255,255,.035); }
+    .header-text { align-items:center; font-size:13px; font-weight:850; }
     .settings-link { align-items:center; text-decoration:none; color:#e5edf8; font-size:13px; font-weight:850; border-color:rgba(124,92,255,.30); background:rgba(124,92,255,.14); transition:.16s ease; }
     .settings-link:hover { border-color:rgba(157,178,255,.62); background:rgba(124,92,255,.22); transform:translateY(-1px); }
     .settings-link:focus-visible { outline:2px solid rgba(157,178,255,.86); outline-offset:2px; }
@@ -2917,8 +2918,8 @@ INDEX_HTML = r"""<!doctype html>
       .header-row { gap:8px; }
       .header-actions { gap:5px; }
       h1 { font-size:18px; line-height:1.06; letter-spacing:-.02em; }
-      .settings-link, .refresh-pill, .visit-pill { padding:5px 7px; gap:5px; }
-      .settings-link { font-size:12px; }
+      .settings-link, .header-text, .refresh-pill, .visit-pill { padding:5px 7px; gap:5px; }
+      .settings-link, .header-text { font-size:12px; }
       .refresh-pill span, .visit-pill span { display:none; }
       .refresh-pill b, .visit-pill b { font-size:11px; }
       .subtitle { display:none; }
@@ -3167,7 +3168,7 @@ INDEX_HTML = r"""<!doctype html>
   <div class="header-row">
     <h1>牛牛大作手</h1>
     <div class="header-actions">
-      <a class="settings-link" href="https://github.com/kunkundi/niuone" target="_blank" rel="noopener" title="开源仓库" aria-label="开源仓库">GitHub</a>
+      <span class="header-text" title="开源仓库">GitHub</span>
       <a class="settings-link" href="/admin" title="进入设置页" aria-label="进入设置页">设置</a>
       <div class="visit-pill" title="累计首页访问人次"><span>访问人次</span><b id="visitCount">__VISIT_COUNT__</b></div>
       <div class="visit-pill" title="按浏览器匿名 Cookie 统计的唯一访客数"><span>访客数</span><b id="uniqueVisitCount">__UNIQUE_VISIT_COUNT__</b></div>
