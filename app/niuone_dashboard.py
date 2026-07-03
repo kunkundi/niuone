@@ -2974,6 +2974,19 @@ INDEX_HTML = r"""<!doctype html>
     .practice-time-label.end { transform:translateX(-100%); }
     .practice-current-marker { position:absolute; width:10px; height:10px; border-radius:999px; background:#f7f8f8; border:2px solid var(--marker-color, #39d98a); box-shadow:0 0 0 4px rgba(255,255,255,.06), 0 0 18px var(--marker-glow, rgba(57,217,138,.55)); transform:translate(-50%,-50%); pointer-events:none; }
     .practice-current-line { position:absolute; top:16px; bottom:38px; width:1px; background:linear-gradient(to bottom, transparent, rgba(255,255,255,.28), transparent); transform:translateX(-50%); pointer-events:none; }
+    .practice-chart-hover-layer { position:absolute; inset:0; z-index:5; cursor:crosshair; touch-action:none; user-select:none; -webkit-user-select:none; }
+    .practice-hover-line { position:absolute; top:16px; bottom:38px; left:var(--hover-x-pct, 50%); width:1px; background:linear-gradient(to bottom, transparent, rgba(226,232,240,.56), transparent); transform:translateX(-50%); opacity:0; transition:opacity .10s ease; pointer-events:none; }
+    .practice-hover-marker { position:absolute; left:var(--hover-x-pct, 50%); top:var(--hover-y-pct, 50%); width:9px; height:9px; border-radius:999px; background:#f8fafc; border:2px solid var(--marker-color, #39d98a); box-shadow:0 0 0 4px rgba(255,255,255,.07), 0 0 18px var(--marker-glow, rgba(57,217,138,.45)); transform:translate(-50%,-50%); opacity:0; transition:opacity .10s ease; pointer-events:none; }
+    .practice-hover-tooltip { position:absolute; left:var(--hover-x-pct, 50%); top:var(--hover-y-pct, 50%); z-index:2; min-width:168px; max-width:min(230px, calc(100% - 20px)); display:grid; gap:5px; padding:8px 9px; border:1px solid rgba(203,213,225,.20); border-radius:10px; background:rgba(10,15,24,.95); box-shadow:0 16px 42px rgba(0,0,0,.40), inset 0 1px 0 rgba(255,255,255,.07); color:#dbeafe; font-size:11px; line-height:1.25; font-variant-numeric:tabular-nums; transform:translate(12px, calc(-100% - 12px)); opacity:0; transition:opacity .10s ease, transform .10s ease; pointer-events:none; backdrop-filter:blur(10px); }
+    .practice-chart-hover-layer.place-left .practice-hover-tooltip { transform:translate(calc(-100% - 12px), calc(-100% - 12px)); }
+    .practice-chart-hover-layer.place-bottom .practice-hover-tooltip { transform:translate(12px, 12px); }
+    .practice-chart-hover-layer.place-left.place-bottom .practice-hover-tooltip { transform:translate(calc(-100% - 12px), 12px); }
+    .practice-hover-tooltip-time { color:#f8fafc; font-weight:900; white-space:nowrap; }
+    .practice-hover-tooltip-row { display:flex; align-items:baseline; justify-content:space-between; gap:12px; min-width:0; color:#8da0b8; white-space:nowrap; }
+    .practice-hover-tooltip-row strong { color:#e5edf8; font-weight:900; }
+    .practice-hover-tooltip-row strong.up { color:#ff4d4f; }
+    .practice-hover-tooltip-row strong.down { color:#39d98a; }
+    .practice-chart-hover-layer.active .practice-hover-line, .practice-chart-hover-layer.active .practice-hover-marker, .practice-chart-hover-layer.active .practice-hover-tooltip { opacity:1; }
     .benchmark-toggle-row { display:flex; gap:7px; flex-wrap:wrap; margin-top:8px; }
     .benchmark-toggle { cursor:pointer; user-select:none; border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.035); color:#8a8f98; border-radius:999px; padding:4px 8px; font-size:11px; font-weight:800; display:inline-flex; align-items:center; gap:5px; }
     .benchmark-toggle.on { color:#f7f8f8; background:rgba(255,255,255,.07); }
@@ -3222,11 +3235,13 @@ INDEX_HTML = r"""<!doctype html>
       .practice-chart-title-row { width:100%; justify-content:space-between; }
       .practice-chart-kpis { justify-content:stretch; width:100%; }
       .practice-kpi { flex:1; min-width:0; text-align:left; padding:6px 7px; }
+      .practice-hover-tooltip { min-width:156px; max-width:min(220px, calc(100% - 16px)); padding:7px 8px; font-size:10.5px; }
+      .practice-hover-tooltip-row { gap:9px; }
       .practice-chart-wrap { height:142px; }
       .practice-time-label { font-size:10px; bottom:2px; }
       .practice-axis-label.bot { bottom:29px; }
       .practice-zero-axis-label { font-size:9.5px; }
-      .practice-current-line { bottom:34px; }
+      .practice-current-line, .practice-hover-line { bottom:34px; }
       .practice-curve { height:60px !important; }
       .position-metrics { grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px 10px; }
       .position-brief-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); gap:7px; }
@@ -3425,6 +3440,14 @@ const fmtAmount = v => {
   const n = Number(v);
   if (!Number.isFinite(n)) return '--';
   return Math.abs(n) >= 10000 ? (n/10000).toFixed(2) + '万' : n.toFixed(2);
+};
+const fmtSignedAmount = v => {
+  const n = Number(v);
+  return Number.isFinite(n) ? `${n >= 0 ? '+' : ''}${fmtAmount(n)}` : '--';
+};
+const fmtSignedPct = (v, d=2) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? `${n >= 0 ? '+' : ''}${fmtNumber(n, d)}%` : '--';
 };
 const fmtDurationSeconds = s => {
   const n = Number(s);
@@ -4146,6 +4169,78 @@ function setPracticePositionBriefMode(enabled) {
   if (activeCategory === 'b1_screen') render();
   saveViewState();
 }
+function renderPracticeHoverTooltip(item) {
+  if (!item) return '';
+  const rows = (item.rows || []).map(row => {
+    const cls = row.cls ? ` class="${esc(row.cls)}"` : '';
+    return `<span class="practice-hover-tooltip-row"><span>${esc(row.label)}</span><strong${cls}>${esc(row.value)}</strong></span>`;
+  }).join('');
+  return `<span class="practice-hover-tooltip-time">${esc(item.timeText || '--')}</span>${rows}`;
+}
+function practiceHoverLayerPoints(layer) {
+  if (!layer) return [];
+  if (Array.isArray(layer._practiceHoverPoints)) return layer._practiceHoverPoints;
+  try {
+    layer._practiceHoverPoints = JSON.parse(layer.dataset.practiceHoverPoints || '[]');
+  } catch (err) {
+    layer._practiceHoverPoints = [];
+  }
+  return layer._practiceHoverPoints;
+}
+function setPracticeHoverPoint(layer, point) {
+  if (!layer || !point) return;
+  layer.classList.add('active');
+  layer.classList.toggle('place-left', Number(point.xPct || 0) > 66);
+  layer.classList.toggle('place-bottom', Number(point.yPct || 0) < 34);
+  layer.style.setProperty('--hover-x-pct', `${Number(point.xPct || 0).toFixed(2)}%`);
+  layer.style.setProperty('--hover-y-pct', `${Number(point.yPct || 0).toFixed(2)}%`);
+  if (point.ariaLabel) layer.setAttribute('aria-label', point.ariaLabel);
+  const tooltip = layer.querySelector('.practice-hover-tooltip');
+  if (tooltip) tooltip.innerHTML = renderPracticeHoverTooltip(point);
+}
+function practiceHoverNearestPoint(layer, clientX) {
+  const points = practiceHoverLayerPoints(layer);
+  if (!points.length) return null;
+  const rect = layer.getBoundingClientRect();
+  const xPct = rect.width > 0 ? clamp01((clientX - rect.left) / rect.width) * 100 : 0;
+  let nearest = points[0];
+  let bestDistance = Math.abs(Number(nearest.xPct || 0) - xPct);
+  for (const point of points.slice(1)) {
+    const distance = Math.abs(Number(point.xPct || 0) - xPct);
+    if (distance < bestDistance) {
+      nearest = point;
+      bestDistance = distance;
+    }
+  }
+  return nearest;
+}
+function practiceHoverMove(event, layer) {
+  if (!layer) return;
+  layer.dataset.practicePointerType = event.pointerType || 'mouse';
+  if (event.type === 'pointerdown') {
+    layer.dataset.practicePointerDown = '1';
+    if (layer.setPointerCapture && event.pointerId != null) {
+      try { layer.setPointerCapture(event.pointerId); } catch (err) {}
+    }
+  }
+  const point = practiceHoverNearestPoint(layer, event.clientX);
+  setPracticeHoverPoint(layer, point);
+  if (event.cancelable && (event.pointerType === 'touch' || layer.dataset.practicePointerDown === '1')) {
+    event.preventDefault();
+  }
+}
+function practiceHoverRelease(event, layer) {
+  if (!layer) return;
+  layer.dataset.practicePointerDown = '0';
+  if (layer.releasePointerCapture && event.pointerId != null) {
+    try { layer.releasePointerCapture(event.pointerId); } catch (err) {}
+  }
+}
+function practiceHoverLeave(layer) {
+  if (!layer) return;
+  if (layer.dataset.practicePointerDown === '1' || layer.dataset.practicePointerType === 'touch') return;
+  layer.classList.remove('active');
+}
 function straightSvgPath(points) {
   if (!Array.isArray(points) || points.length === 0) return '';
   return points.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' ');
@@ -4458,7 +4553,8 @@ function renderPracticeCurve(history, dailyHistory, initialCash=1000000, benchma
   const span = (yMaxPct - yMinPct) || 1;
   const y = pct => top + (yMaxPct - pct) / span * innerH;
   const clampPct = pct => Math.max(yMinPct, Math.min(yMaxPct, pct));
-  const pts = points.map((p, i) => [xFromTime(p.time), y(chartPcts[i])]);
+  const plottedPts = points.map((p, i) => [xFromTime(p.time), y(chartPcts[i])]);
+  const pts = plottedPts.slice();
   
   // 增加一条：如果是从盘中途才开始有数据的（比如从14:30开始），为了不让前面全是空的，
   // 我们往最左边（09:30，x=left）补充一个与第一点 Y 值一样的起始点，把曲线拉平过去。
@@ -4508,6 +4604,65 @@ function renderPracticeCurve(history, dailyHistory, initialCash=1000000, benchma
     const cls = idx === 0 ? 'start' : (idx === timeTicks.length - 1 ? 'end' : 'mid');
     return `<span class="practice-time-label ${cls}" style="left:${((t.x / w) * 100).toFixed(2)}%">${esc(t.label)}</span>`;
   }).join('');
+  const hoverSourcePoints = points.map((p, i) => {
+    const equity = Number(p.equity);
+    const previousEquity = i > 0 ? Number(points[i - 1].equity) : Number(initialCash);
+    const dayDeltaForPoint = Number.isFinite(equity) && Number.isFinite(previousEquity) ? equity - previousEquity : 0;
+    const dayPctForPoint = previousEquity ? (equity / previousEquity - 1) * 100 : 0;
+    return {
+      time: String(p.time || ''),
+      equity,
+      x: plottedPts[i]?.[0] ?? xFromTime(p.time),
+      y: plottedPts[i]?.[1] ?? y(chartPcts[i] || 0),
+      delta: Number(chartDeltas[i] || 0),
+      pct: Number(chartPcts[i] || 0),
+      dayDelta: dayDeltaForPoint,
+      dayPct: dayPctForPoint,
+    };
+  }).filter(point => point.time && Number.isFinite(point.equity) && Number.isFinite(point.x) && Number.isFinite(point.y));
+  const hoverPoints = [];
+  for (const point of hoverSourcePoints) {
+    const lastHoverPoint = hoverPoints[hoverPoints.length - 1];
+    if (lastHoverPoint && Math.abs(lastHoverPoint.x - point.x) < 0.5) {
+      hoverPoints[hoverPoints.length - 1] = point;
+    } else {
+      hoverPoints.push(point);
+    }
+  }
+  const hoverValueCls = value => Number(value) >= 0 ? 'up' : 'down';
+  const hoverItems = hoverPoints.map(point => {
+    const xPct = Math.max(0, Math.min(100, point.x / w * 100));
+    const yPct = Math.max(0, Math.min(100, point.y / h * 100));
+    const timeText = isDailyMode ? point.time.slice(0, 10) : point.time.slice(5, 16);
+    const amountText = fmtSignedAmount(point.delta);
+    const pctText = fmtSignedPct(point.pct);
+    const dayAmountText = fmtSignedAmount(point.dayDelta);
+    const dayPctText = fmtSignedPct(point.dayPct);
+    const titleText = isDailyMode
+      ? `${timeText} 累计金额 ${amountText}，累计收益率 ${pctText}，当日金额 ${dayAmountText}，当日收益率 ${dayPctText}`
+      : `${timeText} 收益金额 ${amountText}，收益率 ${pctText}，账户净值 ${fmtAmount(point.equity)}`;
+    const rows = isDailyMode
+      ? [
+        {label:'累计金额', value:amountText, cls:hoverValueCls(point.delta)},
+        {label:'累计收益率', value:pctText, cls:hoverValueCls(point.delta)},
+        {label:'当日金额', value:dayAmountText, cls:hoverValueCls(point.dayDelta)},
+        {label:'当日收益率', value:dayPctText, cls:hoverValueCls(point.dayDelta)},
+      ]
+      : [
+        {label:'收益金额', value:amountText, cls:hoverValueCls(point.delta)},
+        {label:'收益率', value:pctText, cls:hoverValueCls(point.delta)},
+        {label:'账户净值', value:fmtAmount(point.equity), cls:''},
+      ];
+    return {xPct, yPct, timeText, ariaLabel:titleText, rows};
+  });
+  const defaultHoverItem = hoverItems[hoverItems.length - 1] || null;
+  const hoverLayerHtml = defaultHoverItem
+    ? `<span class="practice-chart-hover-layer" data-practice-hover-points="${esc(JSON.stringify(hoverItems))}" style="--hover-x-pct:${defaultHoverItem.xPct.toFixed(2)}%;--hover-y-pct:${defaultHoverItem.yPct.toFixed(2)}%;--marker-color:${markerColor};--marker-glow:${markerGlow}" aria-label="${esc(defaultHoverItem.ariaLabel)}" onpointerenter="practiceHoverMove(event, this)" onpointermove="practiceHoverMove(event, this)" onpointerdown="practiceHoverMove(event, this)" onpointerup="practiceHoverRelease(event, this)" onpointercancel="practiceHoverRelease(event, this)" onpointerleave="practiceHoverLeave(this)">
+      <span class="practice-hover-line"></span>
+      <span class="practice-hover-marker"></span>
+      <span class="practice-hover-tooltip">${renderPracticeHoverTooltip(defaultHoverItem)}</span>
+    </span>`
+    : '';
   const chartTitle = isDailyMode ? '收益曲线 · 累计收益' : `今日收益曲线${isNonTradingCalendarDay && latestDay ? `（${esc(latestDay)}）` : ''}`;
   const intradayBaseLabel = intradayBasePoint
     ? `0轴为上一交易日净值(${esc(String(intradayBasePoint.time || '').slice(5, 16))})`
@@ -4564,6 +4719,7 @@ function renderPracticeCurve(history, dailyHistory, initialCash=1000000, benchma
       </svg>
       <span class="practice-current-line" style="left:${markerLeftPct.toFixed(2)}%"></span>
       <span class="practice-current-marker" style="left:${markerLeftPct.toFixed(2)}%;top:${markerTopPct.toFixed(2)}%;--marker-color:${markerColor};--marker-glow:${markerGlow}" title="当前 ${fmtAmount(last)}"></span>
+      ${hoverLayerHtml}
       ${timeTickHtml}
     </div>
   </div>`;
