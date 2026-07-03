@@ -4239,13 +4239,7 @@ def format_preset_strategy_section(source: str, preset_text: str) -> str:
 4. 返回JSON的summary和reason里简短体现预设文字策略的核心规则。"""
 
 
-def call_model_decision(
-    candidates: list[dict[str, Any]],
-    portfolio: dict[str, Any],
-    trade_allowed: bool,
-    trade_reason: str,
-    market_strategy_ctx: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+def load_decision_model_config() -> tuple[str, str]:
     # Provider selection: most models use the configured OpenAI-compatible endpoint;
     # this legacy alias keeps the OpenCode Zen free-model path working.
     if MODEL == "deepseek-v4-flash-free":
@@ -4259,6 +4253,17 @@ def call_model_decision(
     else:
         # 使用 Crossdesk
         base_url, api_key = load_crossdesk_config("DASHBOARD_DECISION_BASE_URL", "DASHBOARD_DECISION_API_KEY")
+    return base_url, api_key
+
+
+def call_model_decision(
+    candidates: list[dict[str, Any]],
+    portfolio: dict[str, Any],
+    trade_allowed: bool,
+    trade_reason: str,
+    market_strategy_ctx: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    base_url, api_key = load_decision_model_config()
     market_env = check_market_environment()
     market_sent = check_market_sentiment()
     market_strategy_ctx = market_strategy_ctx or current_market_strategy_context()
@@ -4432,6 +4437,196 @@ Z哥卖出风控（属于Z哥体系）：
     result["market_guidance"] = compact_market_strategy_context(market_strategy_ctx)
     result["decision_intelligence"] = decision_intelligence_ctx
     return result
+
+
+def executable_buy_actions(decision: dict[str, Any], state: dict[str, Any]) -> list[dict[str, Any]]:
+    positions = state.get("positions") or {}
+    buys = []
+    for action in decision.get("actions") or []:
+        act = str(action.get("action") or "HOLD").upper()
+        code = normalize_code(action.get("code") or "")
+        if act != "BUY" or not code:
+            continue
+        if position_qty(positions.get(code) or {}) > 0:
+            continue
+        shares = parse_model_action_shares(action)
+        if shares is None or shares <= 0 or shares % 100 != 0:
+            continue
+        buys.append(action)
+    return buys
+
+
+def _action_code_set(actions: list[dict[str, Any]]) -> set[str]:
+    return {normalize_code(action.get("code") or "") for action in actions if normalize_code(action.get("code") or "")}
+
+
+def _candidate_digest_for_codes(candidates: list[dict[str, Any]], codes: set[str]) -> list[dict[str, Any]]:
+    by_code = {normalize_code(c.get("code") or ""): c for c in candidates if isinstance(c, dict)}
+    rows = []
+    for code in codes:
+        c = by_code.get(code) or {}
+        rows.append({
+            "code": code,
+            "name": c.get("name"),
+            "price": c.get("price"),
+            "best_strategy": c.get("best_strategy"),
+            "best_score": c.get("best_score"),
+            "entry_threshold": c.get("entry_threshold"),
+            "score_basis": c.get("score_basis"),
+            "position_hint": c.get("position_hint"),
+            "time_stop": c.get("time_stop"),
+            "distance_pct": c.get("distance_pct"),
+            "risk_flags": c.get("risk_flags") or [],
+            "hard_blockers": c.get("hard_blockers") or [],
+            "consensus_count": c.get("consensus_count"),
+        })
+    return rows
+
+
+def _fallback_refine_overlimit_buys(
+    decision: dict[str, Any],
+    buy_actions: list[dict[str, Any]],
+    max_new_buys: int,
+    reason: str,
+    candidates: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    cand_by_code = {normalize_code(c.get("code") or ""): c for c in (candidates or []) if isinstance(c, dict)}
+
+    def fallback_rank(action: dict[str, Any]) -> tuple[float, int, float]:
+        code = normalize_code(action.get("code") or "")
+        c = cand_by_code.get(code) or {}
+        score = _safe_float(c.get("best_score", c.get("score", 0)), 0.0)
+        risk_count = len(c.get("risk_flags") or [])
+        dist = abs(_safe_float(c.get("distance_pct", c.get("dist_bbi_pct", 99)), 99.0))
+        return (-score, risk_count, dist)
+
+    ranked_actions = sorted(buy_actions, key=fallback_rank)
+    kept_codes = _action_code_set(ranked_actions[:max(0, max_new_buys)])
+    dropped = []
+    for action in decision.get("actions") or []:
+        code = normalize_code(action.get("code") or "")
+        if str(action.get("action") or "").upper() == "BUY" and code and code not in kept_codes:
+            action["action"] = "HOLD"
+            action["reason"] = f"二次取舍降级为HOLD：{reason}"
+            dropped.append({
+                "code": code,
+                "name": action.get("name") or "",
+                "reason": reason,
+            })
+    refinement = {
+        "status": "fallback",
+        "max_new_buys": max_new_buys,
+        "kept_codes": sorted(kept_codes),
+        "dropped": dropped,
+        "reason": reason,
+    }
+    decision["buy_refinement"] = refinement
+    if dropped:
+        decision["summary"] = f"{decision.get('summary') or '模型决策'}；二次取舍保留{len(kept_codes)}笔，放弃{len(dropped)}笔"
+    return refinement
+
+
+def refine_overlimit_buy_actions(
+    decision: dict[str, Any],
+    state: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    portfolio: dict[str, Any],
+    market_strategy_ctx: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    market_strategy_ctx = market_strategy_ctx or current_market_strategy_context()
+    max_new_buys = max(0, int(market_strategy_ctx.get("max_new_buys_per_decision", MAX_NEW_BUYS_PER_DECISION)))
+    buy_actions = executable_buy_actions(decision, state)
+    if max_new_buys <= 0:
+        if buy_actions:
+            return _fallback_refine_overlimit_buys(decision, buy_actions, 0, "本轮盘面指引不允许新开仓", candidates)
+        return None
+    if len(buy_actions) <= max_new_buys:
+        return None
+
+    original_actions = _json_safe_copy(decision.get("actions") or [])
+    buy_codes = _action_code_set(buy_actions)
+    prompt = f"""你是A股模拟账户交易决策器的二次风控审稿人。
+上一轮模型给出的新开仓BUY数量超过本轮盘面上限，必须重新思考取舍。
+
+本轮最多允许新开仓：{max_new_buys}笔
+盘面动态约束：
+{json.dumps(compact_market_strategy_context(market_strategy_ctx), ensure_ascii=False)}
+
+当前账户摘要：
+{json.dumps(compact_portfolio_for_decision(portfolio), ensure_ascii=False)}
+
+原始模型决策：
+{json.dumps({"summary": decision.get("summary"), "actions": original_actions}, ensure_ascii=False)}
+
+候选BUY对应的战法与风险摘要：
+{json.dumps(_candidate_digest_for_codes(candidates, buy_codes), ensure_ascii=False)}
+
+请只在原始BUY动作中选择最多{max_new_buys}个保留，其余必须放弃；不要新增股票，不要修改SELL动作。
+选择优先级：确定性、盈亏比、距BBI/止损空间、板块资金共振、账户已有持仓集中度、盘面节奏。
+严格返回JSON，不要markdown：
+{{
+  "summary":"一句话说明取舍逻辑",
+  "keep_buy_codes":["600000"],
+  "drop_buys":[{{"code":"600001","reason":"放弃原因"}}]
+}}
+"""
+    try:
+        base_url, api_key = load_decision_model_config()
+        payload = {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "max_tokens": min(DECISION_MAX_TOKENS, 2500),
+        }
+        content = request_chat_content(base_url, api_key, payload, MODEL, max_retries=2, timeout=DECISION_REQUEST_TIMEOUT)
+        result = extract_json(content)
+        if not isinstance(result, dict):
+            raise RuntimeError("model did not return object")
+        requested_keep = [
+            normalize_code(code)
+            for code in (result.get("keep_buy_codes") or [])
+            if normalize_code(code) in buy_codes
+        ]
+        keep_codes = set(requested_keep[:max_new_buys])
+        if not keep_codes:
+            raise RuntimeError("model returned no valid keep_buy_codes")
+        drop_reason_by_code = {
+            normalize_code(item.get("code") or ""): str(item.get("reason") or "二次取舍放弃").strip()
+            for item in (result.get("drop_buys") or [])
+            if isinstance(item, dict)
+        }
+        dropped = []
+        for action in decision.get("actions") or []:
+            code = normalize_code(action.get("code") or "")
+            if str(action.get("action") or "").upper() == "BUY" and code in buy_codes and code not in keep_codes:
+                reason = drop_reason_by_code.get(code) or "超过本轮新开仓上限，二次思考后放弃"
+                action["action"] = "HOLD"
+                action["reason"] = f"二次取舍放弃：{reason}"
+                dropped.append({"code": code, "name": action.get("name") or "", "reason": reason})
+        refinement = {
+            "status": "model_refined",
+            "max_new_buys": max_new_buys,
+            "original_buy_count": len(buy_actions),
+            "kept_codes": sorted(keep_codes),
+            "dropped": dropped,
+            "summary": str(result.get("summary") or "").strip(),
+            "model": MODEL,
+            "provider": PROVIDER_DISPLAY_NAME,
+        }
+        decision["buy_refinement"] = refinement
+        decision["summary"] = (
+            f"{decision.get('summary') or '模型决策'}；二次取舍保留{len(keep_codes)}笔，"
+            f"放弃{len(dropped)}笔：{refinement['summary'] or '按盘面上限择优'}"
+        )
+        return refinement
+    except Exception as exc:
+        return _fallback_refine_overlimit_buys(
+            decision,
+            buy_actions,
+            max_new_buys,
+            f"二次取舍模型失败({type(exc).__name__}: {exc})，按候选评分/风险/距BBI兜底保留前{max_new_buys}笔",
+            candidates,
+        )
 
 
 def execute_actions(
@@ -4838,12 +5033,21 @@ def execute_due_pending_decisions(now: datetime | None = None) -> dict[str, Any]
             "schedule_slot": entry.get("schedule_slot") or "",
         }
         candidates = entry.get("candidates") or []
+        market_strategy_ctx = current_market_strategy_context()
+        refine_overlimit_buy_actions(
+            decision,
+            state,
+            candidates if isinstance(candidates, list) else [],
+            enrich_portfolio(state),
+            market_strategy_ctx,
+        )
         executed = execute_actions(
             state,
             decision,
             candidates if isinstance(candidates, list) else [],
             True,
             f"延迟成交触发：原计划{entry.get('schedule_slot') or '-'}，{trade_reason}",
+            market_strategy_ctx,
         )
         entry["status"] = "executed"
         entry["executed_at"] = now_ts()
@@ -4951,6 +5155,7 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
                 f"请正常生成买卖策略，系统会在{deferred_due_at[-8:-3]}开盘后复核并成交。"
             )
             decision = call_model_decision(candidates, portfolio, True, model_trade_reason, market_strategy_ctx)
+            refine_overlimit_buy_actions(decision, state, candidates, portfolio, market_strategy_ctx)
             execution_allowed, execution_reason = is_a_share_execution_time()
             if execution_allowed:
                 trade_allowed = True
@@ -4995,6 +5200,7 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
             executed = []
         else:
             decision = call_model_decision(candidates, portfolio, trade_allowed, trade_reason, market_strategy_ctx)
+            refine_overlimit_buy_actions(decision, state, candidates, portfolio, market_strategy_ctx)
             execution_allowed, execution_reason = is_a_share_execution_time()
             if not execution_allowed:
                 decision["decision_trade_reason"] = trade_reason

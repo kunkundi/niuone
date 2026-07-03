@@ -3508,6 +3508,18 @@ function practiceDecisionExecutionNote(entry, decisionTime) {
   const range = first === last ? first : `${first}-${last}`;
   return range && range !== String(decisionTime || '').slice(11, 19) ? `成交时间${range}` : '';
 }
+function practiceBuyRefinementText(decision) {
+  const refinement = decision.buy_refinement || {};
+  const dropped = Array.isArray(refinement.dropped) ? refinement.dropped : [];
+  const kept = Array.isArray(refinement.kept_codes) ? refinement.kept_codes : [];
+  if (!dropped.length && !kept.length) return '';
+  const keptText = kept.length ? `保留${kept.join('、')}` : '未保留新仓';
+  const droppedText = dropped.length
+    ? `放弃${dropped.map(item => [item.code, item.name].filter(Boolean).join(' ')).filter(Boolean).join('、')}`
+    : '';
+  const summary = compactText(refinement.summary || refinement.reason || '', 90);
+  return ['二次取舍', keptText, droppedText, summary].filter(Boolean).join('：');
+}
 function practiceDecisionLogEntry(entry, idx) {
   const decision = entry.decision || {};
   const actions = Array.isArray(decision.actions) ? decision.actions : [];
@@ -3523,9 +3535,11 @@ function practiceDecisionLogEntry(entry, idx) {
   const blockedText = blockedReasons.length ? `拦截：${compactText(blockedReasons.join('；'), 140)}` : '';
   const summary = compactText(decision.summary || entry.trade_reason || '模型决策', 120);
   const executionNote = practiceDecisionExecutionNote(entry, entry.time);
+  const refinementText = practiceBuyRefinementText(decision);
   const details = [
     compactText(entry.trade_reason || '', 90),
     actionText,
+    refinementText,
     blockedText,
     executionNote,
     decision.error ? compactText(decision.error, 90) : '',

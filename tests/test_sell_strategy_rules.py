@@ -940,6 +940,64 @@ class SellStrategyRuleTests(unittest.TestCase):
         self.assertNotIn("601999", state["positions"])
         self.assertIn("盘面动态持仓已达3只上限", decision["execution_blocked_reason"])
 
+    def test_overlimit_buy_decision_is_refined_before_execution(self):
+        original_execution_time = trader.is_a_share_execution_time
+        original_quote = trader.execution_quote
+        original_load_config = trader.load_decision_model_config
+        original_request = trader.request_chat_content
+        try:
+            trader.is_a_share_execution_time = lambda dt=None: (True, "上午连续竞价交易时段")
+            trader.execution_quote = lambda code: {
+                "600001": {"price": 10.0, "name": "先给股", "source": "test"},
+                "600002": {"price": 20.0, "name": "优选股", "source": "test"},
+            }[code]
+            trader.load_decision_model_config = lambda: ("https://decision.example/v1", "key")
+
+            def fake_request(base_url, api_key, payload, model_name, max_retries=3, timeout=60):
+                self.assertIn("最多允许新开仓：1笔", payload["messages"][0]["content"])
+                return json.dumps({
+                    "summary": "优选股确定性更高，放弃先给股",
+                    "keep_buy_codes": ["600002"],
+                    "drop_buys": [{"code": "600001", "reason": "确定性不如优选股"}],
+                }, ensure_ascii=False)
+
+            trader.request_chat_content = fake_request
+            state = {"cash": 100000.0, "positions": {}, "trade_log": []}
+            decision = {
+                "summary": "初次给出两笔买入",
+                "actions": [
+                    {"action": "BUY", "code": "600001", "name": "先给股", "shares": 1000, "reason": "第一笔"},
+                    {"action": "BUY", "code": "600002", "name": "优选股", "shares": 1000, "reason": "第二笔"},
+                ],
+            }
+            candidates = [
+                {"code": "600001", "name": "先给股", "best_score": 9.0, "entry_threshold": 8.0, "distance_pct": 1.0, "actionable": True, "hard_blockers": []},
+                {"code": "600002", "name": "优选股", "best_score": 10.0, "entry_threshold": 8.0, "distance_pct": 1.0, "actionable": True, "hard_blockers": []},
+            ]
+            market_ctx = {**permissive_market_context(), "max_new_buys_per_decision": 1}
+
+            refinement = trader.refine_overlimit_buy_actions(
+                decision,
+                state,
+                candidates,
+                {"positions": [], "trade_log": [], "cash": 100000, "total_equity": 100000},
+                market_ctx,
+            )
+            executed = trader.execute_actions(state, decision, candidates, True, "上午连续竞价交易时段", market_ctx)
+        finally:
+            trader.is_a_share_execution_time = original_execution_time
+            trader.execution_quote = original_quote
+            trader.load_decision_model_config = original_load_config
+            trader.request_chat_content = original_request
+
+        self.assertEqual(refinement["status"], "model_refined")
+        self.assertEqual(refinement["kept_codes"], ["600002"])
+        self.assertEqual(decision["actions"][0]["action"], "HOLD")
+        self.assertEqual(len(executed), 1)
+        self.assertEqual(executed[0]["code"], "600002")
+        self.assertIn("600002", state["positions"])
+        self.assertNotIn("600001", state["positions"])
+
     def test_run_decision_after_b1_records_market_context_each_round(self):
         state = {
             "cash": 100000.0,
