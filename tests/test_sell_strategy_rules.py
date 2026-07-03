@@ -722,6 +722,23 @@ class SellStrategyRuleTests(unittest.TestCase):
         self.assertEqual(ctx["max_new_buys_per_decision"], 0)
         self.assertEqual(ctx["buy_budget_multiplier"], 0.0)
 
+    def test_after_1430_does_not_automatically_block_new_buys(self):
+        reports = [{
+            "title": "A股盘中总结",
+            "time": "2026-07-02 14:35:04",
+            "content": "\n".join([
+                "🎯 **今日买卖指引**",
+                "· 风险级别：平衡",
+                "· 开仓节奏：只做高确定性机会",
+            ]),
+        }]
+
+        ctx = trader.derive_market_strategy_context(reports, datetime(2026, 7, 2, 14, 45, 0))
+
+        self.assertEqual(ctx["phase"], "afternoon")
+        self.assertTrue(ctx["allow_new_buys"])
+        self.assertGreater(ctx["max_new_buys_per_decision"], 0)
+
     def test_market_guidance_extracts_next_day_premarket_heading(self):
         lines = trader.extract_market_guidance_lines("\n".join([
             "🎯 **次日盘前指引**",

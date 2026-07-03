@@ -1654,10 +1654,8 @@ def market_session_phase(now: datetime | None = None) -> str:
         return "morning"
     if t < dtime(13, 0):
         return "lunch"
-    if t < dtime(14, 30):
-        return "afternoon"
     if t <= dtime(15, 0):
-        return "late"
+        return "afternoon"
     return "after_close"
 
 
