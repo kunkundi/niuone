@@ -3062,7 +3062,9 @@ INDEX_HTML = r"""<!doctype html>
     .practice-log-scroll::-webkit-scrollbar { width:9px; }
     .practice-log-scroll::-webkit-scrollbar-track { background:rgba(15,23,42,.36); border-radius:999px; }
     .practice-log-scroll::-webkit-scrollbar-thumb { background:rgba(148,163,184,.36); border-radius:999px; border:2px solid rgba(15,23,42,.36); }
-    .practice-log-row { min-width:0; display:grid; grid-template-columns:62px 48px minmax(0,1fr); gap:8px; align-items:start; padding:8px 9px; border:1px solid rgba(148,163,184,.10); border-radius:10px; background:rgba(15,23,42,.42); }
+    .practice-log-row { width:100%; min-width:0; display:grid; grid-template-columns:62px 48px minmax(0,1fr); gap:8px; align-items:start; padding:8px 9px; border:1px solid rgba(148,163,184,.10); border-radius:10px; background:rgba(15,23,42,.42); color:inherit; text-align:left; cursor:pointer; }
+    .practice-log-row:hover { border-color:rgba(191,219,254,.28); background:rgba(30,41,59,.52); }
+    .practice-log-row:focus-visible { outline:2px solid rgba(157,178,255,.82); outline-offset:2px; }
     .practice-log-time { color:#94a3b8; font-size:12px; line-height:1.45; font-weight:850; font-variant-numeric:tabular-nums; white-space:nowrap; }
     .practice-log-badge { justify-self:start; border:1px solid rgba(148,163,184,.16); border-radius:7px; padding:1px 6px; color:#cbd5e1; background:rgba(30,41,59,.62); font-size:11px; line-height:1.55; font-weight:850; white-space:nowrap; }
     .practice-log-badge.buy { border-color:rgba(248,113,113,.24); color:#fecaca; background:rgba(127,29,29,.18); }
@@ -3071,6 +3073,17 @@ INDEX_HTML = r"""<!doctype html>
     .practice-log-main { min-width:0; display:grid; gap:3px; }
     .practice-log-summary { min-width:0; color:#dbeafe; font-size:12.5px; line-height:1.45; font-weight:800; overflow-wrap:anywhere; }
     .practice-log-detail { min-width:0; color:#8da0b8; font-size:11.5px; line-height:1.45; overflow-wrap:anywhere; }
+    .practice-log-detail-backdrop { position:fixed; inset:0; z-index:86; display:grid; place-items:center; padding:18px; background:rgba(2,6,23,.68); backdrop-filter:blur(10px); }
+    .practice-log-detail-card { width:min(640px, calc(100vw - 32px)); max-height:min(72vh, 640px); display:grid; grid-template-rows:auto minmax(0,1fr); overflow:hidden; border:1px solid rgba(148,163,184,.18); border-radius:16px; background:linear-gradient(180deg, rgba(15,23,42,.98), rgba(8,13,24,.98)); box-shadow:0 28px 90px rgba(0,0,0,.50), inset 0 1px 0 rgba(255,255,255,.06); }
+    .practice-log-detail-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 14px; border-bottom:1px solid rgba(148,163,184,.12); background:rgba(30,41,59,.46); }
+    .practice-log-detail-title { min-width:0; color:#e5edf8; font-size:14px; line-height:1.35; font-weight:900; overflow-wrap:anywhere; }
+    .practice-log-detail-close { width:30px; height:30px; min-width:30px; display:grid; place-items:center; border-radius:9px; border:1px solid rgba(148,163,184,.18); background:rgba(15,23,42,.72); color:#cbd5e1; padding:0; line-height:1; font-size:16px; font-weight:850; cursor:pointer; }
+    .practice-log-detail-close:hover { border-color:rgba(203,213,225,.42); background:rgba(30,41,59,.84); }
+    .practice-log-detail-body { min-height:0; overflow-y:auto; padding:15px 16px 17px; scrollbar-color:rgba(148,163,184,.36) rgba(15,23,42,.36); }
+    .practice-log-detail-body::-webkit-scrollbar { width:9px; }
+    .practice-log-detail-body::-webkit-scrollbar-track { background:rgba(15,23,42,.36); border-radius:999px; }
+    .practice-log-detail-body::-webkit-scrollbar-thumb { background:rgba(148,163,184,.36); border-radius:999px; border:2px solid rgba(15,23,42,.36); }
+    .practice-log-detail-text { color:#dbeafe; font-size:13px; line-height:1.75; white-space:pre-wrap; overflow-wrap:anywhere; }
     .practice-rule-row { margin-top:10px; display:flex; align-items:center; gap:9px; flex-wrap:wrap; color:#94a3b8; font-size:12px; line-height:1.5; }
     .practice-rule-btn { flex:0 0 auto; display:inline-flex; align-items:center; justify-content:center; min-width:0; border:1px solid rgba(124,92,255,.30); border-radius:999px; background:rgba(124,92,255,.14); color:#e5edf8; padding:5px 10px; font-size:12px; line-height:1.3; font-weight:850; cursor:pointer; transition:.16s ease; }
     .practice-rule-btn:hover { border-color:rgba(157,178,255,.62); background:rgba(124,92,255,.22); transform:translateY(-1px); }
@@ -3464,6 +3477,7 @@ let practicePositionMode = initialParams.get('holdings') === 'sold' ? 'sold' : '
 window.practicePositionMode = practicePositionMode;
 let practicePositionBriefMode = initialParams.get('brief') === '1';
 window.practicePositionBriefMode = practicePositionBriefMode;
+let practiceLogDetailKey = '';
 let practiceRuleNoteOpen = false;
 let practiceCalendarOpen = false;
 let practiceCalendarMonth = '';
@@ -3523,8 +3537,10 @@ function practiceTradeLogEntry(trade, idx) {
     compactText(trade.reason || trade.trade_reason || '', 100),
   ].filter(Boolean);
   return {
+    key: `trade-${idx}`,
     time: String(trade.time || ''),
     kind: 'trade',
+    raw: trade,
     badgeClass: isBuy ? 'buy' : (isSell ? 'sell' : 'trade'),
     badge: actionLabel,
     summary: `${actionLabel} ${codeName || '--'}${shares ? ` · ${shares}` : ''}`,
@@ -3611,8 +3627,10 @@ function practiceDecisionLogEntry(entry, idx) {
     decision.error ? compactText(decision.error, 90) : '',
   ].filter(Boolean);
   return {
+    key: `decision-${idx}`,
     time: String(entry.time || ''),
     kind: 'decision',
+    raw: entry,
     badgeClass: 'decision',
     badge: '决策',
     summary,
@@ -3640,20 +3658,58 @@ function renderPracticeOperationLog(payload) {
   const date = practiceOperationLogDate(payload);
   const entries = normalizePracticeOperationLogs(payload);
   const rows = entries.length ? entries.map(item => `
-    <div class="practice-log-row">
+    <button type="button" class="practice-log-row" data-practice-log-key="${esc(item.key)}" title="查看完整日志" aria-label="查看完整日志：${esc(item.summary)}">
       <div class="practice-log-time">${esc(String(item.time || '').slice(11, 19) || '--')}</div>
       <div class="practice-log-badge ${esc(item.badgeClass)}">${esc(item.badge)}</div>
       <div class="practice-log-main">
         <div class="practice-log-summary">${esc(item.summary)}</div>
         ${item.detail ? `<div class="practice-log-detail">${esc(item.detail)}</div>` : ''}
       </div>
-    </div>`).join('') : '<div class="empty" style="padding:18px;font-size:13px">当日暂无操作日志</div>';
+    </button>`).join('') : '<div class="empty" style="padding:18px;font-size:13px">当日暂无操作日志</div>';
   return `<div class="practice-log-panel">
     <div class="practice-log-head">
       <div class="practice-log-title">操作日志</div>
       <div class="practice-log-count">${esc(date)} · ${entries.length}条</div>
     </div>
     <div class="practice-log-scroll" tabindex="0" role="region" aria-label="当日所有操作日志">${rows}</div>
+  </div>`;
+}
+function practiceLogTextValue(value) {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.map(practiceLogTextValue).filter(Boolean).join('；');
+  if (typeof value === 'object') return practiceLogTextValue(value.summary || value.reason || value.detail || '');
+  return String(value || '').trim();
+}
+function practiceLogRawText(item) {
+  const raw = item && item.raw && typeof item.raw === 'object' ? item.raw : {};
+  if (item.kind === 'trade') {
+    return practiceLogTextValue(raw.reason || raw.trade_reason || item.detail || item.summary);
+  }
+  const decision = raw.decision && typeof raw.decision === 'object' ? raw.decision : {};
+  const textParts = [
+    practiceLogTextValue(decision.summary),
+    practiceLogTextValue(raw.trade_reason),
+    practiceLogTextValue(decision.execution_blocked_reasons || decision.execution_blocked_reason),
+    practiceLogTextValue(decision.buy_refinement),
+    practiceLogTextValue(decision.error),
+  ].filter(Boolean);
+  return [...new Set(textParts)].join('\n\n') || item.detail || item.summary || '无原文';
+}
+function renderPracticeLogDetailModal(payload) {
+  if (!practiceLogDetailKey) return '';
+  const item = normalizePracticeOperationLogs(payload).find(entry => entry.key === practiceLogDetailKey);
+  if (!item) return '';
+  const text = practiceLogRawText(item);
+  return `<div class="practice-log-detail-backdrop" role="presentation">
+    <div class="practice-log-detail-card" role="dialog" aria-modal="true" aria-label="完整操作日志">
+      <div class="practice-log-detail-head">
+        <div class="practice-log-detail-title">${esc(item.summary || '完整操作日志')}</div>
+        <button type="button" class="practice-log-detail-close" data-practice-log-action="close" title="关闭" aria-label="关闭">x</button>
+      </div>
+      <div class="practice-log-detail-body">
+        <div class="practice-log-detail-text">${esc(text)}</div>
+      </div>
+    </div>
   </div>`;
 }
 function practiceRuleFallbackNote() {
@@ -5159,6 +5215,7 @@ function renderPracticePanel() {
   const stockCards = showSoldStocks ? soldCards : posCards;
   const stockCardsClass = !showSoldStocks && positions.length && practicePositionBriefMode ? 'position-brief-grid' : 'position-card-list';
   const operationLog = renderPracticeOperationLog(p);
+  const logDetailModal = renderPracticeLogDetailModal(p);
   const quote = p.last_quote_refresh || {};
   const channels = quote.channel_counts || {};
   const ruleNote = p.trade_rule_note || practiceRuleFallbackNote();
@@ -5185,6 +5242,7 @@ function renderPracticePanel() {
     </div>
     <div class="${stockCardsClass}">${stockCards}</div>
     ${operationLog}
+    ${logDetailModal}
     <div class="practice-rule-row">
       <button type="button" class="practice-rule-btn" data-practice-rule-action="open">交易规则</button>
       <span class="practice-rule-meta">${ruleMeta}</span>
@@ -6568,6 +6626,29 @@ function renderCard(r) {
     </article>`;
 }
 document.addEventListener('click', event => {
+  const logAction = event.target.closest('[data-practice-log-action]');
+  if (logAction) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (logAction.dataset.practiceLogAction === 'close') {
+      practiceLogDetailKey = '';
+      if (activeCategory === 'b1_screen') render();
+    }
+    return;
+  }
+  if (practiceLogDetailKey && event.target.classList && event.target.classList.contains('practice-log-detail-backdrop')) {
+    practiceLogDetailKey = '';
+    if (activeCategory === 'b1_screen') render();
+    return;
+  }
+  const logTrigger = event.target.closest('[data-practice-log-key]');
+  if (logTrigger) {
+    event.preventDefault();
+    event.stopPropagation();
+    practiceLogDetailKey = logTrigger.dataset.practiceLogKey || '';
+    if (activeCategory === 'b1_screen') render();
+    return;
+  }
   const ruleAction = event.target.closest('[data-practice-rule-action]');
   if (ruleAction) {
     event.preventDefault();
@@ -6646,6 +6727,12 @@ document.addEventListener('click', event => {
   }
 });
 document.addEventListener('keydown', event => {
+  if (practiceLogDetailKey && event.key === 'Escape') {
+    event.preventDefault();
+    practiceLogDetailKey = '';
+    if (activeCategory === 'b1_screen') render();
+    return;
+  }
   if (practiceRuleNoteOpen && event.key === 'Escape') {
     event.preventDefault();
     practiceRuleNoteOpen = false;

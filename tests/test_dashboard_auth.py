@@ -379,6 +379,18 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertIn('overflow-y:auto', dashboard.INDEX_HTML)
         self.assertIn('aria-label="当日所有操作日志"', dashboard.INDEX_HTML)
 
+    def test_index_template_can_open_full_practice_log_modal(self):
+        self.assertIn('let practiceLogDetailKey = \'\';', dashboard.INDEX_HTML)
+        self.assertIn('data-practice-log-key=', dashboard.INDEX_HTML)
+        self.assertIn('function renderPracticeLogDetailModal(payload)', dashboard.INDEX_HTML)
+        self.assertIn('function practiceLogRawText(item)', dashboard.INDEX_HTML)
+        self.assertIn('class="practice-log-detail-backdrop"', dashboard.INDEX_HTML)
+        self.assertIn('class="practice-log-detail-text"', dashboard.INDEX_HTML)
+        self.assertIn('data-practice-log-action="close"', dashboard.INDEX_HTML)
+        self.assertIn('practiceLogDetailKey = logTrigger.dataset.practiceLogKey || \'\';', dashboard.INDEX_HTML)
+        self.assertNotIn('practice-log-detail-json', dashboard.INDEX_HTML)
+        self.assertNotIn('practice-log-detail-field', dashboard.INDEX_HTML)
+
     def test_index_template_hides_trade_rule_note_in_modal(self):
         self.assertIn('let practiceRuleNoteOpen = false', dashboard.INDEX_HTML)
         self.assertIn('function renderPracticeRuleNoteModal(note)', dashboard.INDEX_HTML)
