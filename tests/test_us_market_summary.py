@@ -73,7 +73,7 @@ class UsMarketSummaryTests(unittest.TestCase):
 
         self.assertEqual(captured["payload"]["max_tokens"], 123)
         self.assertNotIn("temperature", captured["payload"])
-        self.assertEqual(captured["headers"]["User-agent"], "OpenAI/Python 1.0")
+        self.assertEqual(captured["headers"]["User-agent"], "NiuOne/1.0")
         self.assertEqual(captured["headers"]["Accept"], "application/json")
 
     def test_previous_us_session_date_uses_friday_on_monday(self):

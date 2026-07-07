@@ -291,7 +291,7 @@ def _call_grok_api(messages: list[dict[str, str]], *, max_tokens: int = US_MARKE
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
             "Accept": "application/json",
-            "User-Agent": "OpenAI/Python 1.0",
+            "User-Agent": "NiuOne/1.0",
         },
     )
     deadline = time.monotonic() + max(30, US_MARKET_SUMMARY_DEADLINE_SECONDS)

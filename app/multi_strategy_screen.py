@@ -1787,7 +1787,7 @@ def grok_industry_classify(candidates: list[dict]) -> None:
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "User-Agent": "OpenAI/Python 1.0",
+                "User-Agent": "NiuOne/1.0",
             },
         )
         with urllib.request.urlopen(req, timeout=10) as resp:

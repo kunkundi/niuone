@@ -244,7 +244,7 @@ def openai_chat_json(base_url, api_key, prompt, max_tokens, timeout=REQUEST_TIME
             "Authorization": "Bearer " + api_key,
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "OpenAI/Python 1.0",
+            "User-Agent": "NiuOne/1.0",
         },
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:

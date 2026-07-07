@@ -71,7 +71,7 @@ class AShareGrokSummaryTests(unittest.TestCase):
 
         self.assertEqual(captured["payload"]["max_tokens"], 123)
         self.assertNotIn("temperature", captured["payload"])
-        self.assertEqual(captured["headers"]["User-agent"], "OpenAI/Python 1.0")
+        self.assertEqual(captured["headers"]["User-agent"], "NiuOne/1.0")
         self.assertEqual(captured["headers"]["Accept"], "application/json")
 
     def test_parse_accepts_json_fence(self):

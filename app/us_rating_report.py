@@ -157,7 +157,7 @@ def _call_api(base_url, api_key, messages, max_tokens=8192):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
             "Accept": "application/json",
-            "User-Agent": "OpenAI/Python 1.0",
+            "User-Agent": "NiuOne/1.0",
         },
     )
     last_err = None

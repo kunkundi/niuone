@@ -134,7 +134,7 @@ class NewsPrecheckConfigTests(unittest.TestCase):
 
         self.assertEqual(result, "ok")
         self.assertEqual(captured["payload"]["model"], "search-model")
-        self.assertEqual(captured["headers"]["User-agent"], "OpenAI/Python 1.0")
+        self.assertEqual(captured["headers"]["User-agent"], "NiuOne/1.0")
         self.assertEqual(captured["headers"]["Accept"], "application/json")
 
     def test_api_call_with_retry_sends_compatible_user_agent(self):
@@ -171,7 +171,7 @@ class NewsPrecheckConfigTests(unittest.TestCase):
 
         self.assertEqual(result, {"ok": True})
         self.assertEqual(captured["payload"]["model"], "decision-model")
-        self.assertEqual(captured["headers"]["User-agent"], "OpenAI/Python 1.0")
+        self.assertEqual(captured["headers"]["User-agent"], "NiuOne/1.0")
         self.assertEqual(captured["headers"]["Accept"], "application/json")
 
     def test_news_precheck_honors_timeout_overrides(self):

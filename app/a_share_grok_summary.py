@@ -182,7 +182,7 @@ def call_grok_api(messages: list[dict[str, str]], *, max_tokens: int = A_SHARE_M
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
             "Accept": "application/json",
-            "User-Agent": "OpenAI/Python 1.0",
+            "User-Agent": "NiuOne/1.0",
         },
     )
     deadline = time.monotonic() + max(15, A_SHARE_MODEL_SUMMARY_DEADLINE_SECONDS)

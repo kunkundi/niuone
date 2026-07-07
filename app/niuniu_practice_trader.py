@@ -4057,7 +4057,7 @@ def request_chat_content(base_url: str, api_key: str, payload: dict, model_name:
                     "Authorization": "Bearer " + api_key,
                     "Content-Type": "application/json",
                     "Accept": "application/json",
-                    "User-Agent": "OpenAI/Python 1.0",
+                    "User-Agent": "NiuOne/1.0",
                 },
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -4092,7 +4092,7 @@ def api_call_with_retry(base_url: str, api_key: str, payload: dict, max_retries:
                     "Authorization": "Bearer " + api_key,
                     "Content-Type": "application/json",
                     "Accept": "application/json",
-                    "User-Agent": "OpenAI/Python 1.0",
+                    "User-Agent": "NiuOne/1.0",
                 },
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
