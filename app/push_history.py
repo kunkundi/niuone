@@ -21,6 +21,31 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD_HOME = get_dashboard_home(PROJECT_ROOT)
 DB_PATH = Path(os.environ.get("DASHBOARD_PUSH_HISTORY_DB") or str(DASHBOARD_HOME / "push_history.db"))
 SCHEMA_VERSION = 1
+MESSAGE_COLUMNS = (
+    "id",
+    "timestamp",
+    "time_text",
+    "category",
+    "source_type",
+    "source_id",
+    "source_label",
+    "platform",
+    "platform_label",
+    "chat",
+    "chat_label",
+    "external_id",
+    "title",
+    "content",
+    "content_hash",
+    "chars",
+    "matched",
+    "kind",
+    "delivery_json",
+    "metadata_json",
+    "raw_path",
+    "created_at",
+    "updated_at",
+)
 
 
 def connect(path: Path | str | None = None) -> sqlite3.Connection:
@@ -119,6 +144,44 @@ def dumps(obj: Any) -> str | None:
     if obj is None:
         return None
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def message_dedupe_key(
+    msg_id: Any,
+    category: Any,
+    content: Any,
+    external_id: Any,
+) -> str:
+    content_text = str(content or "")
+    category_text = str(category or "")
+    external_text = str(external_id or "")
+    if category_text == "us_ratings" and "买入评级" in content_text:
+        normalized = " ".join(content_text.split())[:220]
+        return f"us_ratings:{normalized}"
+    if category_text == "x_monitor" and external_text:
+        return f"x_monitor:{external_text}"
+    return str(msg_id or "")
+
+
+def x_metadata_priority(category: Any, metadata_json: Any) -> int:
+    if str(category or "") != "x_monitor":
+        return 0
+    try:
+        metadata = json.loads(str(metadata_json or "{}"))
+    except Exception:
+        metadata = {}
+    post = metadata.get("post") if isinstance(metadata, dict) else None
+    if not isinstance(post, dict):
+        return 3
+    media_fields = ("media", "reply_to_media", "quoted_media")
+    if any(post.get(field) for field in media_fields):
+        return 0
+    return 1
+
+
+def register_query_functions(con: sqlite3.Connection) -> None:
+    con.create_function("dashboard_message_dedupe_key", 4, message_dedupe_key)
+    con.create_function("dashboard_x_metadata_priority", 2, x_metadata_priority)
 
 
 def upsert_message(con: sqlite3.Connection, message: dict[str, Any]) -> str:
@@ -264,6 +327,7 @@ def query_messages(
 ) -> dict[str, Any]:
     con = connect()
     try:
+        register_query_functions(con)
         where = []
         params: list[Any] = []
         if category:
@@ -277,80 +341,122 @@ def query_messages(
             where.append("(m.title LIKE ? OR m.content LIKE ? OR m.source_label LIKE ? OR m.chat_label LIKE ? OR m.source_id LIKE ?)")
             params.extend([like, like, like, like, like])
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
-        from_sql = "dashboard_messages m"
-        rows = con.execute(
-            f"""
-            SELECT m.* FROM {from_sql} {where_sql}
-            ORDER BY
-              m.timestamp DESC,
-              CASE WHEN m.kind = 'cron_output' THEN 0 ELSE 1 END,
-              length(m.content) DESC,
-              m.id DESC
-            """,
-            params,
-        ).fetchall()
-        def _dedupe_key(row: sqlite3.Row) -> str:
-            content = str(row["content"] or "")
-            normalized = " ".join(content.split())[:220]
-            if row["category"] == "us_ratings" and "买入评级" in content:
-                return f"us_ratings:{normalized}"
-            if row["category"] == "x_monitor" and row["external_id"]:
-                return f"x_monitor:{row['external_id']}"
-            return f"{row['id']}"
-
-        def _x_metadata_priority(row: sqlite3.Row) -> int:
-            if row["category"] != "x_monitor":
-                return 0
-            try:
-                metadata = json.loads(row["metadata_json"] or "{}")
-            except Exception:
-                metadata = {}
-            post = metadata.get("post") if isinstance(metadata, dict) else None
-            if not isinstance(post, dict):
-                return 3
-            media_fields = ("media", "reply_to_media", "quoted_media")
-            if any(post.get(field) for field in media_fields):
-                return 0
-            return 1
-
-        def _priority(row: sqlite3.Row) -> tuple[int, int, int]:
-            kind_priority = 0 if row["kind"] == "cron_output" else 1
-            return (_x_metadata_priority(row), kind_priority, -len(str(row["content"] or "")))
-
-        deduped: dict[str, sqlite3.Row] = {}
-        for row in rows:
-            key = _dedupe_key(row)
-            current = deduped.get(key)
-            if current is None or _priority(row) < _priority(current):
-                deduped[key] = row
-        rows = list(deduped.values())
-        matched_total = len(rows)
-        start = max(int(offset or 0), 0)
-        if limit is not None:
-            rows = rows[start:start + max(int(limit), 1)]
-        elif start:
-            rows = rows[start:]
-
-        category_rows = con.execute(
-            """
-            SELECT m.* FROM dashboard_messages m
-            ORDER BY
-              m.timestamp DESC,
-              CASE WHEN m.kind = 'cron_output' THEN 0 ELSE 1 END,
-              length(m.content) DESC,
-              m.id DESC
-            """
-        ).fetchall()
-        categories: dict[str, int] = {}
-        seen_category_keys: set[str] = set()
-        for row in category_rows:
-            key = _dedupe_key(row)
-            if key in seen_category_keys:
-                continue
-            seen_category_keys.add(key)
-            categories[row["category"]] = categories.get(row["category"], 0) + 1
-        platforms = [row["platform"] for row in con.execute("SELECT DISTINCT platform FROM dashboard_messages WHERE platform != '' ORDER BY platform")]
-        chats = [row["chat"] for row in con.execute("SELECT DISTINCT chat FROM dashboard_messages WHERE chat != '' ORDER BY chat")]
+        categories = {
+            str(row["category"]): int(row["count"] or 0)
+            for row in con.execute(
+                """
+                SELECT
+                    m.category,
+                    COUNT(DISTINCT dashboard_message_dedupe_key(m.id, m.category, m.content, m.external_id)) AS count
+                FROM dashboard_messages m
+                GROUP BY m.category
+                """
+            )
+        }
+        if not chat and not q and not category:
+            matched_total = sum(categories.values())
+        elif not chat and not q and category:
+            matched_total = int(categories.get(category, 0))
+        else:
+            matched_total = int(
+                con.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT dashboard_message_dedupe_key(m.id, m.category, m.content, m.external_id))
+                    FROM dashboard_messages m
+                    {where_sql}
+                    """,
+                    params,
+                ).fetchone()[0]
+                or 0
+            )
+        row_limit = max(int(limit), 0) if limit is not None else -1
+        row_offset = max(int(offset or 0), 0)
+        column_select = ", ".join(f"m.{column}" for column in MESSAGE_COLUMNS)
+        ranked_column_select = ", ".join(f"ranked.{column}" for column in MESSAGE_COLUMNS)
+        rows = []
+        if row_limit != 0:
+            rows = con.execute(
+                f"""
+                WITH base AS (
+                    SELECT
+                        {column_select},
+                        dashboard_message_dedupe_key(m.id, m.category, m.content, m.external_id) AS dedupe_key,
+                        CASE
+                            WHEN m.category = 'x_monitor'
+                            THEN dashboard_x_metadata_priority(m.category, m.metadata_json)
+                            ELSE 0
+                        END AS x_priority,
+                        CASE WHEN m.kind = 'cron_output' THEN 0 ELSE 1 END AS kind_priority,
+                        length(COALESCE(m.content, '')) AS content_len
+                    FROM dashboard_messages m
+                    {where_sql}
+                ),
+                ranked AS (
+                    SELECT
+                        base.*,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY base.dedupe_key
+                            ORDER BY
+                                base.x_priority ASC,
+                                base.kind_priority ASC,
+                                base.content_len DESC,
+                                base.timestamp DESC,
+                                base.id DESC
+                        ) AS best_rank,
+                        FIRST_VALUE(base.timestamp) OVER (
+                            PARTITION BY base.dedupe_key
+                            ORDER BY
+                                base.timestamp DESC,
+                                base.kind_priority ASC,
+                                base.content_len DESC,
+                                base.id DESC
+                        ) AS group_timestamp,
+                        FIRST_VALUE(base.kind_priority) OVER (
+                            PARTITION BY base.dedupe_key
+                            ORDER BY
+                                base.timestamp DESC,
+                                base.kind_priority ASC,
+                                base.content_len DESC,
+                                base.id DESC
+                        ) AS group_kind_priority,
+                        FIRST_VALUE(base.content_len) OVER (
+                            PARTITION BY base.dedupe_key
+                            ORDER BY
+                                base.timestamp DESC,
+                                base.kind_priority ASC,
+                                base.content_len DESC,
+                                base.id DESC
+                        ) AS group_content_len,
+                        FIRST_VALUE(base.id) OVER (
+                            PARTITION BY base.dedupe_key
+                            ORDER BY
+                                base.timestamp DESC,
+                                base.kind_priority ASC,
+                                base.content_len DESC,
+                                base.id DESC
+                        ) AS group_id
+                    FROM base
+                )
+                SELECT {ranked_column_select}
+                FROM ranked
+                WHERE best_rank = 1
+                ORDER BY
+                    group_timestamp DESC,
+                    group_kind_priority ASC,
+                    group_content_len DESC,
+                    group_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, row_limit, row_offset],
+            ).fetchall()
+        platforms = [
+            row["platform"]
+            for row in con.execute("SELECT DISTINCT platform FROM dashboard_messages WHERE platform != '' ORDER BY platform")
+        ]
+        chats = [
+            row["chat"]
+            for row in con.execute("SELECT DISTINCT chat FROM dashboard_messages WHERE chat != '' ORDER BY chat")
+        ]
         total = sum(categories.values())
         return {
             "total": total,

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import gzip
 import io
 import json
 import os
@@ -399,6 +400,13 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertIn('${ruleModal}', dashboard.INDEX_HTML)
         self.assertNotIn('${esc(p.trade_rule_note||', dashboard.INDEX_HTML)
 
+    def test_non_message_tabs_request_message_counts_without_records(self):
+        self.assertEqual(dashboard.clamp_limit('0'), 0)
+        self.assertIn(
+            "isMessageCategory() ? messagePageLimit() : 0",
+            dashboard.INDEX_HTML,
+        )
+
     def test_index_template_github_button_links_to_repo_with_icon(self):
         self.assertIn(
             '<a class="header-link" href="https://github.com/kunkundi/niuone"',
@@ -562,11 +570,23 @@ class DashboardAuthTests(unittest.TestCase):
                 body=body,
             )
             second.do_POST()
+
+            self.assertEqual(first.status, 403)
+            self.assertEqual(second.status, 429)
         finally:
             dashboard.RATE_LIMIT_LOGIN = original_login_limit
 
-        self.assertEqual(first.status, 403)
-        self.assertEqual(second.status, 429)
+    def test_send_payload_gzips_large_json_when_client_accepts_it(self):
+        payload = json.dumps({"items": ["牛" * 50 for _ in range(200)]}, ensure_ascii=False).encode("utf-8")
+        handler = FakeHandler(path="/api/messages", headers={"Accept-Encoding": "br, gzip"})
+
+        handler.send_payload(payload)
+
+        body = handler.wfile.getvalue()
+        self.assertEqual(handler.header("Content-Encoding"), "gzip")
+        self.assertIn("Accept-Encoding", handler.header("Vary") or "")
+        self.assertLess(len(body), len(payload))
+        self.assertEqual(gzip.decompress(body), payload)
 
     def test_admin_page_requires_configured_password_session(self):
         original_password = dashboard.ADMIN_PASSWORD

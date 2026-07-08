@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import hmac
 import html
@@ -95,6 +96,8 @@ AUTH_MAX_ONLINE = int(os.environ.get("DASHBOARD_MAX_ONLINE", "0") or "0")
 AUTH_ONLINE_WINDOW_SECONDS = int(os.environ.get("DASHBOARD_ONLINE_WINDOW_SECONDS", "300") or "300")
 AUTH_TOUCH_INTERVAL_SECONDS = int(os.environ.get("DASHBOARD_AUTH_TOUCH_INTERVAL_SECONDS", "30") or "30")
 MAX_POST_BODY_BYTES = int(os.environ.get("DASHBOARD_MAX_POST_BODY_BYTES", str(256 * 1024)) or str(256 * 1024))
+GZIP_MIN_BYTES = int(os.environ.get("DASHBOARD_GZIP_MIN_BYTES", "1024") or "1024")
+GZIP_CONTENT_TYPE_PREFIXES = ("application/json", "text/html", "text/plain")
 B1_CACHE_MAX_AGE = 720
 B1_SCAN_TIMEOUT_SECONDS = int(os.environ.get("DASHBOARD_B1_SCAN_TIMEOUT_SECONDS", "360") or "360")
 B1_SCHEDULE_TIMES = tuple(
@@ -1702,6 +1705,8 @@ def clamp_limit(raw: str | None, default: int = API_DEFAULT_LIMIT) -> int:
         value = int(raw) if raw else default
     except (TypeError, ValueError):
         value = default
+    if value == 0:
+        return 0
     return max(1, min(API_LIMIT_MAX, value))
 
 def clamp_offset(raw: str | None) -> int:
@@ -3880,7 +3885,7 @@ async function load({background=false} = {}) {
   if (pendingLoadController) pendingLoadController.abort();
   const controller = new AbortController();
   pendingLoadController = controller;
-  const msgUrl = messagesUrl(isMessageCategory() ? messageOffset() : 0, isMessageCategory() ? messagePageLimit() : 1);
+  const msgUrl = messagesUrl(isMessageCategory() ? messageOffset() : 0, isMessageCategory() ? messagePageLimit() : 0);
   if (!background && !hasWarmData(activeCategory)) {
     $('feed').innerHTML = '<div class="loading">加载中…</div>';
   }
@@ -7194,6 +7199,27 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
+    def accepts_gzip(self) -> bool:
+        accepted = str(self.headers.get("Accept-Encoding") or "")
+        return any(part.strip().split(";", 1)[0].lower() == "gzip" for part in accepted.split(","))
+
+    def maybe_gzip_payload(self, payload: bytes, content_type: str) -> tuple[bytes, bool]:
+        if len(payload) < GZIP_MIN_BYTES or not self.accepts_gzip():
+            return payload, False
+        normalized_type = content_type.split(";", 1)[0].strip().lower()
+        if normalized_type not in GZIP_CONTENT_TYPE_PREFIXES:
+            return payload, False
+        compressed = gzip.compress(payload, compresslevel=5)
+        if len(compressed) >= len(payload):
+            return payload, False
+        return compressed, True
+
+    def send_compression_headers(self, gzipped: bool, payload_len: int) -> None:
+        if gzipped:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+        self.send_header("Content-Length", str(payload_len))
+
     def send_json_error(self, status: int, error: str, *, allow: str | None = None) -> None:
         self.send_response(status)
         if allow:
@@ -7251,11 +7277,14 @@ class Handler(BaseHTTPRequestHandler):
         return validate_admin_session(cookie_value)
 
     def send_html(self, payload: bytes, status: int = 200) -> None:
+        content_type = "text/html; charset=utf-8"
+        body, gzipped = self.maybe_gzip_payload(payload, content_type)
         self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
+        self.send_compression_headers(gzipped, len(body))
         self.end_headers()
-        self.write_response(payload)
+        self.write_response(body)
 
     def redirect(
         self,
@@ -7355,6 +7384,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_payload(self, payload: bytes, *, content_type: str = "application/json; charset=utf-8",
                      edge_ttl: int = 10, browser_ttl: int = 3, cache_hit: bool | None = None) -> None:
+        body, gzipped = self.maybe_gzip_payload(payload, content_type)
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         if edge_ttl > 0:
@@ -7368,8 +7398,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
         if cache_hit is not None:
             self.send_header("X-Dashboard-Cache", "HIT" if cache_hit else "MISS")
+        self.send_compression_headers(gzipped, len(body))
         self.end_headers()
-        self.write_response(payload)
+        self.write_response(body)
 
     def send_json_cached(self, key: str, ttl: int, producer, *, edge_ttl: int | None = None, browser_ttl: int = 3) -> None:
         payload, hit = cache_get_json(key, ttl, producer)
@@ -7459,17 +7490,20 @@ class Handler(BaseHTTPRequestHandler):
                 return
             visitor_id, new_visitor = self.request_visitor_id()
             visit_stats = increment_visit_count(visitor_id)
+            page = INDEX_HTML.replace("__VISIT_COUNT__", f"{visit_stats['visits']:,}")
+            page = page.replace("__UNIQUE_VISIT_COUNT__", f"{visit_stats['unique']:,}")
+            page = page.replace("__US_FEATURES_ENABLED__", "true" if us_features_enabled() else "false")
+            content_type = "text/html; charset=utf-8"
+            body, gzipped = self.maybe_gzip_payload(page.encode("utf-8"), content_type)
             self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
             self.send_header("CDN-Cache-Control", "no-store")
             if new_visitor:
                 self.send_header("Set-Cookie", f"{VISITOR_COOKIE_NAME}={visitor_id}; {self.visitor_cookie_flags()}")
+            self.send_compression_headers(gzipped, len(body))
             self.end_headers()
-            page = INDEX_HTML.replace("__VISIT_COUNT__", f"{visit_stats['visits']:,}")
-            page = page.replace("__UNIQUE_VISIT_COUNT__", f"{visit_stats['unique']:,}")
-            page = page.replace("__US_FEATURES_ENABLED__", "true" if us_features_enabled() else "false")
-            self.write_response(page.encode("utf-8"))
+            self.write_response(body)
             return
         if parsed.path.startswith("/api/"):
             user = self.require_user()
