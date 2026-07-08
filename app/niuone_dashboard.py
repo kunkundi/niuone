@@ -225,7 +225,7 @@ ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
     {"name": "DASHBOARD_CRON_MAX_ATTEMPTS", "label": "Cron 失败最大运行次数", "group": "任务调度", "kind": "int", "default": "2", "effect": "next_run"},
     {"name": "DASHBOARD_CRON_RETRY_DELAY_SECONDS", "label": "Cron 失败重试间隔秒数", "group": "任务调度", "kind": "int", "default": "300", "effect": "next_run"},
     {"name": "DASHBOARD_PENDING_DECISION_POLL_SECONDS", "label": "延迟成交检查秒数", "group": "任务调度", "kind": "int", "default": "5", "effect": "restart"},
-    {"name": "DASHBOARD_DECISION_MAX_TOKENS", "label": "决策最大输出长度", "group": "买卖决策模型", "kind": "max_tokens", "default": "6000", "effect": "next_run"},
+    {"name": "DASHBOARD_DECISION_MAX_TOKENS", "label": "决策最大输出长度", "group": "买卖决策模型", "kind": "max_tokens", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_TIMEOUT", "label": "决策请求超时", "group": "买卖决策模型", "kind": "int", "default": "180", "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_INTELLIGENCE_ENABLED", "label": "启用全局情报包", "group": "买卖决策模型", "kind": "bool", "default": "1", "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS", "label": "情报包缓存秒数", "group": "买卖决策模型", "kind": "int", "default": "75", "effect": "next_run"},
@@ -243,16 +243,16 @@ ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
     {"name": "US_RATING_BASE_URL", "label": "美股评级 API Base URL", "group": "牛牛美股", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "US_RATING_API_KEY", "label": "美股评级 API Key", "group": "牛牛美股", "kind": "secret", "default": "", "effect": "next_run"},
     {"name": "US_RATING_CONTEXT_LENGTH", "label": "美股评级上下文长度", "group": "牛牛美股", "kind": "context_length", "default": "", "effect": "next_run"},
-    {"name": "US_RATING_MAX_TOKENS", "label": "美股评级最大输出长度", "group": "牛牛美股", "kind": "max_tokens", "default": "8192", "effect": "next_run"},
+    {"name": "US_RATING_MAX_TOKENS", "label": "美股评级最大输出长度", "group": "牛牛美股", "kind": "max_tokens", "default": "", "effect": "next_run"},
     {"name": "CROSSDESK_BASE_URL", "label": "Crossdesk Base URL", "group": "上游模型覆盖", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "CROSSDESK_API_KEY", "label": "Crossdesk API Key", "group": "上游模型覆盖", "kind": "secret", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_GROK_MODEL", "label": "Grok 模型", "group": "牛牛美股", "kind": "text", "default": "grok-4.20-multi-agent-xhigh", "effect": "next_run"},
     {"name": "DASHBOARD_GROK_CONTEXT_LENGTH", "label": "Grok 模型上下文长度", "group": "牛牛美股", "kind": "context_length", "default": "", "effect": "next_run"},
-    {"name": "DASHBOARD_GROK_MAX_TOKENS", "label": "Grok 最大输出长度", "group": "牛牛美股", "kind": "max_tokens", "default": "2200", "effect": "next_run"},
+    {"name": "DASHBOARD_GROK_MAX_TOKENS", "label": "Grok 最大输出长度", "group": "牛牛美股", "kind": "max_tokens", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_GROK_BASE_URL", "label": "Grok API 地址", "group": "牛牛美股", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_NEWS_MODEL", "label": "消息面预检模型", "group": "消息面预检模型", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_NEWS_CONTEXT_LENGTH", "label": "消息面预检上下文长度", "group": "消息面预检模型", "kind": "context_length", "default": "", "effect": "next_run"},
-    {"name": "DASHBOARD_NEWS_MAX_TOKENS", "label": "消息面预检最大输出长度", "group": "消息面预检模型", "kind": "max_tokens", "default": "600", "effect": "next_run"},
+    {"name": "DASHBOARD_NEWS_MAX_TOKENS", "label": "消息面预检最大输出长度", "group": "消息面预检模型", "kind": "max_tokens", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_NEWS_BASE_URL", "label": "消息面预检 API 地址", "group": "消息面预检模型", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_NEWS_API_KEY", "label": "消息面预检 API 密钥", "group": "消息面预检模型", "kind": "secret", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_NEWS_TIMEOUT", "label": "消息面预检请求超时", "group": "消息面预检模型", "kind": "int", "default": "45", "effect": "next_run"},
@@ -262,14 +262,14 @@ ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
     {"name": "DASHBOARD_DECISION_BASE_URL", "label": "买卖决策 API 地址", "group": "买卖决策模型", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_API_KEY", "label": "买卖决策 API 密钥", "group": "买卖决策模型", "kind": "secret", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_US_MARKET_SUMMARY_CRON", "label": "隔夜美股盘面总结时间", "group": "盘面监控生产时间点", "kind": "cron_time", "default": "0 8 * * 1-5", "effect": "next_run"},
-    {"name": "US_MARKET_SUMMARY_MAX_TOKENS", "label": "隔夜美股总结最大输出长度", "group": "盘面监控生产时间点", "kind": "max_tokens", "default": "2200", "effect": "next_run"},
+    {"name": "US_MARKET_SUMMARY_MAX_TOKENS", "label": "隔夜美股总结最大输出长度", "group": "盘面监控生产时间点", "kind": "max_tokens", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_MARKET_AUCTION_CRON", "label": "盘前竞价监控时间", "group": "盘面监控生产时间点", "kind": "cron_time", "default": "25 9 * * 1-5", "effect": "next_run"},
     {"name": "DASHBOARD_MARKET_MIDDAY_CRON", "label": "午盘监控时间", "group": "盘面监控生产时间点", "kind": "cron_time", "default": "40 11 * * 1-5", "effect": "next_run"},
     {"name": "DASHBOARD_MARKET_CLOSE_CRON", "label": "盘后监控时间", "group": "盘面监控生产时间点", "kind": "cron_time", "default": "10 15 * * 1-5", "effect": "next_run"},
     {"name": "A_SHARE_MODEL_SUMMARY_ENABLED", "label": "A股盘面模型总结", "group": "盘面监控生产时间点", "kind": "bool", "default": "1", "effect": "next_run", "bool_no_default": "1"},
     {"name": "A_SHARE_MODEL_SUMMARY_MODEL", "label": "A股盘面总结模型", "group": "盘面监控生产时间点", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "A_SHARE_MODEL_SUMMARY_CONTEXT_LENGTH", "label": "A股盘面总结上下文长度", "group": "盘面监控生产时间点", "kind": "context_length", "default": "", "effect": "next_run"},
-    {"name": "A_SHARE_MODEL_SUMMARY_MAX_TOKENS", "label": "A股盘面总结最大输出长度", "group": "盘面监控生产时间点", "kind": "max_tokens", "default": "1800", "effect": "next_run"},
+    {"name": "A_SHARE_MODEL_SUMMARY_MAX_TOKENS", "label": "A股盘面总结最大输出长度", "group": "盘面监控生产时间点", "kind": "max_tokens", "default": "", "effect": "next_run"},
     {"name": "A_SHARE_MODEL_SUMMARY_BASE_URL", "label": "A股盘面总结 API地址", "group": "盘面监控生产时间点", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "A_SHARE_MODEL_SUMMARY_API_KEY", "label": "A股盘面总结 API密钥", "group": "盘面监控生产时间点", "kind": "secret", "default": "", "effect": "next_run"},
     {"name": "A_SHARE_MODEL_SUMMARY_DEADLINE_SECONDS", "label": "A股模型总结总超时秒数", "group": "盘面监控生产时间点", "kind": "int", "default": "60", "effect": "next_run"},
@@ -306,6 +306,7 @@ ADMIN_VISIBLE_ENV_NAMES = [
     "DASHBOARD_GROK_MODEL",
     "DASHBOARD_GROK_CONTEXT_LENGTH",
     "DASHBOARD_GROK_MAX_TOKENS",
+    "DASHBOARD_GROK_BASE_URL",
     "DASHBOARD_GROK_API_KEY",
     "X_WATCHLIST_ACCOUNTS",
     "X_WATCHLIST_DAEMON_INTERVAL_SECONDS",
@@ -1977,12 +1978,12 @@ CRON_TIME_CONFIGS = {
     "DASHBOARD_US_RATING_CRON": {"day_label": "每天"},
 }
 ADMIN_GROUP_NOTES = {
-    "牛牛美股": "集中管理 X/推文监控、美股买入评级和隔夜美股盘面总结使用的 Grok 配置。上下文长度只表示模型窗口，最大输出长度单独配置；关闭时隐藏 X/评级相关设置，隔夜美股总结仍会读取已配置的 Grok 参数。",
-    "消息面预检模型": "用于 A 股候选股最近 3 天消息面预检；需兼容 /chat/completions，且模型或网关应具备实时搜索能力。上下文长度只表示模型窗口，最大输出长度单独配置。留空则跳过。",
-    "买卖决策模型": "推荐使用 deepseek-v4-pro；也可填写其他兼容 /chat/completions 的模型服务。上下文长度只表示模型窗口，最大输出长度单独配置。",
+    "牛牛美股": "集中管理 X/推文监控、美股买入评级和隔夜美股盘面总结使用的 Grok 配置。长度配置默认留空：上下文长度走模型窗口，最大输出长度走场景预算；关闭时隐藏 X/评级相关设置，隔夜美股总结仍会读取已配置的 Grok 参数。",
+    "消息面预检模型": "用于 A 股候选股最近 3 天消息面预检；需兼容 /chat/completions，且模型或网关应具备实时搜索能力。长度配置默认留空：上下文长度走模型窗口，最大输出长度走场景预算。模型和密钥留空则跳过。",
+    "买卖决策模型": "推荐使用 deepseek-v4-pro；也可填写其他兼容 /chat/completions 的模型服务。长度配置默认留空：上下文长度走模型窗口，最大输出长度走场景预算。",
     "选股及买卖决策时间点": "使用北京时间 HH:MM，可设置多个时间点。",
     "选股策略": "在内置策略和预设文字策略中选择一个激活；内置策略可选基础策略、Z哥或李大霄。",
-    "盘面监控生产时间点": "直接填写北京时间 HH:MM；隔夜美股总结默认交易日 08:00 生成，A 股盘面监控在交易时段触发；模型上下文长度只表示窗口，最大输出长度单独配置。",
+    "盘面监控生产时间点": "直接填写北京时间 HH:MM；隔夜美股总结默认交易日 08:00 生成，A 股盘面监控在交易时段触发；长度配置默认留空：上下文长度走模型窗口，最大输出长度走场景预算。",
     "指数行情更新周期": "单位为秒，保存后立即用于后续行情请求。",
 }
 US_FEATURE_GATED_GROUPS = {
@@ -1996,6 +1997,7 @@ US_FEATURE_GATED_NAMES = {
     "DASHBOARD_GROK_MODEL",
     "DASHBOARD_GROK_CONTEXT_LENGTH",
     "DASHBOARD_GROK_MAX_TOKENS",
+    "DASHBOARD_GROK_BASE_URL",
     "DASHBOARD_GROK_API_KEY",
     "X_WATCHLIST_ACCOUNTS",
     "X_WATCHLIST_MAX_TOKENS",
@@ -6989,11 +6991,17 @@ def render_env_input(item: dict[str, Any]) -> str:
             + "".join(option_html)
             + "</div><div class='config-meta'>每次只启用一个内置策略</div>"
         )
-    if kind in {"max_tokens", "context_length"}:
+    if kind == "context_length":
         return (
             f"<input type='text' name='env__{escaped_name}' value='{html.escape(value)}' "
-            "placeholder='例如 128K、1M 或 1000000' inputmode='numeric'>"
-            "<div class='config-meta'>单位为 tokens；可填 1M、128K 或完整数字，保存后写入数字 token 数</div>"
+            "placeholder='留空=Auto；例如 128K、1M 或 1000000' inputmode='numeric'>"
+            "<div class='config-meta'>留空使用模型/网关默认上下文窗口；填写后保存为数字 tokens</div>"
+        )
+    if kind == "max_tokens":
+        return (
+            f"<input type='text' name='env__{escaped_name}' value='{html.escape(value)}' "
+            "placeholder='留空=Auto；例如 4096 或 8192' inputmode='numeric'>"
+            "<div class='config-meta'>留空不写入覆盖值，运行时使用各场景内置输出预算；填写后覆盖请求 max_tokens</div>"
         )
     input_type = "number" if kind == "int" else "text"
     return f"<input type='{input_type}' name='env__{escaped_name}' value='{html.escape(value)}'>"

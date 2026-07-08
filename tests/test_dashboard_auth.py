@@ -751,7 +751,8 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertIn('买卖决策模型', body)
         self.assertIn('买卖决策上下文长度', body)
         self.assertIn('消息面预检上下文长度', body)
-        self.assertIn('可填 1M、128K 或完整数字', body)
+        self.assertIn('留空使用模型/网关默认上下文窗口', body)
+        self.assertIn('运行时使用各场景内置输出预算', body)
         self.assertIn('选股及买卖决策时间点', body)
         self.assertIn('选股策略', body)
         self.assertIn('当前策略来源', body)
@@ -920,6 +921,28 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(discipline_item['file_value'], '纪律一\n纪律二')
         self.assertEqual(discipline_item['effective'], '纪律一\n纪律二')
 
+    def test_model_length_defaults_are_auto_in_admin_config(self):
+        payload = dashboard.build_admin_config_payload()
+        by_name = {item['name']: item for item in payload['items']}
+
+        for name in [
+            'DASHBOARD_DECISION_MAX_TOKENS',
+            'US_RATING_MAX_TOKENS',
+            'DASHBOARD_GROK_MAX_TOKENS',
+            'DASHBOARD_NEWS_MAX_TOKENS',
+            'US_MARKET_SUMMARY_MAX_TOKENS',
+            'A_SHARE_MODEL_SUMMARY_MAX_TOKENS',
+            'X_WATCHLIST_MAX_TOKENS',
+        ]:
+            item = by_name[name]
+            self.assertEqual(item['default'], '')
+            self.assertEqual(item['file_value'], '')
+
+        body = dashboard.render_admin_page().decode('utf-8')
+        self.assertIn("placeholder='留空=Auto；例如 4096 或 8192'", body)
+        self.assertIn('运行时使用各场景内置输出预算', body)
+        self.assertIn("placeholder='留空=Auto；例如 128K、1M 或 1000000'", body)
+
     def test_business_settings_are_local_to_dashboard_env(self):
         original_env_file = dashboard.DASHBOARD_ENV_FILE
         original_b1_times = dashboard.B1_SCHEDULE_TIMES
@@ -988,6 +1011,7 @@ class DashboardAuthTests(unittest.TestCase):
         original_env_values = {name: dashboard.os.environ.get(name) for name in dashboard.ADMIN_VISIBLE_ENV_NAMES}
         try:
             dashboard.DASHBOARD_ENV_FILE = self.tmp_path / 'dashboard.env'
+            dashboard.DASHBOARD_ENV_FILE.write_text('DASHBOARD_US_FEATURES_ENABLED=1\n', encoding='utf-8')
             dashboard.CONFIG_PATH = self.tmp_path / 'config.yaml'
             dashboard.CONFIG_PATH.write_text(
                 'custom_providers:\n'
