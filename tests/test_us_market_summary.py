@@ -35,11 +35,22 @@ def load_module_with_env(updates: dict[str, str]):
 
 
 class UsMarketSummaryTests(unittest.TestCase):
-    def test_context_length_sets_grok_max_tokens_default(self):
+    def test_context_length_does_not_set_grok_max_tokens_default(self):
         mod = load_module_with_env({"US_MARKET_SUMMARY_CONTEXT_LENGTH": "128K"})
 
-        self.assertEqual(mod.US_MARKET_SUMMARY_MAX_TOKENS, 128000)
-        self.assertEqual(mod._call_grok_api.__kwdefaults__["max_tokens"], 128000)
+        self.assertEqual(mod.US_MARKET_SUMMARY_CONTEXT_LENGTH, 128000)
+        self.assertEqual(mod.US_MARKET_SUMMARY_MAX_TOKENS, 2200)
+        self.assertEqual(mod._call_grok_api.__kwdefaults__["max_tokens"], 2200)
+
+    def test_max_tokens_env_sets_grok_output_tokens(self):
+        mod = load_module_with_env({
+            "US_MARKET_SUMMARY_CONTEXT_LENGTH": "128K",
+            "US_MARKET_SUMMARY_MAX_TOKENS": "4096",
+        })
+
+        self.assertEqual(mod.US_MARKET_SUMMARY_CONTEXT_LENGTH, 128000)
+        self.assertEqual(mod.US_MARKET_SUMMARY_MAX_TOKENS, 4096)
+        self.assertEqual(mod._call_grok_api.__kwdefaults__["max_tokens"], 4096)
 
     def test_grok_api_omits_temperature_by_default(self):
         mod = load_module()

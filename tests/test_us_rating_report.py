@@ -47,7 +47,7 @@ print(json.dumps(captured, ensure_ascii=False))
             self.assertEqual(captured['headers']['User-agent'], 'NiuOne/1.0')
             self.assertEqual(captured['headers']['Accept'], 'application/json')
 
-    def test_us_rating_context_length_sets_report_max_tokens(self):
+    def test_us_rating_context_length_does_not_set_report_max_tokens(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env['DASHBOARD_HOME'] = tmp
@@ -67,12 +67,45 @@ m._call_api = fake_call
 result = m.generate_report(test_mode=False)
 print(json.dumps({{
   'result': result,
+  'context_length': m.US_RATING_CONTEXT_LENGTH,
   'max_tokens': captured.get('max_tokens'),
 }}, ensure_ascii=False))
 """
             out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
             data = json.loads(out)
-            self.assertEqual(data['max_tokens'], 128000)
+            self.assertEqual(data['context_length'], 128000)
+            self.assertEqual(data['max_tokens'], 8192)
+            self.assertIn('TEST', data['result'])
+
+    def test_us_rating_max_tokens_sets_report_output_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env['DASHBOARD_HOME'] = tmp
+            env['US_RATING_CONTEXT_LENGTH'] = '128K'
+            env['US_RATING_MAX_TOKENS'] = '4096'
+            code = f"""
+import importlib.util, json, sys
+sys.path.insert(0, {str(SRC)!r})
+spec = importlib.util.spec_from_file_location('us_rating_report_under_test', {str(SRC / 'us_rating_report.py')!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m._get_crossdesk_credentials = lambda: ('https://rating.example/v1', 'secret')
+captured = {{}}
+def fake_call(base_url, api_key, messages, max_tokens=8192):
+    captured.update({{'max_tokens': max_tokens}})
+    return '- TEST: upgraded by Example'
+m._call_api = fake_call
+result = m.generate_report(test_mode=False)
+print(json.dumps({{
+  'result': result,
+  'context_length': m.US_RATING_CONTEXT_LENGTH,
+  'max_tokens': captured.get('max_tokens'),
+}}, ensure_ascii=False))
+"""
+            out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
+            data = json.loads(out)
+            self.assertEqual(data['context_length'], 128000)
+            self.assertEqual(data['max_tokens'], 4096)
             self.assertIn('TEST', data['result'])
 
     def test_paths_are_dashboard_home_scoped_and_prompt_has_no_telegram(self):

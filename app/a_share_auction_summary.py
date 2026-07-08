@@ -17,10 +17,12 @@ import contextlib
 import html
 import signal
 import subprocess
+from http.client import RemoteDisconnected
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -263,9 +265,29 @@ def fetch_auction_snapshot() -> tuple[list[dict[str, Any]], str | None]:
     max_pages = safe_int(os.getenv("A_SHARE_AUCTION_SNAPSHOT_MAX_PAGES", "70"), 70)
     deadline = time.monotonic() + safe_int(os.getenv("A_SHARE_AUCTION_SNAPSHOT_DEADLINE", "20"), 20)
     workers = max(1, min(12, safe_int(os.getenv("A_SHARE_AUCTION_SNAPSHOT_WORKERS", "8"), 8)))
+    attempts = max(1, min(4, safe_int(os.getenv("A_SHARE_AUCTION_SNAPSHOT_RETRIES", "3"), 3)))
+    endpoints = [
+        item.strip().rstrip("?")
+        for item in os.getenv(
+            "A_SHARE_AUCTION_SNAPSHOT_ENDPOINTS",
+            "https://push2.eastmoney.com/api/qt/clist/get,"
+            "https://82.push2.eastmoney.com/api/qt/clist/get,"
+            "http://push2.eastmoney.com/api/qt/clist/get",
+        ).split(",")
+        if item.strip()
+    ] or ["https://push2.eastmoney.com/api/qt/clist/get"]
     all_items: list[dict[str, Any]] = []
+    page_errors: list[str] = []
 
-    def fetch_page(page: int) -> tuple[int, int, list[dict[str, Any]]]:
+    def is_retryable_error(exc: Exception) -> bool:
+        if isinstance(exc, HTTPError):
+            return exc.code in {408, 429, 500, 502, 503, 504}
+        return isinstance(exc, (RemoteDisconnected, URLError, TimeoutError, OSError))
+
+    def describe_error(exc: Exception) -> str:
+        return f"{type(exc).__name__}: {exc}"
+
+    def fetch_page_once(page: int, endpoint: str) -> tuple[int, int, list[dict[str, Any]]]:
         remaining = deadline - time.monotonic()
         if remaining <= 1:
             return 0, page, []
@@ -281,15 +303,33 @@ def fetch_auction_snapshot() -> tuple[list[dict[str, Any]], str | None]:
             "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",
             "fields": fields,
         }
-        url = "https://push2.eastmoney.com/api/qt/clist/get?" + urlencode(params)
+        url = endpoint + "?" + urlencode(params)
         req = Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
         with urlopen(req, timeout=min(5, max(1, remaining))) as resp:
             payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
         data = ((payload or {}).get("data") or {})
         return safe_int(data.get("total"), 0), page, data.get("diff") or []
 
+    def fetch_page(page: int) -> tuple[int, int, list[dict[str, Any]]]:
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                endpoint = endpoints[(page + attempt - 2) % len(endpoints)]
+                return fetch_page_once(page, endpoint)
+            except Exception as exc:
+                last_exc = exc
+                if attempt < attempts and is_retryable_error(exc) and (deadline - time.monotonic()) > 1.5:
+                    time.sleep(min(0.25 * attempt, max(0.0, deadline - time.monotonic() - 1)))
+                    continue
+                raise
+        raise RuntimeError(describe_error(last_exc)) if last_exc else RuntimeError("unknown fetch page error")
+
     try:
-        total, _, first_items = fetch_page(1)
+        try:
+            total, _, first_items = fetch_page(1)
+        except Exception as e:
+            page_errors.append(f"p1 {describe_error(e)}")
+            total, first_items = 0, []
         all_items.extend(first_items)
         total_pages = min(max_pages, max(1, math.ceil((total or len(first_items)) / page_size)))
         if total_pages > 1 and time.monotonic() < deadline:
@@ -298,7 +338,12 @@ def fetch_auction_snapshot() -> tuple[list[dict[str, Any]], str | None]:
                 futures = {pool.submit(fetch_page, page): page for page in range(2, total_pages + 1)}
                 try:
                     for future in as_completed(futures, timeout=max(1, deadline - time.monotonic())):
-                        _total, page, diff = future.result()
+                        try:
+                            _total, page, diff = future.result()
+                        except Exception as e:
+                            page = futures[future]
+                            page_errors.append(f"p{page} {describe_error(e)}")
+                            continue
                         if _total:
                             total = _total
                         if diff:
@@ -309,7 +354,14 @@ def fetch_auction_snapshot() -> tuple[list[dict[str, Any]], str | None]:
                 all_items.extend(page_items[page])
         rows = extract_auction_snapshot_rows(all_items)
         if not rows:
+            if page_errors:
+                return [], "竞价快照：" + "；".join(page_errors[:2])
             return [], "竞价快照返回空"
+        if page_errors:
+            prefix = f"竞价快照部分页失败 {len(page_errors)} 页"
+            if total and len(all_items) < total:
+                prefix += f"，只取到 {len(all_items)}/{total} 只"
+            return rows, f"{prefix}（{'；'.join(page_errors[:2])}），已按现有样本生成"
         if total and len(all_items) < total:
             return rows, f"竞价快照只取到 {len(all_items)}/{total} 只，已按现有样本生成"
         return rows, None

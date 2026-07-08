@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 import importlib.util
+import json
+import os
 import sys
 import unittest
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "app"
@@ -58,6 +61,61 @@ class AShareAuctionSummaryTests(unittest.TestCase):
         self.assertIn("竞价额", report)
         self.assertNotIn("资金流向", report)
         self.assertNotIn("资金净流入", report)
+
+    def test_fetch_auction_snapshot_keeps_partial_pages_on_remote_disconnect(self):
+        mod = load_module()
+        original_urlopen = mod.urlopen
+        original_env = {
+            "A_SHARE_AUCTION_SNAPSHOT_MAX_PAGES": os.environ.get("A_SHARE_AUCTION_SNAPSHOT_MAX_PAGES"),
+            "A_SHARE_AUCTION_SNAPSHOT_WORKERS": os.environ.get("A_SHARE_AUCTION_SNAPSHOT_WORKERS"),
+            "A_SHARE_AUCTION_SNAPSHOT_RETRIES": os.environ.get("A_SHARE_AUCTION_SNAPSHOT_RETRIES"),
+        }
+
+        class Resp:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(self.payload).encode("utf-8")
+
+        def fake_urlopen(req, timeout=0):
+            page = int(parse_qs(urlparse(req.full_url).query)["pn"][0])
+            if page == 2:
+                raise mod.RemoteDisconnected("Remote end closed connection without response")
+            code = "600001" if page == 1 else "000003"
+            return Resp({
+                "data": {
+                    "total": 300,
+                    "diff": [
+                        {"f12": code, "f14": f"测试{page}", "f17": 11.0, "f18": 10.0, "f2": 11.0, "f5": 100, "f6": 1000000, "f100": "半导体"}
+                    ],
+                }
+            })
+
+        try:
+            os.environ["A_SHARE_AUCTION_SNAPSHOT_MAX_PAGES"] = "3"
+            os.environ["A_SHARE_AUCTION_SNAPSHOT_WORKERS"] = "2"
+            os.environ["A_SHARE_AUCTION_SNAPSHOT_RETRIES"] = "1"
+            mod.urlopen = fake_urlopen
+
+            rows, err = mod.fetch_auction_snapshot()
+        finally:
+            mod.urlopen = original_urlopen
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual([row["code"] for row in rows], ["600001", "000003"])
+        self.assertIn("竞价快照部分页失败", err)
+        self.assertIn("p2 RemoteDisconnected", err)
 
 
 if __name__ == "__main__":

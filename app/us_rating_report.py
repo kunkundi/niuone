@@ -37,6 +37,7 @@ def load_dashboard_env() -> None:
         "DASHBOARD_GROK_API_KEY",
         "US_RATING_MODEL",
         "US_RATING_CONTEXT_LENGTH",
+        "US_RATING_MAX_TOKENS",
         "US_RATING_BASE_URL",
         "US_RATING_API_KEY",
         "US_RATING_DEADLINE_SECONDS",
@@ -107,7 +108,8 @@ def _token_count_env(*names: str, default: int) -> int:
 
 US_RATING_DEADLINE_SECONDS = _int_env("US_RATING_DEADLINE_SECONDS", 240, min_value=30)
 US_RATING_REQUEST_TIMEOUT_SECONDS = _int_env("US_RATING_REQUEST_TIMEOUT_SECONDS", 120, min_value=10)
-US_RATING_MAX_TOKENS = _token_count_env("US_RATING_CONTEXT_LENGTH", "DASHBOARD_GROK_CONTEXT_LENGTH", default=8192)
+US_RATING_CONTEXT_LENGTH = _token_count_env("US_RATING_CONTEXT_LENGTH", "DASHBOARD_GROK_CONTEXT_LENGTH", default=0)
+US_RATING_MAX_TOKENS = _token_count_env("US_RATING_MAX_TOKENS", default=8192)
 
 
 def _load_config():

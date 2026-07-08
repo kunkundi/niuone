@@ -33,11 +33,22 @@ def load_module_with_env(updates: dict[str, str]):
 
 
 class AShareGrokSummaryTests(unittest.TestCase):
-    def test_context_length_sets_model_summary_max_tokens_default(self):
+    def test_context_length_does_not_set_model_summary_max_tokens_default(self):
         mod = load_module_with_env({"A_SHARE_MODEL_SUMMARY_CONTEXT_LENGTH": "256K"})
 
-        self.assertEqual(mod.A_SHARE_MODEL_SUMMARY_MAX_TOKENS, 256000)
-        self.assertEqual(mod.call_grok_api.__kwdefaults__["max_tokens"], 256000)
+        self.assertEqual(mod.A_SHARE_MODEL_SUMMARY_CONTEXT_LENGTH, 256000)
+        self.assertEqual(mod.A_SHARE_MODEL_SUMMARY_MAX_TOKENS, 1800)
+        self.assertEqual(mod.call_grok_api.__kwdefaults__["max_tokens"], 1800)
+
+    def test_max_tokens_env_sets_model_summary_output_tokens(self):
+        mod = load_module_with_env({
+            "A_SHARE_MODEL_SUMMARY_CONTEXT_LENGTH": "256K",
+            "A_SHARE_MODEL_SUMMARY_MAX_TOKENS": "4096",
+        })
+
+        self.assertEqual(mod.A_SHARE_MODEL_SUMMARY_CONTEXT_LENGTH, 256000)
+        self.assertEqual(mod.A_SHARE_MODEL_SUMMARY_MAX_TOKENS, 4096)
+        self.assertEqual(mod.call_grok_api.__kwdefaults__["max_tokens"], 4096)
 
     def test_call_grok_api_omits_temperature_by_default(self):
         mod = load_module()

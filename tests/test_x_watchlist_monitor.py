@@ -13,7 +13,7 @@ SRC = ROOT / 'app'
 
 
 class XWatchlistMonitorTests(unittest.TestCase):
-    def test_context_length_sets_x_watchlist_max_tokens(self):
+    def test_context_length_does_not_set_x_watchlist_max_tokens(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env['DASHBOARD_HOME'] = tmp
@@ -33,14 +33,48 @@ def fake_openai_chat_json(base_url, api_key, prompt, max_tokens, timeout=m.REQUE
 m.openai_chat_json = fake_openai_chat_json
 m.call_grok_once('https://x.example/v1', 'secret', ['foo'], {{}}, timeout=3)
 print(json.dumps({{
-  'configured': m.X_WATCHLIST_MAX_TOKENS,
+  'context_length': m.X_WATCHLIST_CONTEXT_LENGTH,
+  'configured_max_tokens': m.X_WATCHLIST_MAX_TOKENS,
   'max_tokens': captured.get('max_tokens'),
 }}, ensure_ascii=False))
 """
             out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
             data = json.loads(out)
-            self.assertEqual(data['configured'], 128000)
-            self.assertEqual(data['max_tokens'], 128000)
+            self.assertEqual(data['context_length'], 128000)
+            self.assertEqual(data['configured_max_tokens'], 0)
+            self.assertEqual(data['max_tokens'], 1500)
+
+    def test_x_watchlist_max_tokens_sets_output_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
+            env['X_WATCHLIST_CONTEXT_LENGTH'] = '128K'
+            env['X_WATCHLIST_MAX_TOKENS'] = '4096'
+            env.pop('DASHBOARD_X_WATCHLIST_STATE', None)
+            code = f"""
+import importlib.util, json, sys
+sys.path.insert(0, {str(SRC)!r})
+spec = importlib.util.spec_from_file_location('x_watchlist_monitor_under_test', {str(SRC / 'x_watchlist_monitor.py')!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+captured = {{}}
+def fake_openai_chat_json(base_url, api_key, prompt, max_tokens, timeout=m.REQUEST_TIMEOUT_SECONDS):
+    captured['max_tokens'] = max_tokens
+    return {{'accounts': []}}
+m.openai_chat_json = fake_openai_chat_json
+m.call_grok_once('https://x.example/v1', 'secret', ['foo'], {{}}, timeout=3)
+print(json.dumps({{
+  'context_length': m.X_WATCHLIST_CONTEXT_LENGTH,
+  'configured_max_tokens': m.X_WATCHLIST_MAX_TOKENS,
+  'max_tokens': captured.get('max_tokens'),
+}}, ensure_ascii=False))
+"""
+            out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
+            data = json.loads(out)
+            self.assertEqual(data['context_length'], 128000)
+            self.assertEqual(data['configured_max_tokens'], 4096)
+            self.assertEqual(data['max_tokens'], 4096)
 
     def test_openai_chat_json_omits_temperature_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
