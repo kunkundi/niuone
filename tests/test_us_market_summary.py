@@ -35,6 +35,59 @@ def load_module_with_env(updates: dict[str, str]):
 
 
 class UsMarketSummaryTests(unittest.TestCase):
+    def test_daily_quote_uses_prior_session_close_not_range_baseline(self):
+        mod = load_module()
+        payload = {
+            "chart": {
+                "result": [{
+                    "meta": {
+                        "regularMarketPrice": 577.42,
+                        "chartPreviousClose": 596.04,
+                        "regularMarketTime": 1783621122,
+                    },
+                    "indicators": {
+                        "quote": [{
+                            "close": [555.87, 571.27, None, 535.07, 548.65, 577.42],
+                        }],
+                    },
+                }],
+            },
+        }
+
+        class Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(payload).encode("utf-8")
+
+        original_urlopen = mod.urlopen
+        try:
+            mod.urlopen = lambda req, timeout=0, context=None: Resp()
+            quote = mod._fetch_yahoo_daily_quote("XSD")
+        finally:
+            mod.urlopen = original_urlopen
+
+        self.assertIsNotNone(quote)
+        self.assertEqual(quote["prev_close"], 548.65)
+        self.assertGreater(quote["change_pct"], 0)
+        self.assertAlmostEqual(quote["change_pct"], (577.42 / 548.65 - 1) * 100, places=4)
+
+    def test_us_sector_proxy_defs_are_granular_single_mapping_industries(self):
+        mod = load_module()
+        rows = mod.US_SECTOR_PROXY_DEFS
+        symbols = [row["symbol"] for row in rows]
+
+        self.assertGreaterEqual(len(rows), 15)
+        self.assertEqual(len(symbols), len(set(symbols)))
+        self.assertTrue(all(row["kind"] == "industry" for row in rows))
+        self.assertTrue(all(len(row["a_share_mapping"]) == 1 for row in rows))
+        self.assertTrue({"XSD", "XSW", "KRE", "KCE", "KIE", "XBI", "XPH", "XHE", "XOP", "XES", "XME"}.issubset(symbols))
+        self.assertFalse({"XLK", "XLC", "XLY", "XLI", "XLF", "XLV", "XLE", "XLB", "XLP", "XLU", "XLRE"}.intersection(symbols))
+
     def test_context_length_does_not_set_grok_max_tokens_default(self):
         mod = load_module_with_env({"US_MARKET_SUMMARY_CONTEXT_LENGTH": "128K"})
 

@@ -410,6 +410,52 @@ class DashboardAuthTests(unittest.TestCase):
             dashboard.INDEX_HTML,
         )
 
+    def test_us_sector_api_returns_sector_snapshot(self):
+        original_producer = dashboard.produce_us_sector_data
+        try:
+            dashboard.produce_us_sector_data = lambda: {
+                "items": [{"symbol": "SMH", "label": "半导体", "change_pct": 1.2}],
+                "generated_at": "2026-07-10 01:10:00",
+            }
+            handler = FakeHandler(path='/api/us_sectors')
+            handler.do_GET()
+            payload = json.loads(handler.wfile.getvalue().decode('utf-8'))
+        finally:
+            dashboard.produce_us_sector_data = original_producer
+
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(payload["items"][0]["symbol"], "SMH")
+
+    def test_indices_market_panel_switches_to_us_sectors_with_index_session(self):
+        self.assertIn("let usSectorData = {items: []};", dashboard.INDEX_HTML)
+        self.assertIn("fetch('/api/us_sectors')", dashboard.INDEX_HTML)
+        self.assertIn('function indicesSwitchSession(aIndexItems = [])', dashboard.INDEX_HTML)
+        self.assertIn("let indicesMarketRegionOverride = '';", dashboard.INDEX_HTML)
+        self.assertIn('function resolvedIndicesMarketRegion(aIndexItems = [])', dashboard.INDEX_HTML)
+        self.assertIn('function setIndicesMarketRegion(mode)', dashboard.INDEX_HTML)
+        self.assertIn("const marketRegion = resolvedIndicesMarketRegion(aIndexItems);", dashboard.INDEX_HTML)
+        self.assertIn("const marketUsesUsSectors = marketRegion === 'us';", dashboard.INDEX_HTML)
+        self.assertIn('aria-label="行情市场切换"', dashboard.INDEX_HTML)
+        self.assertIn('data-market-region="a_share"', dashboard.INDEX_HTML)
+        self.assertIn('data-market-region="us"', dashboard.INDEX_HTML)
+        self.assertIn("const activeTitleHtml = activePanel === 'index'", dashboard.INDEX_HTML)
+        self.assertIn('${activeTitleHtml}${marketRegionSwitchHtml}', dashboard.INDEX_HTML)
+        self.assertNotIn('<h2 class="indices-part-title">${activeTitle}</h2>', dashboard.INDEX_HTML)
+        self.assertNotIn('indicesMarketRegionOverride,\n      savedAt', dashboard.INDEX_HTML)
+        self.assertIn('function renderUsSectorMarketBlock()', dashboard.INDEX_HTML)
+        self.assertIn('function renderSectorCloudHeading(source)', dashboard.INDEX_HTML)
+        self.assertIn('更新 ${esc(source.generated_at)}', dashboard.INDEX_HTML)
+        self.assertIn('${renderSectorCloudHeading(sec)}', dashboard.INDEX_HTML)
+        self.assertIn('${renderSectorCloudHeading(usSectorData)}', dashboard.INDEX_HTML)
+        self.assertNotIn('<h3>美股板块涨跌幅', dashboard.INDEX_HTML)
+        self.assertIn('rows.filter(row => Number.isFinite(row.pct) && row.pct > 0)', dashboard.INDEX_HTML)
+        self.assertIn('rows.filter(row => Number.isFinite(row.pct) && row.pct < 0)', dashboard.INDEX_HTML)
+        self.assertIn('暂无上涨板块', dashboard.INDEX_HTML)
+        self.assertIn('暂无下跌板块', dashboard.INDEX_HTML)
+        self.assertIn("s.a_share_mapping.slice(0, 3).join('、')", dashboard.INDEX_HTML)
+        self.assertNotIn("`A股映射 ${s.a_share_mapping.slice(0, 3).join('、')}`", dashboard.INDEX_HTML)
+        self.assertNotIn('const US_MARKET_QUOTE_SYMBOLS', dashboard.INDEX_HTML)
+
     def test_index_template_github_button_links_to_repo_with_icon(self):
         self.assertIn(
             '<a class="header-link" href="https://github.com/kunkundi/niuone"',

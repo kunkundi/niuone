@@ -43,87 +43,122 @@ YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?in
 US_SECTOR_PROXY_DEFS: list[dict[str, Any]] = [
     {
         "key": "semiconductors",
-        "symbol": "SMH",
+        "symbol": "XSD",
         "label": "半导体",
-        "kind": "theme",
-        "a_share_mapping": ["半导体", "芯片设备", "先进封装", "存储", "AI硬件"],
+        "kind": "industry",
+        "a_share_mapping": ["半导体"],
     },
     {
-        "key": "technology",
-        "symbol": "XLK",
-        "label": "科技",
-        "kind": "sector",
-        "a_share_mapping": ["AI算力", "软件服务", "消费电子", "光模块"],
+        "key": "software_services",
+        "symbol": "XSW",
+        "label": "软件服务",
+        "kind": "industry",
+        "a_share_mapping": ["软件服务"],
     },
     {
-        "key": "communication",
-        "symbol": "XLC",
-        "label": "通信服务",
-        "kind": "sector",
-        "a_share_mapping": ["传媒互联网", "游戏", "运营商", "云服务"],
+        "key": "telecom",
+        "symbol": "XTL",
+        "label": "电信",
+        "kind": "industry",
+        "a_share_mapping": ["运营商"],
     },
     {
-        "key": "consumer_discretionary",
-        "symbol": "XLY",
-        "label": "可选消费",
-        "kind": "sector",
-        "a_share_mapping": ["汽车链", "家电", "跨境电商", "消费电子"],
+        "key": "retail",
+        "symbol": "XRT",
+        "label": "零售",
+        "kind": "industry",
+        "a_share_mapping": ["零售"],
     },
     {
-        "key": "industrials",
-        "symbol": "XLI",
-        "label": "工业",
-        "kind": "sector",
-        "a_share_mapping": ["工业母机", "自动化", "航空航天", "机器人"],
+        "key": "homebuilders",
+        "symbol": "XHB",
+        "label": "住宅建筑",
+        "kind": "industry",
+        "a_share_mapping": ["住宅产业链"],
     },
     {
-        "key": "financials",
-        "symbol": "XLF",
-        "label": "金融",
-        "kind": "sector",
-        "a_share_mapping": ["券商", "银行", "保险", "金融科技"],
+        "key": "transportation",
+        "symbol": "XTN",
+        "label": "运输",
+        "kind": "industry",
+        "a_share_mapping": ["交通运输"],
     },
     {
-        "key": "healthcare",
-        "symbol": "XLV",
-        "label": "医疗保健",
-        "kind": "sector",
-        "a_share_mapping": ["创新药", "医疗器械", "CXO", "医药商业"],
+        "key": "aerospace_defense",
+        "symbol": "XAR",
+        "label": "航空航天与国防",
+        "kind": "industry",
+        "a_share_mapping": ["军工"],
     },
     {
-        "key": "energy",
-        "symbol": "XLE",
-        "label": "能源",
-        "kind": "sector",
-        "a_share_mapping": ["油气", "煤炭", "油服", "能源设备"],
+        "key": "regional_banks",
+        "symbol": "KRE",
+        "label": "地区银行",
+        "kind": "industry",
+        "a_share_mapping": ["银行"],
     },
     {
-        "key": "materials",
-        "symbol": "XLB",
-        "label": "原材料",
-        "kind": "sector",
-        "a_share_mapping": ["有色金属", "化工", "基础材料", "稀有金属"],
+        "key": "capital_markets",
+        "symbol": "KCE",
+        "label": "资本市场",
+        "kind": "industry",
+        "a_share_mapping": ["券商"],
     },
     {
-        "key": "consumer_staples",
-        "symbol": "XLP",
-        "label": "必选消费",
-        "kind": "sector",
-        "a_share_mapping": ["食品饮料", "农业", "商超零售", "日化"],
+        "key": "insurance",
+        "symbol": "KIE",
+        "label": "保险",
+        "kind": "industry",
+        "a_share_mapping": ["保险"],
     },
     {
-        "key": "utilities",
-        "symbol": "XLU",
-        "label": "公用事业",
-        "kind": "sector",
-        "a_share_mapping": ["电力", "公用事业", "水务燃气", "绿电"],
+        "key": "biotechnology",
+        "symbol": "XBI",
+        "label": "生物科技",
+        "kind": "industry",
+        "a_share_mapping": ["创新药"],
     },
     {
-        "key": "real_estate",
-        "symbol": "XLRE",
-        "label": "房地产",
-        "kind": "sector",
-        "a_share_mapping": ["地产链", "物业", "建材", "家居"],
+        "key": "pharmaceuticals",
+        "symbol": "XPH",
+        "label": "制药",
+        "kind": "industry",
+        "a_share_mapping": ["制药"],
+    },
+    {
+        "key": "healthcare_equipment",
+        "symbol": "XHE",
+        "label": "医疗设备",
+        "kind": "industry",
+        "a_share_mapping": ["医疗器械"],
+    },
+    {
+        "key": "healthcare_services",
+        "symbol": "XHS",
+        "label": "医疗服务",
+        "kind": "industry",
+        "a_share_mapping": ["医疗服务"],
+    },
+    {
+        "key": "oil_gas_exploration",
+        "symbol": "XOP",
+        "label": "油气勘探",
+        "kind": "industry",
+        "a_share_mapping": ["油气开采"],
+    },
+    {
+        "key": "oil_gas_services",
+        "symbol": "XES",
+        "label": "油服设备",
+        "kind": "industry",
+        "a_share_mapping": ["油服"],
+    },
+    {
+        "key": "metals_mining",
+        "symbol": "XME",
+        "label": "金属矿业",
+        "kind": "industry",
+        "a_share_mapping": ["金属矿业"],
     },
 ]
 
@@ -376,11 +411,13 @@ def _fetch_yahoo_daily_quote(symbol: str) -> dict[str, Any] | None:
         return None
     meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
     closes = (((result.get("indicators") or {}).get("quote") or [{}])[0] or {}).get("close") or []
-    price = _safe_float(meta.get("regularMarketPrice")) or _last_number(closes)
+    close_values = [number for value in closes if (number := _safe_float(value)) is not None and number > 0]
+    price = _safe_float(meta.get("regularMarketPrice")) or (close_values[-1] if close_values else None)
+    # chartPreviousClose is the close before the requested range, not the prior session.
     prev_close = (
-        _safe_float(meta.get("previousClose"))
+        (close_values[-2] if len(close_values) >= 2 else None)
+        or _safe_float(meta.get("previousClose"))
         or _safe_float(meta.get("chartPreviousClose"))
-        or (closes[-2] if len(closes) >= 2 else None)
     )
     prev_close = _safe_float(prev_close)
     if price is None or prev_close is None or prev_close <= 0:
@@ -400,7 +437,7 @@ def _fetch_yahoo_daily_quote(symbol: str) -> dict[str, Any] | None:
 
 
 def fetch_us_sector_snapshot(now: datetime | None = None) -> dict[str, Any]:
-    """Fetch a lightweight US sector/theme ETF snapshot for A-share mapping."""
+    """Fetch a lightweight granular US industry ETF snapshot for A-share mapping."""
     current_ts = time.time()
     if _SECTOR_CACHE.get("data") is not None and current_ts - float(_SECTOR_CACHE.get("ts") or 0) < SECTOR_CACHE_TTL_SECONDS:
         return _SECTOR_CACHE["data"]

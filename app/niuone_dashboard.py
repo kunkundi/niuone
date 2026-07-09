@@ -153,6 +153,7 @@ API_TTLS = {
     "practice_benchmarks": 30,
     "indices": int(os.environ.get("DASHBOARD_INDICES_TTL_SECONDS", "60") or "60"),
     "sectors": 60,
+    "us_sectors": int(os.environ.get("DASHBOARD_US_SECTORS_TTL_SECONDS", "300") or "300"),
     "hot_stocks": 60,
     "money_flow": 60,
     "market_flow": 30,
@@ -1503,6 +1504,13 @@ def produce_us_market_summary_data() -> dict[str, Any]:
     )
 
 
+def produce_us_sector_data() -> dict[str, Any]:
+    try:
+        return fetch_us_sector_snapshot()
+    except Exception as exc:
+        return {"items": [], "error": f"{type(exc).__name__}: {exc}"}
+
+
 def is_allowed_x_media_url(url: str) -> bool:
     try:
         parsed = urlparse(url)
@@ -2631,17 +2639,19 @@ INDEX_HTML = r"""<!doctype html>
     .card { background:rgba(16,19,26,.86); border:1px solid var(--line); border-radius:18px; box-shadow: 0 18px 70px rgba(0,0,0,.22); }
     .feed { display:grid; gap:14px; }
     .card { padding:18px; overflow:hidden; background:linear-gradient(135deg, rgba(16,19,26,.92) 0%, rgba(21,26,36,.88) 100%); }
-    .sector-cloud { background:linear-gradient(180deg, rgba(15,23,42,.92), rgba(6,10,18,.96)); border:1px solid rgba(148,163,184,.14); border-radius:18px; padding:18px; box-shadow:0 18px 70px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.035); }
+    .sector-cloud { min-width:0; overflow:hidden; background:linear-gradient(180deg, rgba(15,23,42,.92), rgba(6,10,18,.96)); border:1px solid rgba(148,163,184,.14); border-radius:18px; padding:18px; box-shadow:0 18px 70px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.035); }
     .sector-cloud h3 { margin:0 0 10px; font-size:16px; color:#dbeafe; font-weight:850; letter-spacing:-.01em; }
-    .sector-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(130px, 1fr)); gap:8px; }
-    .sector-item { background:rgba(2,6,23,.50); border:1px solid rgba(148,163,184,.12); border-radius:13px; padding:10px; box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
+    .sector-columns { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:16px; align-items:start; }
+    .sector-column { min-width:0; }
+    .sector-grid { min-width:0; display:grid; grid-template-columns:repeat(auto-fill, minmax(130px, 1fr)); gap:8px; }
+    .sector-item { min-width:0; overflow:hidden; background:rgba(2,6,23,.50); border:1px solid rgba(148,163,184,.12); border-radius:13px; padding:10px; box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
     .sector-name { font-size:12px; color:#cbd5e1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700; }
     .sector-item.up, .hot-item.up { background:rgba(127,29,29,.28); border-color:rgba(248,113,113,.22); }
     .sector-item.down, .hot-item.down { background:rgba(6,78,59,.28); border-color:rgba(52,211,153,.22); }
     .sector-item.flat, .hot-item.flat { background:rgba(30,41,59,.30); border-color:rgba(148,163,184,.12); }
     .sector-item.up .sector-pct, .hot-item.up .sector-pct { color:#fb7185; text-shadow:0 0 14px rgba(248,113,113,.22); }
     .sector-item.down .sector-pct, .hot-item.down .sector-pct { color:#34d399; text-shadow:0 0 14px rgba(52,211,153,.22); }
-    .sector-pct { font-size:14px; font-weight:850; margin-top:4px; font-variant-numeric:tabular-nums; }
+    .sector-pct { min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; font-weight:850; margin-top:4px; font-variant-numeric:tabular-nums; }
     .flow-val { font-size:11px; margin-left:4px; font-weight:800; white-space:nowrap; }
     .flow-in { color:#fb7185; text-shadow:0 0 14px rgba(248,113,113,.25); }
     .flow-out { color:#34d399; text-shadow:0 0 14px rgba(52,211,153,.25); }
@@ -2654,8 +2664,13 @@ INDEX_HTML = r"""<!doctype html>
     .indices-switch-btn:focus-visible { outline:2px solid rgba(157,178,255,.86); outline-offset:2px; }
     .indices-part { display:grid; gap:12px; min-width:0; }
     .indices-part-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:0 2px; }
+    .indices-part-title-row { min-width:0; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
     .indices-part-title { margin:0; color:#f8fafc; font-size:18px; line-height:1.2; font-weight:900; letter-spacing:0; }
     .indices-part-meta { color:#7b8aa0; font-size:12px; font-weight:750; font-variant-numeric:tabular-nums; white-space:nowrap; }
+    .market-region-switch { width:126px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:2px; padding:2px; border:1px solid rgba(148,163,184,.15); border-radius:10px; background:rgba(2,6,23,.52); box-shadow:inset 0 1px 0 rgba(255,255,255,.03); }
+    .market-region-btn { appearance:none; min-width:0; margin:0; padding:6px 9px; border:0; border-radius:7px; color:#8290a5; background:transparent; font-size:12px; line-height:1; font-weight:850; white-space:nowrap; }
+    .market-region-btn.active { color:#eff6ff; background:rgba(96,165,250,.22); box-shadow:inset 0 0 0 1px rgba(125,211,252,.24); }
+    .market-region-btn:focus-visible { outline:2px solid rgba(125,211,252,.82); outline-offset:1px; }
     .indices-index-stack { min-width:0; }
     .indices-index-stack > div:last-child { margin-bottom:0 !important; }
     .indices-market-stack { display:grid; gap:18px; min-width:0; }
@@ -2674,8 +2689,15 @@ INDEX_HTML = r"""<!doctype html>
     .sparkline-line { stroke:currentColor; stroke-width:2; fill:none; vector-effect:non-scaling-stroke; }
     .sparkline-zero { stroke:rgba(226,232,240,.46); stroke-width:1; stroke-dasharray:4 4; vector-effect:non-scaling-stroke; }
     .index-head { font-size:12px; color:#94a3b8; margin-bottom:2px; font-weight:600; }
-    .hot-item { background:rgba(2,6,23,.50); border:1px solid rgba(148,163,184,.12); border-radius:13px; padding:10px; box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
-    .hot-price { font-size:14px; font-weight:850; margin-top:3px; font-variant-numeric:tabular-nums; }
+    .hot-item { min-width:0; overflow:hidden; background:rgba(2,6,23,.50); border:1px solid rgba(148,163,184,.12); border-radius:13px; padding:10px; box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
+    .hot-price { min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; font-weight:850; margin-top:3px; font-variant-numeric:tabular-nums; }
+    .us-sector-cloud .sector-grid { grid-template-columns:repeat(auto-fit, minmax(165px, 1fr)); }
+    .us-sector-card { display:grid; align-content:start; gap:2px; min-height:92px; }
+    .us-sector-card .sector-pct { width:100%; }
+    .us-sector-map { min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:1px; font-size:11px; line-height:1.3; font-weight:800; }
+    .us-sector-card.up .us-sector-map { color:#fda4af; }
+    .us-sector-card.down .us-sector-map { color:#5eead4; }
+    .us-sector-card.flat .us-sector-map { color:#94a3b8; }
     .mobile-head { display:flex; justify-content:flex-end; gap:8px; align-items:flex-start; color:rgba(148,163,184,0.7); font-size:12.5px; margin-bottom:14px; }
     .mobile-head span { text-align:right; flex:0 0 auto; }
     .meta { display:flex; gap:8px; flex-wrap:wrap; align-items:center; color:var(--muted); font-size:13px; margin-bottom:12px; }
@@ -3143,6 +3165,7 @@ INDEX_HTML = r"""<!doctype html>
       .empty { padding:28px 12px; }
       .sector-cloud { padding:11px; border-radius:15px; margin-left:0; margin-right:0; }
       .sector-cloud h3 { font-size:13.5px; margin-bottom:7px; }
+      .sector-columns { grid-template-columns:1fr; gap:12px; }
       .sector-cloud > div[style*="display:flex"] { flex-direction:column; gap:12px !important; }
       .sector-cloud div[style*="min-width:260px"], .sector-cloud div[style*="min-width:250px"] { min-width:0 !important; width:100%; }
       .sector-cloud .inline-field { padding:7px 8px; }
@@ -3196,7 +3219,10 @@ INDEX_HTML = r"""<!doctype html>
       .indices-page { gap:11px; }
       .indices-switch { width:100%; }
       .indices-switch-btn { padding:8px 10px; font-size:13px; }
+      .indices-part-title-row { gap:8px; }
       .indices-part-title { font-size:16px; }
+      .market-region-switch { width:116px; }
+      .market-region-btn { min-width:0; padding:6px 7px; font-size:11.5px; }
       .index-card { border-radius:13px; padding:8px 9px; min-width:0; box-shadow:none; }
       .index-name { font-size:11px; }
       .index-price { font-size:17px; }
@@ -3204,10 +3230,13 @@ INDEX_HTML = r"""<!doctype html>
       .sparkline { height:34px; }
       .index-time { display:none; }
       .sector-grid { grid-template-columns:repeat(3, minmax(0, 1fr)); gap:6px; }
+      .us-sector-cloud .sector-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+      .us-sector-card { min-height:84px; }
       .sector-item, .hot-item { padding:8px 7px; border-radius:12px; min-width:0; }
       .sector-name { font-size:10.5px; letter-spacing:-.01em; }
       .sector-pct { font-size:12.5px; margin-top:3px; }
       .hot-price { font-size:12.5px; margin-top:3px; }
+      .us-sector-map { font-size:10.5px; }
       .flow-val { display:block; margin-left:0; margin-top:2px; font-size:10.5px; }
       .sector-pct .flow-val { display:block; }
     }
@@ -3311,6 +3340,7 @@ INDEX_HTML = r"""<!doctype html>
 let data = {records: [], platforms: [], chats: [], categories: {}};
 let indicesData = {};
 let sectorData = {};
+let usSectorData = {items: []};
 let usQuotesData = {items: {}, symbols: []};
 let usQuotesLoadingKey = '';
 let hotStocksData = {};
@@ -3325,6 +3355,7 @@ const initialParams = new URLSearchParams(location.search);
 let activeCategory = initialParams.get('category') || 'b1_screen';
 const US_FEATURES_ENABLED = __US_FEATURES_ENABLED__;
 let indicesViewMode = initialParams.get('panel') === 'market' ? 'market' : 'index';
+let indicesMarketRegionOverride = '';
 const X_MONITOR_PAGE_SIZE = 10;
 let usRatingDayIndex = 0;
 let ratingExpandedRowId = '';
@@ -3617,7 +3648,7 @@ let lastAutoRefreshAt = 0;
 function saveViewState() {
   try {
     sessionStorage.setItem(VIEW_STATE_KEY, JSON.stringify({
-      data, indicesData, sectorData, hotStocksData, moneyFlowData, marketFlowData,
+      data, indicesData, sectorData, usSectorData, hotStocksData, moneyFlowData, marketFlowData,
       usMarketSummaryData, b1ScreenData, niuniuPracticeData, practiceBenchmarksData, usQuotesData,
       xPageOffset, xLoadedOffset, practiceCurveMode, practicePositionMode, practicePositionBriefMode, indicesViewMode,
       savedAt: Date.now()
@@ -3631,6 +3662,7 @@ function restoreViewState() {
     data = cached.data || data;
     indicesData = cached.indicesData || indicesData;
     sectorData = cached.sectorData || sectorData;
+    usSectorData = cached.usSectorData || usSectorData;
     hotStocksData = cached.hotStocksData || hotStocksData;
     moneyFlowData = cached.moneyFlowData || moneyFlowData;
     marketFlowData = cached.marketFlowData || marketFlowData;
@@ -3881,6 +3913,7 @@ async function loadIndicesDataInBg() {
   const tasks = [
     applyResult('indices', fetchJson('/api/indices', {}), data => { indicesData = data || {}; }),
     applyResult('hot stocks', fetchJson('/api/hot_stocks', {}), data => { hotStocksData = data || {}; }),
+    applyResult('us sectors', fetchJson('/api/us_sectors', {items: []}), data => { usSectorData = data || {items: []}; }),
     applyResult('money flow', fetchJson('/api/money_flow', {inflow: [], outflow: []}), data => { moneyFlowData = data || {inflow: [], outflow: []}; }),
     applyResult('market flow', fetchJson('/api/market_flow', {total_inflow_yi: null}), data => { marketFlowData = data || {total_inflow_yi: null}; }),
     applyResult(
@@ -3896,6 +3929,7 @@ async function loadIndices() {
   try {
     const idxPromise = fetch('/api/indices').then(r => r.ok ? r.json() : {items: []});
     const secPromise = fetch('/api/sectors').then(r => r.ok ? r.json() : {sectors: []});
+    const usSecPromise = fetch('/api/us_sectors').then(r => r.ok ? r.json() : {items: []});
     const hotPromise = fetch('/api/hot_stocks').then(r => r.ok ? r.json() : {items: []});
     const mfPromise = fetch('/api/money_flow').then(r => r.ok ? r.json() : {inflow: [], outflow: []});
     const mkfPromise = fetch('/api/market_flow').then(r => r.ok ? r.json() : {total_inflow_yi: null});
@@ -3903,8 +3937,9 @@ async function loadIndices() {
     indicesData = idx || {items: []};
     if (activeCategory === 'indices') render();
     saveViewState();
-    const [sec, hot, mf, mkf] = await Promise.all([secPromise, hotPromise, mfPromise, mkfPromise]);
+    const [sec, usSec, hot, mf, mkf] = await Promise.all([secPromise, usSecPromise, hotPromise, mfPromise, mkfPromise]);
     sectorData = sec || sectorData || {sectors: []};
+    usSectorData = usSec || usSectorData || {items: []};
     hotStocksData = hot || hotStocksData || {items: []};
     moneyFlowData = mf || moneyFlowData || {inflow: [], outflow: []};
     marketFlowData = mkf || marketFlowData || {total_inflow_yi: null};
@@ -3996,6 +4031,40 @@ function globalSessionElapsedMinute(clockMinute, sessionStartMinute) {
   let elapsed = clockMinute - sessionStartMinute;
   if (elapsed < 0) elapsed += 24 * 60;
   return elapsed;
+}
+function marketClockParts(timeZone) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone, hour12:false, weekday:'short', hour:'2-digit', minute:'2-digit'
+  }).formatToParts(new Date());
+  const pick = type => parts.find(p => p.type === type)?.value || '';
+  let hour = Number(pick('hour'));
+  const minute = Number(pick('minute'));
+  if (hour === 24) hour = 0;
+  return {weekday: pick('weekday'), minuteOfDay: hour * 60 + minute};
+}
+function isWeekdayClock(clock) {
+  return ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(clock.weekday);
+}
+function isAShareOpenNow() {
+  const c = marketClockParts('Asia/Shanghai');
+  const m = c.minuteOfDay;
+  return isWeekdayClock(c) && ((m >= 9 * 60 + 15 && m <= 11 * 60 + 30) || (m >= 13 * 60 && m <= 15 * 60));
+}
+function isAShareDaySessionNow() {
+  const c = marketClockParts('Asia/Shanghai');
+  const m = c.minuteOfDay;
+  return isWeekdayClock(c) && m >= 9 * 60 + 15 && m <= 15 * 60;
+}
+function isUsOpenNow() {
+  const c = marketClockParts('America/New_York');
+  const m = c.minuteOfDay;
+  return isWeekdayClock(c) && m >= 9 * 60 + 30 && m <= 16 * 60;
+}
+function indicesSwitchSession(aIndexItems = []) {
+  const hasAIndexItems = !Array.isArray(aIndexItems) || aIndexItems.length > 0;
+  if (isAShareOpenNow() || (isAShareDaySessionNow() && hasAIndexItems)) return 'a_share';
+  if (isUsOpenNow()) return 'us_open';
+  return 'global';
 }
 function compressedGlobalSessionProgresses(minuteLine, sessionStartMinute) {
   const rows = [];
@@ -5122,6 +5191,17 @@ function setIndicesViewMode(mode) {
   saveViewState();
 }
 
+function setIndicesMarketRegion(mode) {
+  if (!['a_share', 'us'].includes(mode)) return;
+  indicesMarketRegionOverride = mode;
+  if (activeCategory === 'indices' && indicesViewMode === 'market') render();
+}
+
+function resolvedIndicesMarketRegion(aIndexItems = []) {
+  if (indicesMarketRegionOverride) return indicesMarketRegionOverride;
+  return indicesSwitchSession(aIndexItems) === 'a_share' ? 'a_share' : 'us';
+}
+
 function renderIndicesPanel() {
   const idx = indicesData;
   const items = idx.items || [];
@@ -5182,34 +5262,6 @@ function renderIndicesPanel() {
       </article>
     `).join('')}</section></div>`;
   }
-  function marketClockParts(timeZone) {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone, hour12:false, weekday:'short', hour:'2-digit', minute:'2-digit'
-    }).formatToParts(new Date());
-    const pick = type => parts.find(p => p.type === type)?.value || '';
-    let hour = Number(pick('hour'));
-    const minute = Number(pick('minute'));
-    if (hour === 24) hour = 0;
-    return {weekday: pick('weekday'), minuteOfDay: hour * 60 + minute};
-  }
-  function isWeekdayClock(clock) {
-    return ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(clock.weekday);
-  }
-  function isAShareOpenNow() {
-    const c = marketClockParts('Asia/Shanghai');
-    const m = c.minuteOfDay;
-    return isWeekdayClock(c) && ((m >= 9 * 60 + 15 && m <= 11 * 60 + 30) || (m >= 13 * 60 && m <= 15 * 60));
-  }
-  function isAShareDaySessionNow() {
-    const c = marketClockParts('Asia/Shanghai');
-    const m = c.minuteOfDay;
-    return isWeekdayClock(c) && m >= 9 * 60 + 15 && m <= 15 * 60;
-  }
-  function isUsOpenNow() {
-    const c = marketClockParts('America/New_York');
-    const m = c.minuteOfDay;
-    return isWeekdayClock(c) && m >= 9 * 60 + 30 && m <= 16 * 60;
-  }
   function legacyMarketType(item) {
     const key = String(item.key || '');
     const code = String(item.code || '');
@@ -5227,18 +5279,16 @@ function renderIndicesPanel() {
     if (Array.isArray(grouped) && grouped.length) return grouped;
     return items.filter(x => legacyMarketType(x) === type || (fallbackGroup && x.group === fallbackGroup && legacyMarketType(x) === type));
   }
+  const aIndexItems = marketItems('a_index', 'domestic');
+  const usIndexItems = marketItems('us_index', 'global');
   function renderSessionMarketGroups() {
-    const aOpen = isAShareOpenNow();
-    const usOpen = isUsOpenNow();
-    const aIndexItems = marketItems('a_index', 'domestic');
-    const usIndexItems = marketItems('us_index', 'global');
-    const aDaySession = isAShareDaySessionNow() && aIndexItems.length;
-    const sections = (aOpen || aDaySession) ? [
+    const session = indicesSwitchSession(aIndexItems);
+    const sections = session === 'a_share' ? [
       ['A股指数', aIndexItems],
       ['A股期货', marketItems('a_futures')],
       ['美股期货', marketItems('us_futures')],
       ['大宗商品', marketItems('commodity', 'commodity')],
-    ] : usOpen ? [
+    ] : session === 'us_open' ? [
       ['美股指数', usIndexItems],
       ['A股期货', marketItems('a_futures')],
       ['大宗商品', marketItems('commodity', 'commodity')],
@@ -5273,6 +5323,10 @@ function renderIndicesPanel() {
   let cloudHtml = '';
   const gainTop = sec.gain_top || sectors.slice(0, 10);
   const lossTop = sec.loss_top || [];
+  function renderSectorCloudHeading(source) {
+    const sourceMeta = source && source.generated_at ? `<span class="flow-val">更新 ${esc(source.generated_at)}</span>` : '';
+    return `<h3>板块涨跌幅 ${sourceMeta}</h3>`;
+  }
   function renderSectorMoveBlock(title, list, isGain) {
     if (!list || !list.length) return '';
     return `<h3>${title}</h3><div class="sector-grid">${list.slice(0,10).map(s => {
@@ -5283,19 +5337,67 @@ function renderIndicesPanel() {
     }).join('')}</div>`;
   }
   if (gainTop.length || lossTop.length) {
-    cloudHtml = `<div class="sector-cloud"><h3>板块涨跌幅</h3><div style="display:flex;gap:16px;flex-wrap:wrap"><div style="flex:1;min-width:260px">${renderSectorMoveBlock('涨幅前十', gainTop, true)}</div><div style="flex:1;min-width:260px">${renderSectorMoveBlock('跌幅前十', lossTop, false)}</div></div></div>`;
+    cloudHtml = `<div class="sector-cloud">${renderSectorCloudHeading(sec)}<div style="display:flex;gap:16px;flex-wrap:wrap"><div style="flex:1;min-width:260px">${renderSectorMoveBlock('涨幅前十', gainTop, true)}</div><div style="flex:1;min-width:260px">${renderSectorMoveBlock('跌幅前十', lossTop, false)}</div></div></div>`;
+  }
+  function normalizedUsSectorRows() {
+    return ((usSectorData && usSectorData.items) || []).map(row => {
+      const pct = Number(row.change_pct);
+      return {
+        ...row,
+        name: row.label || row.name || row.symbol || '',
+        pct: Number.isFinite(pct) ? pct : null,
+      };
+    }).filter(row => row.name);
+  }
+  function renderUsSectorMoveBlock(title, list, fallbackTone) {
+    if (!list || !list.length) {
+      const emptyText = fallbackTone === 'up' ? '暂无上涨板块' : '暂无下跌板块';
+      return `<h3>${title}</h3><div class="empty" style="padding:18px">${emptyText}</div>`;
+    }
+    return `<h3>${title}</h3><div class="sector-grid">${list.slice(0,10).map(s => {
+      const pct = Number(s.pct);
+      const cls = Number.isFinite(pct) ? (pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat') : fallbackTone;
+      const sign = Number.isFinite(pct) && pct > 0 ? '+' : '';
+      const mapping = Array.isArray(s.a_share_mapping) && s.a_share_mapping.length ? s.a_share_mapping.slice(0, 3).join('、') : (s.kind === 'theme' ? '主题ETF' : '行业ETF');
+      const symbol = s.symbol ? `${s.symbol} · ` : '';
+      const priceText = `${symbol}${Number.isFinite(Number(s.price)) ? fmtNumber(s.price) : '--'}`;
+      const pctText = Number.isFinite(pct) ? `${sign}${fmtNumber(pct)}%` : '--';
+      const titleText = `${s.name || ''} ${priceText} ${pctText} ${mapping}`.trim();
+      return `<div class="hot-item us-sector-card ${cls}" title="${esc(titleText)}"><div class="sector-name">${esc(s.name)}</div><div class="hot-price">${esc(priceText)}</div><div class="sector-pct">${esc(pctText)}</div><div class="us-sector-map">${esc(mapping)}</div></div>`;
+    }).join('')}</div>`;
+  }
+  function renderUsSectorMarketBlock() {
+    const rows = normalizedUsSectorRows();
+    if (!rows.length) {
+      const text = usSectorData && usSectorData.error ? `美股板块行情暂不可用：${esc(usSectorData.error)}` : '美股板块行情加载中...';
+      return `<div class="sector-cloud">${renderSectorCloudHeading(usSectorData)}<div class="empty" style="padding:18px">${text}</div></div>`;
+    }
+    const gainRows = rows.filter(row => Number.isFinite(row.pct) && row.pct > 0).sort((a, b) => b.pct - a.pct);
+    const lossRows = rows.filter(row => Number.isFinite(row.pct) && row.pct < 0).sort((a, b) => a.pct - b.pct);
+    return `<div class="sector-cloud us-sector-cloud">${renderSectorCloudHeading(usSectorData)}<div class="sector-columns"><div class="sector-column">${renderUsSectorMoveBlock('涨幅前十', gainRows, 'up')}</div><div class="sector-column">${renderUsSectorMoveBlock('跌幅前十', lossRows, 'down')}</div></div></div>`;
   }
   const indexHtml = renderSessionMarketGroups();
   const marketFlowHtml = renderMarketFlowBlock();
-  const marketHtml = `${cloudHtml}${hotHtml}${marketFlowHtml}${mfHtml}`;
-  const marketModuleCount = [cloudHtml, hotHtml, marketFlowHtml, mfHtml].filter(Boolean).length;
+  const aShareMarketHtml = `${cloudHtml}${hotHtml}${marketFlowHtml}${mfHtml}`;
+  const marketRegion = resolvedIndicesMarketRegion(aIndexItems);
+  const marketUsesUsSectors = marketRegion === 'us';
+  const marketHtml = marketUsesUsSectors ? renderUsSectorMarketBlock() : aShareMarketHtml;
+  const usSectorCount = normalizedUsSectorRows().length;
+  const marketModuleCount = marketUsesUsSectors ? usSectorCount : [cloudHtml, hotHtml, marketFlowHtml, mfHtml].filter(Boolean).length;
   const hasMarketPayload =
-    ['gain_top', 'loss_top', 'sectors', 'items'].some(key => Array.isArray(sec[key])) ||
-    ['amount_top', 'turnover_top', 'volume_top', 'items'].some(key => Array.isArray(hot[key])) ||
-    ['inflow', 'outflow'].some(key => Array.isArray(mf[key]));
+    marketUsesUsSectors ? usSectorCount > 0 : (
+      ['gain_top', 'loss_top', 'sectors', 'items'].some(key => Array.isArray(sec[key])) ||
+      ['amount_top', 'turnover_top', 'volume_top', 'items'].some(key => Array.isArray(hot[key])) ||
+      ['inflow', 'outflow'].some(key => Array.isArray(mf[key]))
+  );
   const activePanel = indicesViewMode === 'market' ? 'market' : 'index';
-  const activeTitle = activePanel === 'market' ? '行情' : '指数';
-  const activeMeta = activePanel === 'market' ? `${marketModuleCount || 0} 组` : `${items.length} 项`;
+  const activeTitleHtml = activePanel === 'index' ? '<h2 class="indices-part-title">指数</h2>' : '';
+  const activeMeta = activePanel === 'market' ? `${marketModuleCount || 0} ${marketUsesUsSectors ? '项' : '组'}` : `${items.length} 项`;
+  const marketRegionSwitchHtml = activePanel === 'market' ? `
+    <div class="market-region-switch" role="group" aria-label="行情市场切换" title="${indicesMarketRegionOverride ? '当前为手动选择' : '当前按交易时段自动选择'}">
+      <button type="button" class="market-region-btn ${marketRegion === 'a_share' ? 'active' : ''}" data-market-region="a_share" aria-pressed="${marketRegion === 'a_share' ? 'true' : 'false'}" onclick="setIndicesMarketRegion('a_share')">A股</button>
+      <button type="button" class="market-region-btn ${marketRegion === 'us' ? 'active' : ''}" data-market-region="us" aria-pressed="${marketRegion === 'us' ? 'true' : 'false'}" onclick="setIndicesMarketRegion('us')">美股</button>
+    </div>` : '';
   const activeHtml = activePanel === 'market'
     ? (marketHtml || `<div class="empty" style="padding:18px">${hasMarketPayload ? '暂无行情数据' : '行情加载中...'}</div>`)
     : (indexHtml || '<div class="empty" style="padding:18px">暂无指数数据</div>');
@@ -5305,7 +5407,7 @@ function renderIndicesPanel() {
       <button type="button" class="indices-switch-btn ${activePanel === 'market' ? 'active' : ''}" aria-pressed="${activePanel === 'market' ? 'true' : 'false'}" onclick="setIndicesViewMode('market')">行情</button>
     </div>
     <section class="indices-part" id="${activePanel === 'market' ? 'market-overview' : 'indices-overview'}">
-      <div class="indices-part-head"><h2 class="indices-part-title">${activeTitle}</h2><div class="indices-part-meta">${activeMeta}</div></div>
+      <div class="indices-part-head"><div class="indices-part-title-row">${activeTitleHtml}${marketRegionSwitchHtml}</div><div class="indices-part-meta">${activeMeta}</div></div>
       <div class="${activePanel === 'market' ? 'indices-market-stack' : 'indices-index-stack'}">${activeHtml}</div>
     </section>
   </div>`;
@@ -7300,6 +7402,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/us_market_summary":
             self.send_json_cached("us_market_summary", API_TTLS["us_market_summary"], produce_us_market_summary_data, edge_ttl=API_TTLS["us_market_summary"], browser_ttl=30)
+            return
+        if parsed.path == "/api/us_sectors":
+            self.send_json_cached("us_sectors", API_TTLS["us_sectors"], produce_us_sector_data, edge_ttl=API_TTLS["us_sectors"], browser_ttl=30)
             return
         if parsed.path == "/api/money_flow":
             self.send_json_cached("money_flow", API_TTLS["money_flow"], lambda: run_dashboard_helper("money_flow_dashboard_api.py", {"inflow": [], "outflow": []}, timeout=120), edge_ttl=API_TTLS["money_flow"], browser_ttl=15)
