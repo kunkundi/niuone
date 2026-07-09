@@ -4820,7 +4820,9 @@ function renderPracticeCalendarDayCurve(date) {
   if (curveSourcePoints.length < 2 || !Number.isFinite(baseEquity) || baseEquity <= 0) {
     return `<div class="practice-calendar-day-curve" data-practice-calendar-curve>${head}<div class="practice-calendar-day-curve-empty">等待当日分时点</div></div>`;
   }
-  const w = 360, h = 96, left = 8, right = 12, top = 8, bottom = 14;
+  // Match the wide, fixed-height SVG viewport so preserveAspectRatio does not
+  // letterbox the intraday x-axis with large empty gutters on both sides.
+  const w = 464, h = 96, left = 8, right = 12, top = 8, bottom = 14;
   const innerW = w - left - right;
   const innerH = h - top - bottom;
   const curvePoints = curveSourcePoints.map(point => {

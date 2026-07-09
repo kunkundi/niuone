@@ -527,6 +527,7 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertIn('allDayHistoryPoints.at(-1)?.equity', dashboard.INDEX_HTML)
         self.assertIn("curveSubPrefix = hasSessionCurve ? '' : '仅有收盘点 · '", dashboard.INDEX_HTML)
         self.assertIn("time: `${date} 15:00:00`", dashboard.INDEX_HTML)
+        self.assertIn('const w = 464, h = 96', dashboard.INDEX_HTML)
         self.assertIn('0轴 ${prevPoint ? esc(String(prevPoint.time || \'\').slice(5, 16)) : \'初始资金\'}', dashboard.INDEX_HTML)
         self.assertIn('position:absolute; left:0; right:0; bottom:calc(100% + 8px)', dashboard.INDEX_HTML)
         self.assertIn('overflow:visible', dashboard.INDEX_HTML)
