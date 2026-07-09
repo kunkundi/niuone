@@ -655,6 +655,7 @@ def get_practice_payload() -> dict[str, Any]:
         if hasattr(trader, "maybe_record_session_equity_heartbeat"):
             trader.maybe_record_session_equity_heartbeat()
         payload = trader.get_dashboard_payload()
+        payload["trade_markers"] = compact_trade_markers(payload.get("trade_log") or [])
         annotate_practice_payload_clock(payload)
         try:
             refresh_b1_candidate_cache_from_current_pool()
@@ -665,7 +666,7 @@ def get_practice_payload() -> dict[str, Any]:
         print(f"[WARN] practice payload error: {type(exc).__name__}: {exc}", flush=True)
         payload = {"positions": [], "cash": 0, "total_equity": 0, "initial_cash": 0,
                    "total_pnl": 0, "total_pnl_pct": 0, "trade_log": [], "decision_log": [],
-                   "equity_history": [], "last_error": str(exc), "decision_model": "", "decision_provider": ""}
+                   "equity_history": [], "trade_markers": [], "last_error": str(exc), "decision_model": "", "decision_provider": ""}
         return annotate_practice_payload_clock(payload)
 
 def downsample_sequence(items: list[Any], max_points: int) -> list[Any]:
@@ -793,6 +794,61 @@ def filter_today_log_entries(
     return rows[:max_items] if max_items is not None else rows
 
 
+def compact_trade_markers(
+    entries: list[Any],
+    *,
+    max_items: int = 200,
+) -> list[dict[str, Any]]:
+    """Keep the compact fill fields needed to annotate equity charts."""
+    fields = (
+        "time", "action", "code", "name", "shares", "price", "pnl", "pnl_pct",
+        "position_after_trade_pct", "position_after_trade_qty",
+    )
+    source_rows: list[dict[str, Any]] = []
+    for item in entries or []:
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("action") or "").upper()
+        time_text = str(item.get("time") or "")
+        if action not in {"BUY", "SELL"} or not time_text:
+            continue
+        row = {key: item.get(key) for key in fields if item.get(key) is not None}
+        row["action"] = action
+        row["time"] = time_text
+        source_rows.append(row)
+
+    source_rows.sort(key=lambda item: str(item.get("time") or ""))
+    inferred_positions: dict[str, int] = {}
+    rows: list[dict[str, Any]] = []
+    for row in source_rows:
+        action = str(row.get("action") or "")
+        code = str(row.get("code") or "")
+        try:
+            shares = max(0, int(float(row.get("shares") or 0)))
+        except (TypeError, ValueError):
+            shares = 0
+        before_qty = inferred_positions.get(code, 0)
+        if action == "BUY":
+            inferred_positions[code] = before_qty + shares
+        else:
+            inferred_after_qty = max(0, before_qty - shares)
+            explicit_after_qty = row.get("position_after_trade_qty")
+            try:
+                after_qty = max(0, int(float(explicit_after_qty))) if explicit_after_qty is not None else inferred_after_qty
+            except (TypeError, ValueError):
+                after_qty = inferred_after_qty
+            inferred_positions[code] = after_qty
+
+            explicit_after_pct = row.get("position_after_trade_pct")
+            try:
+                is_full_exit = float(explicit_after_pct) <= 0 if explicit_after_pct is not None else before_qty > 0 and after_qty <= 0
+            except (TypeError, ValueError):
+                is_full_exit = before_qty > 0 and after_qty <= 0
+            row["is_full_exit"] = bool(is_full_exit)
+        rows.append(row)
+    return rows[-max(0, int(max_items or 0)):] if max_items else rows
+
+
 def get_practice_payload_fast() -> dict[str, Any]:
     """Return a local portfolio snapshot without network quote refresh or auto trading checks."""
     try:
@@ -807,6 +863,7 @@ def get_practice_payload_fast() -> dict[str, Any]:
         # the full response arrives a few seconds later.
         payload["equity_history"] = compact_intraday_equity_history(equity_history, max_points=0, now=now)
         payload["daily_equity_history"] = compact_daily_equity_history([*equity_history, *daily_equity_history], now=now)
+        payload["trade_markers"] = compact_trade_markers(state.get("trade_log") or [])
         payload["trade_log"] = filter_today_log_entries(payload.get("trade_log") or [], now=now)
         payload["decision_log"] = filter_today_log_entries(payload.get("decision_log") or [], now=now)
         payload["trading_calendar"] = dashboard_trading_day_status(now)
@@ -824,7 +881,7 @@ def get_practice_payload_fast() -> dict[str, Any]:
         print(f"[WARN] fast practice payload error: {type(exc).__name__}: {exc}", flush=True)
         payload = {"positions": [], "cash": 0, "total_equity": 0, "initial_cash": 0,
                    "total_pnl": 0, "total_pnl_pct": 0, "trade_log": [], "decision_log": [],
-                   "equity_history": [], "last_error": str(exc), "snapshot_mode": "fast"}
+                   "equity_history": [], "trade_markers": [], "last_error": str(exc), "snapshot_mode": "fast"}
         return annotate_practice_payload_clock(payload)
 
 def normalize_b1_payload_for_trader(b1_payload: dict[str, Any]) -> dict[str, Any]:
@@ -2915,6 +2972,29 @@ INDEX_HTML = r"""<!doctype html>
     .practice-hover-tooltip-row strong.up { color:#ff4d4f; }
     .practice-hover-tooltip-row strong.down { color:#39d98a; }
     .practice-chart-hover-layer.active .practice-hover-line, .practice-chart-hover-layer.active .practice-hover-marker, .practice-chart-hover-layer.active .practice-hover-tooltip { opacity:1; }
+    .practice-trade-marker { appearance:none; position:absolute; z-index:8; width:18px; height:18px; display:grid; place-items:center; padding:0; border-radius:999px; border:2px solid rgba(248,250,252,.92); color:#fff; font-size:9px; line-height:1; font-weight:950; font-family:inherit; cursor:help; transform:translate(-50%,-50%); box-shadow:0 4px 13px rgba(0,0,0,.40), 0 0 0 2px rgba(15,23,42,.62); }
+    .practice-trade-marker.buy { background:#2563eb; }
+    .practice-trade-marker.sell-partial { background:#f59e0b; color:#241500; }
+    .practice-trade-marker.sell-full { background:#ef4444; }
+    .practice-trade-marker.sell-mixed { background:#db2777; }
+    .practice-trade-marker.mixed { background:#7c3aed; }
+    .practice-trade-marker:focus-visible { outline:2px solid #f8fafc; outline-offset:2px; }
+    .practice-trade-marker-tooltip { position:absolute; left:50%; bottom:calc(100% + 8px); z-index:3; width:max-content; min-width:190px; max-width:min(310px, calc(100vw - 44px)); display:grid; gap:4px; padding:8px 9px; border:1px solid rgba(203,213,225,.24); border-radius:10px; background:rgba(10,15,24,.97); box-shadow:0 16px 42px rgba(0,0,0,.46), inset 0 1px 0 rgba(255,255,255,.07); color:#e5edf8; font-size:11px; line-height:1.35; font-weight:750; font-variant-numeric:tabular-nums; text-align:left; white-space:nowrap; transform:translateX(-50%); opacity:0; visibility:hidden; pointer-events:none; backdrop-filter:blur(10px); }
+    .practice-trade-marker.place-left .practice-trade-marker-tooltip { left:auto; right:-4px; transform:none; }
+    .practice-trade-marker.place-right .practice-trade-marker-tooltip { left:-4px; transform:none; }
+    .practice-trade-marker.place-bottom .practice-trade-marker-tooltip { top:calc(100% + 8px); bottom:auto; }
+    .practice-trade-marker:hover .practice-trade-marker-tooltip, .practice-trade-marker:focus-visible .practice-trade-marker-tooltip { opacity:1; visibility:visible; }
+    .practice-trade-marker-time { color:#94a3b8; font-size:10px; font-weight:850; }
+    .practice-trade-marker-line { display:flex; align-items:baseline; gap:6px; color:#f8fafc; font-weight:800; }
+    .practice-trade-marker-line + .practice-trade-marker-line { padding-top:3px; border-top:1px solid rgba(148,163,184,.14); }
+    .practice-trade-marker-side { min-width:18px; display:inline-grid; place-items:center; padding:1px 4px; border-radius:5px; font-size:10px; line-height:1.35; font-weight:950; }
+    .practice-trade-marker-line.buy .practice-trade-marker-side { color:#dbeafe; background:rgba(37,99,235,.34); box-shadow:inset 0 0 0 1px rgba(96,165,250,.32); }
+    .practice-trade-marker-line.sell .practice-trade-marker-side { color:#fef3c7; background:rgba(217,119,6,.30); box-shadow:inset 0 0 0 1px rgba(251,191,36,.30); }
+    .practice-trade-marker-stock { color:#f8fafc; font-weight:900; }
+    .practice-trade-marker-fill { color:#bfdbfe; font-weight:800; }
+    .practice-trade-marker-pnl { margin-left:auto; font-weight:900; }
+    .practice-trade-marker-pnl.up { color:#ff6b6d; }
+    .practice-trade-marker-pnl.down { color:#39d98a; }
     .benchmark-toggle-row { display:flex; gap:7px; flex-wrap:wrap; margin-top:8px; }
     .benchmark-toggle { cursor:pointer; user-select:none; border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.035); color:#8a8f98; border-radius:999px; padding:4px 8px; font-size:11px; font-weight:800; display:inline-flex; align-items:center; gap:5px; }
     .benchmark-toggle.on { color:#f7f8f8; background:rgba(255,255,255,.07); }
@@ -2985,7 +3065,7 @@ INDEX_HTML = r"""<!doctype html>
     .practice-rule-body::-webkit-scrollbar-track { background:rgba(15,23,42,.36); border-radius:999px; }
     .practice-rule-body::-webkit-scrollbar-thumb { background:rgba(148,163,184,.36); border-radius:999px; border:2px solid rgba(15,23,42,.36); }
     .practice-calendar-popover { position:fixed; top:50%; left:50%; z-index:70; width:min(390px, calc(100vw - 36px)); max-height:min(62vh, 500px); overflow:visible; transform:translate(-50%,-50%); }
-    .practice-calendar-day-curve { position:absolute; left:0; right:0; bottom:calc(100% + 8px); z-index:1; min-width:0; overflow:hidden; border:1px solid transparent; border-radius:12px; padding:8px 9px 7px; background:linear-gradient(180deg, rgba(23,32,51,.98), rgba(15,23,42,.98)) padding-box, linear-gradient(135deg, rgba(96,165,250,.60), rgba(124,92,255,.46) 48%, rgba(52,211,153,.28)) border-box; box-shadow:0 18px 58px rgba(0,0,0,.48), inset 0 1px 0 rgba(255,255,255,.07); }
+    .practice-calendar-day-curve { position:absolute; left:0; right:0; bottom:calc(100% + 8px); z-index:1; min-width:0; overflow:visible; border:1px solid transparent; border-radius:12px; padding:8px 9px 7px; background:linear-gradient(180deg, rgba(23,32,51,.98), rgba(15,23,42,.98)) padding-box, linear-gradient(135deg, rgba(96,165,250,.60), rgba(124,92,255,.46) 48%, rgba(52,211,153,.28)) border-box; box-shadow:0 18px 58px rgba(0,0,0,.48), inset 0 1px 0 rgba(255,255,255,.07); }
     .practice-calendar-day-curve-head { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:start; gap:8px; margin-bottom:4px; }
     .practice-calendar-day-curve-title { min-width:0; color:#e5edf8; font-size:12px; line-height:1.2; font-weight:850; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .practice-calendar-day-curve-sub { margin-top:2px; color:#7b8aa0; font-size:9px; line-height:1.2; font-variant-numeric:tabular-nums; }
@@ -2993,7 +3073,10 @@ INDEX_HTML = r"""<!doctype html>
     .practice-calendar-day-curve-value.up { color:#ff4d4f; }
     .practice-calendar-day-curve-value.down { color:#39d98a; }
     .practice-calendar-day-curve-close { width:22px; height:22px; min-width:22px; display:grid; place-items:center; padding:0; border-radius:7px; border:1px solid rgba(191,219,254,.18); background:rgba(30,41,59,.76); color:#cbd5e1; font-size:13px; line-height:1; font-weight:850; }
-    .practice-calendar-day-curve-svg { width:100%; height:78px; display:block; }
+    .practice-calendar-day-curve-chart { position:relative; width:100%; height:78px; }
+    .practice-calendar-day-curve-svg { width:100%; height:100%; display:block; }
+    .practice-calendar-day-curve-chart .practice-trade-marker { width:15px; height:15px; border-width:1.5px; font-size:7.5px; }
+    .practice-calendar-day-curve-chart .practice-trade-marker-tooltip { min-width:176px; max-width:min(290px, calc(100vw - 52px)); padding:7px 8px; font-size:10px; }
     .practice-calendar-day-curve-empty { min-height:56px; display:grid; place-items:center; border:1px dashed rgba(148,163,184,.20); border-radius:8px; color:#7b8aa0; font-size:11px; }
     .practice-calendar-card { width:100%; max-height:inherit; min-height:0; display:grid; grid-template-rows:auto auto minmax(0,1fr); overflow:hidden; border:1px solid transparent; border-radius:12px; background:linear-gradient(180deg, #172033, #101827) padding-box, linear-gradient(135deg, rgba(96,165,250,.68), rgba(124,92,255,.56) 48%, rgba(52,211,153,.32)) border-box; box-shadow:0 24px 90px rgba(0,0,0,.58), 0 0 0 1px rgba(15,23,42,.72), inset 0 1px 0 rgba(255,255,255,.075); }
     .practice-calendar-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 10px; border-bottom:1px solid rgba(191,219,254,.18); background:rgba(30,41,59,.48); }
@@ -3196,7 +3279,7 @@ INDEX_HTML = r"""<!doctype html>
       .practice-calendar-day-curve-title { font-size:11.5px; }
       .practice-calendar-day-curve-sub { font-size:8.5px; }
       .practice-calendar-day-curve-value { font-size:10px; }
-      .practice-calendar-day-curve-svg { height:66px; }
+      .practice-calendar-day-curve-chart { height:66px; }
       .practice-calendar-day-curve-empty { min-height:46px; font-size:10.5px; }
       .practice-calendar-card { border-radius:12px; }
       .practice-calendar-head { padding:8px 9px; gap:7px; }
@@ -4337,6 +4420,133 @@ function normalizePracticeEquityPoints(source) {
     .map(p => ({time: p.time || '', equity: Number(p.equity), pnlPct: Number(p.pnl_pct)}))
     .filter(p => Number.isFinite(p.equity) && p.time);
 }
+function normalizePracticeTradeMarkers(source) {
+  return (source || [])
+    .map(trade => {
+      const action = String(trade?.action || '').toUpperCase();
+      const afterPct = trade?.position_after_trade_pct;
+      return {
+        time: String(trade?.time || ''),
+        action,
+        code: String(trade?.code || ''),
+        name: String(trade?.name || ''),
+        shares: Number(trade?.shares),
+        price: Number(trade?.price),
+        pnl: Number(trade?.pnl),
+        pnlPct: Number(trade?.pnl_pct),
+        isFullExit: trade?.is_full_exit === true || (action === 'SELL' && afterPct !== null && afterPct !== undefined && Number(afterPct) <= 0),
+      };
+    })
+    .filter(trade => trade.time && (trade.action === 'BUY' || trade.action === 'SELL'))
+    .sort((a, b) => a.time.localeCompare(b.time));
+}
+function practiceTradeMarkersForDate(date) {
+  const payload = niuniuPracticeData || {};
+  const source = Array.isArray(payload.trade_markers) && payload.trade_markers.length
+    ? payload.trade_markers
+    : (payload.trade_log || []);
+  return normalizePracticeTradeMarkers(source).filter(trade => trade.time.slice(0, 10) === date);
+}
+function practiceTradeShareText(shares) {
+  const value = Number(shares);
+  if (!Number.isFinite(value)) return '--';
+  return Number.isInteger(value) ? String(value) : fmtNumber(value, 2);
+}
+function practiceTradePriceText(price) {
+  const value = Number(price);
+  if (!Number.isFinite(value)) return '--';
+  const cents = Math.round(value * 100) / 100;
+  return value === cents ? value.toFixed(2) : value.toFixed(3);
+}
+function practiceTradeMarkerLine(trade) {
+  const side = trade.action === 'BUY' ? '买' : '卖';
+  const stockName = trade.name || trade.code || '--';
+  let text = `${side} ${stockName} ${practiceTradeShareText(trade.shares)}股×${practiceTradePriceText(trade.price)}`;
+  if (trade.action === 'SELL' && trade.isFullExit && Number.isFinite(trade.pnl)) {
+    text += ` 盈亏${fmtSignedAmount(trade.pnl)}`;
+    if (Number.isFinite(trade.pnlPct)) text += ` (${fmtSignedPct(trade.pnlPct)})`;
+  }
+  return text;
+}
+function renderPracticeTradeMarkerLine(trade) {
+  const isBuy = trade.action === 'BUY';
+  const side = isBuy ? '买' : '卖';
+  const sideClass = isBuy ? 'buy' : 'sell';
+  const stockName = trade.name || trade.code || '--';
+  const fillText = `${practiceTradeShareText(trade.shares)}股×${practiceTradePriceText(trade.price)}`;
+  const hasPnl = !isBuy && trade.isFullExit && Number.isFinite(trade.pnl);
+  const pnlText = hasPnl
+    ? `盈亏${fmtSignedAmount(trade.pnl)}${Number.isFinite(trade.pnlPct) ? ` (${fmtSignedPct(trade.pnlPct)})` : ''}`
+    : '';
+  const pnlClass = Number(trade.pnl) >= 0 ? 'up' : 'down';
+  return `<span class="practice-trade-marker-line ${sideClass}">
+    <span class="practice-trade-marker-side">${side}</span>
+    <span class="practice-trade-marker-stock">${esc(stockName)}</span>
+    <span class="practice-trade-marker-fill">${esc(fillText)}</span>
+    ${pnlText ? `<span class="practice-trade-marker-pnl ${pnlClass}">${esc(pnlText)}</span>` : ''}
+  </span>`;
+}
+function practiceInterpolatedYAtX(series, targetX) {
+  const points = (series || [])
+    .map(point => Array.isArray(point) ? {x:Number(point[0]), y:Number(point[1])} : {x:Number(point.x), y:Number(point.y)})
+    .filter(point => Number.isFinite(point.x) && Number.isFinite(point.y))
+    .sort((a, b) => a.x - b.x);
+  if (!points.length || !Number.isFinite(Number(targetX))) return null;
+  const x = Number(targetX);
+  if (x <= points[0].x) return points[0].y;
+  if (x >= points.at(-1).x) return points.at(-1).y;
+  for (let idx = 1; idx < points.length; idx += 1) {
+    const right = points[idx];
+    if (right.x < x) continue;
+    const left = points[idx - 1];
+    const span = right.x - left.x;
+    if (span <= 0) return right.y;
+    return left.y + (right.y - left.y) * ((x - left.x) / span);
+  }
+  return points.at(-1).y;
+}
+function renderPracticeTradeMarkers(date, xFromTime, series, viewportWidth, viewportHeight) {
+  const trades = practiceTradeMarkersForDate(date)
+    .filter(trade => tradingClockMinuteOfDay(trade.time) != null && Number.isFinite(trade.shares) && trade.shares > 0);
+  if (!trades.length) return '';
+  const groups = new Map();
+  for (const trade of trades) {
+    const minuteKey = trade.time.slice(0, 16);
+    if (!groups.has(minuteKey)) groups.set(minuteKey, []);
+    groups.get(minuteKey).push(trade);
+  }
+  return [...groups.entries()].map(([minuteKey, groupTrades]) => {
+    const xValues = groupTrades.map(trade => Number(xFromTime(trade.time))).filter(Number.isFinite);
+    if (!xValues.length) return '';
+    const x = xValues.reduce((sum, value) => sum + value, 0) / xValues.length;
+    const y = practiceInterpolatedYAtX(series, x);
+    if (!Number.isFinite(y)) return '';
+    const xPct = Math.max(0, Math.min(100, x / viewportWidth * 100));
+    const yPct = Math.max(0, Math.min(100, y / viewportHeight * 100));
+    const actions = new Set(groupTrades.map(trade => trade.action));
+    let sideClass = 'mixed';
+    if (actions.size === 1 && actions.has('BUY')) {
+      sideClass = 'buy';
+    } else if (actions.size === 1 && actions.has('SELL')) {
+      const fullExitCount = groupTrades.filter(trade => trade.isFullExit).length;
+      sideClass = fullExitCount === groupTrades.length
+        ? 'sell-full'
+        : fullExitCount === 0 ? 'sell-partial' : 'sell-mixed';
+    }
+    const markerText = groupTrades.length > 1 ? String(groupTrades.length) : (actions.has('BUY') ? 'B' : 'S');
+    const placement = [xPct > 72 ? 'place-left' : xPct < 28 ? 'place-right' : '', yPct < 34 ? 'place-bottom' : ''].filter(Boolean).join(' ');
+    const lines = groupTrades.map(practiceTradeMarkerLine);
+    const timeText = minuteKey.slice(11);
+    const ariaLabel = `${timeText} ${lines.join('；')}`;
+    return `<button type="button" class="practice-trade-marker ${sideClass} ${placement}" style="left:${xPct.toFixed(2)}%;top:${yPct.toFixed(2)}%" aria-label="${esc(ariaLabel)}">
+      ${esc(markerText)}
+      <span class="practice-trade-marker-tooltip" aria-hidden="true">
+        <span class="practice-trade-marker-time">${esc(timeText)}</span>
+        ${groupTrades.map(renderPracticeTradeMarkerLine).join('')}
+      </span>
+    </button>`;
+  }).join('');
+}
 function practicePctAxisBounds(values) {
   const finite = (values || []).map(Number).filter(Number.isFinite);
   if (!finite.length) return {min: -0.01, max: 0.01, digits: 3};
@@ -4694,6 +4904,7 @@ function renderPracticeCurve(history, dailyHistory, initialCash=1000000, benchma
       <span class="practice-hover-tooltip">${renderPracticeHoverTooltip(defaultHoverItem)}</span>
     </span>`
     : '';
+  const tradeMarkerHtml = isDailyMode ? '' : renderPracticeTradeMarkers(latestDay, xFromTime, plottedPts, w, h);
   const chartTitle = isDailyMode ? '收益曲线 · 累计收益' : `今日收益曲线${isNonTradingCalendarDay && latestDay ? `（${esc(latestDay)}）` : ''}`;
   const intradayBaseLabel = intradayBasePoint
     ? `0轴为上一交易日净值(${esc(String(intradayBasePoint.time || '').slice(5, 16))})`
@@ -4751,6 +4962,7 @@ function renderPracticeCurve(history, dailyHistory, initialCash=1000000, benchma
       <span class="practice-current-line" style="left:${markerLeftPct.toFixed(2)}%"></span>
       <span class="practice-current-marker" style="left:${markerLeftPct.toFixed(2)}%;top:${markerTopPct.toFixed(2)}%;--marker-color:${markerColor};--marker-glow:${markerGlow}" title="当前 ${fmtAmount(last)}"></span>
       ${hoverLayerHtml}
+      ${tradeMarkerHtml}
       ${timeTickHtml}
     </div>
   </div>`;
@@ -4849,16 +5061,27 @@ function renderPracticeCalendarDayCurve(date) {
   const stroke = finalPnl >= 0 ? '#ff4d4f' : '#39d98a';
   const fill = finalPnl >= 0 ? 'rgba(255,77,79,.13)' : 'rgba(57,217,138,.13)';
   const areaPath = `${path} L${markerX},${h - bottom} L${xFor(curvePoints[0].minute).toFixed(1)},${h - bottom} Z`;
+  const plottedCurvePoints = curvePoints.map(point => [xFor(point.minute), yFor(point.pct)]);
+  const tradeMarkerHtml = renderPracticeTradeMarkers(
+    date,
+    time => xFor(clampedTradingClockMinuteOfDay(time)),
+    plottedCurvePoints,
+    w,
+    h,
+  );
   return `<div class="practice-calendar-day-curve" data-practice-calendar-curve>${head}
-    <svg class="practice-calendar-day-curve-svg" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(date)} 当日收益曲线">
-      <line x1="${left}" y1="${zeroY}" x2="${w - right}" y2="${zeroY}" stroke="rgba(203,213,225,.32)" stroke-width="1" stroke-dasharray="4 5"></line>
-      <path d="${areaPath}" fill="${fill}"></path>
-      <path d="${path}" fill="none" stroke="${stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
-      <circle cx="${markerX}" cy="${markerY}" r="4" fill="#f8fafc" stroke="${stroke}" stroke-width="2"></circle>
-      <text x="${left}" y="${h - 2}" fill="#7b8aa0" font-size="9">09:30</text>
-      <text x="${left + innerW / 2}" y="${h - 2}" fill="#7b8aa0" font-size="9" text-anchor="middle">11:30</text>
-      <text x="${w - right}" y="${h - 2}" fill="#7b8aa0" font-size="9" text-anchor="end">15:00</text>
-    </svg>
+    <div class="practice-calendar-day-curve-chart">
+      <svg class="practice-calendar-day-curve-svg" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(date)} 当日收益曲线">
+        <line x1="${left}" y1="${zeroY}" x2="${w - right}" y2="${zeroY}" stroke="rgba(203,213,225,.32)" stroke-width="1" stroke-dasharray="4 5"></line>
+        <path d="${areaPath}" fill="${fill}"></path>
+        <path d="${path}" fill="none" stroke="${stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
+        <circle cx="${markerX}" cy="${markerY}" r="4" fill="#f8fafc" stroke="${stroke}" stroke-width="2"></circle>
+        <text x="${left}" y="${h - 2}" fill="#7b8aa0" font-size="9">09:30</text>
+        <text x="${left + innerW / 2}" y="${h - 2}" fill="#7b8aa0" font-size="9" text-anchor="middle">11:30</text>
+        <text x="${w - right}" y="${h - 2}" fill="#7b8aa0" font-size="9" text-anchor="end">15:00</text>
+      </svg>
+      ${tradeMarkerHtml}
+    </div>
   </div>`;
 }
 function renderPracticeCalendarModal() {

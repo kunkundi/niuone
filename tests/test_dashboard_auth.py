@@ -220,6 +220,28 @@ class DashboardAuthTests(unittest.TestCase):
 
         self.assertEqual([p['time'] for p in compacted], ['2026-06-25 15:00:00'])
 
+    def test_compact_trade_markers_only_marks_full_position_exit(self):
+        trades = [
+            {'time': '2026-07-01 09:31:00', 'action': 'BUY', 'code': '600001', 'name': '示例股', 'shares': 1000, 'price': 10},
+            {'time': '2026-07-02 10:00:00', 'action': 'SELL', 'code': '600001', 'name': '示例股', 'shares': 400, 'price': 11, 'pnl': 390},
+            {'time': '2026-07-03 10:00:00', 'action': 'SELL', 'code': '600001', 'name': '示例股', 'shares': 600, 'price': 12, 'pnl': 1190},
+            {'time': '2026-07-03 13:00:00', 'action': 'BUY', 'code': '600002', 'name': '另一股', 'shares': 1000, 'price': 8},
+            {
+                'time': '2026-07-06 10:00:00', 'action': 'SELL', 'code': '600002', 'name': '另一股',
+                'shares': 900, 'price': 9, 'pnl': 880, 'position_after_trade_pct': 0.1,
+            },
+            {
+                'time': '2026-07-07 10:00:00', 'action': 'SELL', 'code': '600002', 'name': '另一股',
+                'shares': 100, 'price': 9.5, 'pnl': 145, 'position_after_trade_pct': 0,
+            },
+        ]
+
+        markers = dashboard.compact_trade_markers(list(reversed(trades)))
+        sells = [marker for marker in markers if marker['action'] == 'SELL']
+
+        self.assertEqual([marker['is_full_exit'] for marker in sells], [False, True, False, True])
+        self.assertEqual([marker['time'] for marker in markers], sorted(marker['time'] for marker in markers))
+
     def test_fast_practice_payload_derives_daily_calendar_points_from_intraday_history(self):
         class TraderStub:
             def load_state(self):
@@ -507,6 +529,23 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertIn('收益金额', dashboard.INDEX_HTML)
         self.assertIn('累计收益率', dashboard.INDEX_HTML)
         self.assertIn('当日收益率', dashboard.INDEX_HTML)
+        self.assertIn('function renderPracticeTradeMarkers', dashboard.INDEX_HTML)
+        self.assertIn('practiceTradeMarkersForDate', dashboard.INDEX_HTML)
+        self.assertIn('practice-trade-marker-tooltip', dashboard.INDEX_HTML)
+        self.assertIn("const side = trade.action === 'BUY' ? '买' : '卖';", dashboard.INDEX_HTML)
+        self.assertIn('function renderPracticeTradeMarkerLine', dashboard.INDEX_HTML)
+        self.assertIn('practice-trade-marker-side', dashboard.INDEX_HTML)
+        self.assertIn('.practice-trade-marker-pnl.up { color:#ff6b6d; }', dashboard.INDEX_HTML)
+        self.assertIn('.practice-trade-marker-pnl.down { color:#39d98a; }', dashboard.INDEX_HTML)
+        self.assertIn('.practice-trade-marker.sell-partial { background:#f59e0b;', dashboard.INDEX_HTML)
+        self.assertIn('.practice-trade-marker.sell-full { background:#ef4444;', dashboard.INDEX_HTML)
+        self.assertIn("? 'sell-full'", dashboard.INDEX_HTML)
+        self.assertIn("? 'sell-partial' : 'sell-mixed'", dashboard.INDEX_HTML)
+        self.assertIn("trade.action === 'SELL' && trade.isFullExit", dashboard.INDEX_HTML)
+        self.assertIn("${practiceTradeShareText(trade.shares)}股×${practiceTradePriceText(trade.price)}", dashboard.INDEX_HTML)
+        self.assertIn('renderPracticeTradeMarkers(latestDay, xFromTime, plottedPts, w, h)', dashboard.INDEX_HTML)
+        self.assertIn('const tradeMarkerHtml = renderPracticeTradeMarkers(', dashboard.INDEX_HTML)
+        self.assertIn('class="practice-calendar-day-curve-chart"', dashboard.INDEX_HTML)
         self.assertNotIn('practice-hover-readout', dashboard.INDEX_HTML)
         self.assertNotIn('拖动查看收益曲线点位', dashboard.INDEX_HTML)
         self.assertNotIn('每日总收益', dashboard.INDEX_HTML)
