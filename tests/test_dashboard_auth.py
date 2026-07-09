@@ -4,10 +4,12 @@ import gzip
 import io
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 import sys
 import urllib.parse
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -56,6 +58,8 @@ class DashboardAuthTests(unittest.TestCase):
         self.tmp_path = Path(self.tmp.name)
         self.original_dashboard_env_file = dashboard.DASHBOARD_ENV_FILE
         self.original_cron_state_dir = dashboard.CRON_STATE_DIR
+        self.original_stats_db = dashboard.STATS_DB
+        self.original_legacy_stats_db = dashboard.LEGACY_STATS_DB
         self.saved_env = {
             name: os.environ.get(name)
             for name in (
@@ -69,6 +73,7 @@ class DashboardAuthTests(unittest.TestCase):
         for name in self.saved_env:
             os.environ.pop(name, None)
         dashboard.STATS_DB = self.tmp_path / 'dashboard_stats.db'
+        dashboard.LEGACY_STATS_DB = self.tmp_path / 'dashboard_users.db'
         dashboard.DASHBOARD_ENV_FILE = self.tmp_path / 'dashboard.env'
         dashboard.CRON_STATE_DIR = self.tmp_path / 'cron' / 'state'
         dashboard.API_RESPONSE_CACHE.clear()
@@ -79,6 +84,8 @@ class DashboardAuthTests(unittest.TestCase):
     def tearDown(self):
         dashboard.DASHBOARD_ENV_FILE = self.original_dashboard_env_file
         dashboard.CRON_STATE_DIR = self.original_cron_state_dir
+        dashboard.STATS_DB = self.original_stats_db
+        dashboard.LEGACY_STATS_DB = self.original_legacy_stats_db
         for name, value in self.saved_env.items():
             if value is None:
                 os.environ.pop(name, None)
@@ -96,6 +103,48 @@ class DashboardAuthTests(unittest.TestCase):
         admin.do_GET()
         self.assertEqual(admin.status, 200)
         self.assertIn('<h1>设置</h1>', admin.wfile.getvalue().decode('utf-8'))
+
+    def test_legacy_visit_stats_are_migrated_once(self):
+        with closing(sqlite3.connect(dashboard.STATS_DB)) as con:
+            con.execute("INSERT INTO visit_stats(key,value,updated_at) VALUES('home_views',3,10)")
+            con.execute("INSERT INTO unique_visitors(visitor_hash,first_seen_at,last_seen_at) VALUES('new',10,10)")
+            con.commit()
+
+        with closing(sqlite3.connect(dashboard.LEGACY_STATS_DB)) as con:
+            con.execute("""
+                CREATE TABLE visit_stats (
+                    key TEXT PRIMARY KEY,
+                    value INTEGER NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE unique_visitors (
+                    visitor_hash TEXT PRIMARY KEY,
+                    first_seen_at REAL NOT NULL,
+                    last_seen_at REAL NOT NULL
+                )
+            """)
+            con.execute("INSERT INTO visit_stats(key,value,updated_at) VALUES('home_views',42,20)")
+            con.executemany(
+                "INSERT INTO unique_visitors(visitor_hash,first_seen_at,last_seen_at) VALUES(?,?,?)",
+                [('old', 1, 2), ('new', 5, 20)],
+            )
+            con.commit()
+
+        dashboard.ensure_stats_db()
+        dashboard.ensure_stats_db()
+
+        with closing(sqlite3.connect(dashboard.STATS_DB)) as con:
+            views = con.execute("SELECT value FROM visit_stats WHERE key='home_views'").fetchone()[0]
+            visitor_count = con.execute("SELECT COUNT(*) FROM unique_visitors").fetchone()[0]
+            new_seen = con.execute(
+                "SELECT first_seen_at,last_seen_at FROM unique_visitors WHERE visitor_hash='new'"
+            ).fetchone()
+
+        self.assertEqual(views, 45)
+        self.assertEqual(visitor_count, 2)
+        self.assertEqual(new_seen, (5.0, 20.0))
 
     def test_compact_intraday_equity_history_keeps_latest_day_endpoints(self):
         old_points = [

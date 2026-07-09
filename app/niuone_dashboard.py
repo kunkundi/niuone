@@ -70,6 +70,8 @@ CRON_OUTPUT_DIR = DASHBOARD_HOME / "cron" / "output"
 CRON_STATE_DIR = DASHBOARD_HOME / "cron" / "state"
 B1_CACHE_FILE = CRON_OUTPUT_DIR / "b1_screen_latest.json"
 STATS_DB = DASHBOARD_HOME / "dashboard_stats.db"
+LEGACY_STATS_DB = DASHBOARD_HOME / "dashboard_users.db"
+LEGACY_STATS_MIGRATION_KEY = "dashboard_users_visit_stats_v1"
 VISITOR_COOKIE_NAME = "niuone_visitor_id"
 ACTION_HEADER_NAME = "X-NiuOne-Action"
 ACTION_HEADER_VALUES = {"1", "true", "yes", "on"}
@@ -143,7 +145,7 @@ RATE_LIMIT_API = int(os.environ.get("DASHBOARD_RATE_LIMIT_API", "900") or "900")
 RATE_LIMIT_ADMIN = int(os.environ.get("DASHBOARD_RATE_LIMIT_ADMIN", "90") or "90")
 RATE_LIMIT_BUCKETS: dict[tuple[str, str], tuple[float, int]] = {}
 RATE_LIMIT_LOCK = threading.Lock()
-VISIT_STATS_LOCK = threading.Lock()
+VISIT_STATS_LOCK = threading.RLock()
 API_TTLS = {
     "messages": 10,
     "b1_screen": int(os.environ.get("DASHBOARD_B1_SCREEN_TTL_SECONDS", "15") or "15"),
@@ -434,22 +436,102 @@ def check_rate_limit(scope: str, key: str, limit: int, window: int | None = None
 
 def ensure_stats_db() -> None:
     STATS_DB.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(STATS_DB)) as con:
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS visit_stats (
-                key TEXT PRIMARY KEY,
-                value INTEGER NOT NULL DEFAULT 0,
-                updated_at REAL NOT NULL
-            )
-        """)
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS unique_visitors (
-                visitor_hash TEXT PRIMARY KEY,
-                first_seen_at REAL NOT NULL,
-                last_seen_at REAL NOT NULL
-            )
-        """)
-        con.commit()
+    with VISIT_STATS_LOCK:
+        with closing(sqlite3.connect(STATS_DB)) as con:
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS visit_stats (
+                    key TEXT PRIMARY KEY,
+                    value INTEGER NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS unique_visitors (
+                    visitor_hash TEXT PRIMARY KEY,
+                    first_seen_at REAL NOT NULL,
+                    last_seen_at REAL NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS stats_migrations (
+                    key TEXT PRIMARY KEY,
+                    completed_at REAL NOT NULL
+                )
+            """)
+            migrate_legacy_visit_stats(con)
+            con.commit()
+
+
+def sqlite_table_exists(con: sqlite3.Connection, table: str) -> bool:
+    return con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone() is not None
+
+
+def migrate_legacy_visit_stats(con: sqlite3.Connection) -> None:
+    """Move visit counters out of the retired dashboard user database once."""
+    if LEGACY_STATS_DB == STATS_DB or not LEGACY_STATS_DB.exists():
+        return
+    if con.execute(
+        "SELECT 1 FROM stats_migrations WHERE key=?",
+        (LEGACY_STATS_MIGRATION_KEY,),
+    ).fetchone():
+        return
+
+    try:
+        with closing(sqlite3.connect(LEGACY_STATS_DB)) as legacy:
+            has_visit_stats = sqlite_table_exists(legacy, "visit_stats")
+            has_unique_visitors = sqlite_table_exists(legacy, "unique_visitors")
+            if not has_visit_stats and not has_unique_visitors:
+                return
+
+            legacy_views = 0
+            legacy_updated_at = 0.0
+            if has_visit_stats:
+                visit_row = legacy.execute(
+                    "SELECT value, updated_at FROM visit_stats WHERE key='home_views'"
+                ).fetchone()
+                if visit_row:
+                    legacy_views = int(visit_row[0] or 0)
+                    legacy_updated_at = float(visit_row[1] or 0.0)
+
+            legacy_visitors = []
+            if has_unique_visitors:
+                legacy_visitors = legacy.execute(
+                    "SELECT visitor_hash, first_seen_at, last_seen_at FROM unique_visitors"
+                ).fetchall()
+    except sqlite3.Error as exc:
+        print(f"访问统计迁移跳过：无法读取旧统计库 {LEGACY_STATS_DB}: {exc}", file=sys.stderr)
+        return
+
+    current_row = con.execute(
+        "SELECT value, updated_at FROM visit_stats WHERE key='home_views'"
+    ).fetchone()
+    current_views = int(current_row[0] or 0) if current_row else 0
+    current_updated_at = float(current_row[1] or 0.0) if current_row else 0.0
+    if legacy_views > current_views:
+        migrated_views = legacy_views + current_views
+    else:
+        migrated_views = current_views
+    if migrated_views or current_row:
+        con.execute(
+            "INSERT INTO visit_stats(key,value,updated_at) VALUES('home_views',?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (migrated_views, max(legacy_updated_at, current_updated_at, _now_ts())),
+        )
+
+    con.executemany(
+        "INSERT INTO unique_visitors(visitor_hash,first_seen_at,last_seen_at) VALUES(?,?,?) "
+        "ON CONFLICT(visitor_hash) DO UPDATE SET "
+        "first_seen_at=MIN(unique_visitors.first_seen_at,excluded.first_seen_at), "
+        "last_seen_at=MAX(unique_visitors.last_seen_at,excluded.last_seen_at)",
+        legacy_visitors,
+    )
+    con.execute(
+        "INSERT OR REPLACE INTO stats_migrations(key,completed_at) VALUES(?,?)",
+        (LEGACY_STATS_MIGRATION_KEY, _now_ts()),
+    )
 
 
 def increment_visit_count(visitor_id: str) -> dict[str, int]:
