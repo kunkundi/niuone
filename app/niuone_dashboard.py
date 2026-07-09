@@ -32,6 +32,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from http import cookies
 import urllib.request
 
+import contest_client
 from a_share_calendar import is_a_share_trading_day as calendar_is_a_share_trading_day, trading_day_status
 from niuone_paths import get_dashboard_env_file, get_dashboard_home, get_local_data_dir
 import push_history
@@ -175,6 +176,9 @@ SECRET_KEY_RE = re.compile(
     r"(api[_-]?key|access[_-]?token|auth[_-]?token|secret|password|credential|(?:^|[_-])token(?:$|[_-]))",
     re.I,
 )
+DEFAULT_MODEL_CONTEXT_LENGTH = "128000"
+DEFAULT_MODEL_MAX_TOKENS = "4096"
+
 ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
     {"name": "DASHBOARD_HOME", "label": "运行数据目录", "group": "基础路径", "kind": "path", "default": str(LOCAL_DATA_DIR / "runtime"), "effect": "restart"},
     {"name": "DASHBOARD_HOST", "label": "监听地址", "group": "基础路径", "kind": "text", "default": "127.0.0.1", "effect": "restart"},
@@ -225,7 +229,17 @@ ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
     {"name": "DASHBOARD_CRON_MAX_ATTEMPTS", "label": "Cron 失败最大运行次数", "group": "任务调度", "kind": "int", "default": "2", "effect": "next_run"},
     {"name": "DASHBOARD_CRON_RETRY_DELAY_SECONDS", "label": "Cron 失败重试间隔秒数", "group": "任务调度", "kind": "int", "default": "300", "effect": "next_run"},
     {"name": "DASHBOARD_PENDING_DECISION_POLL_SECONDS", "label": "延迟成交检查秒数", "group": "任务调度", "kind": "int", "default": "5", "effect": "restart"},
-    {"name": "DASHBOARD_DECISION_MAX_TOKENS", "label": "决策最大输出长度", "group": "买卖决策模型", "kind": "max_tokens", "default": "", "effect": "next_run"},
+
+    {"name": "DASHBOARD_CONTEST_ENABLED", "label": "启用策略大赛上报", "group": "策略大赛", "kind": "bool", "default": "0", "effect": "next_run"},
+    {"name": "DASHBOARD_CONTEST_SERVER_URL", "label": "策略大赛服务端 URL", "group": "策略大赛", "kind": "text", "default": "", "effect": "next_run"},
+    {"name": "DASHBOARD_CONTEST_ID", "label": "策略大赛 ID", "group": "策略大赛", "kind": "text", "default": "", "effect": "next_run"},
+    {"name": "DASHBOARD_CONTEST_NICKNAME", "label": "参赛昵称", "group": "策略大赛", "kind": "text", "default": "", "effect": "next_run"},
+    {"name": "DASHBOARD_CONTEST_PARTICIPANT_ID", "label": "参赛者 ID", "group": "策略大赛", "kind": "text", "default": "", "effect": "next_run"},
+    {"name": "DASHBOARD_CONTEST_SECRET", "label": "参赛密钥", "group": "策略大赛", "kind": "secret", "default": "", "effect": "next_run"},
+    {"name": "DASHBOARD_CONTEST_TIMEOUT_SECONDS", "label": "上报超时秒数", "group": "策略大赛", "kind": "int", "default": "3", "effect": "next_run"},
+    {"name": "DASHBOARD_CONTEST_STATE", "label": "比赛本地状态文件", "group": "策略大赛", "kind": "path", "default": "", "effect": "restart"},
+
+    {"name": "DASHBOARD_DECISION_MAX_TOKENS", "label": "决策最大输出长度", "group": "买卖决策模型", "kind": "max_tokens", "default": DEFAULT_MODEL_MAX_TOKENS, "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_TIMEOUT", "label": "决策请求超时", "group": "买卖决策模型", "kind": "int", "default": "180", "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_INTELLIGENCE_ENABLED", "label": "启用全局情报包", "group": "买卖决策模型", "kind": "bool", "default": "1", "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS", "label": "情报包缓存秒数", "group": "买卖决策模型", "kind": "int", "default": "75", "effect": "next_run"},
@@ -242,40 +256,42 @@ ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
     {"name": "DASHBOARD_US_FEATURES_ENABLED", "label": "开启牛牛美股", "group": "牛牛美股", "kind": "bool", "default": "0", "effect": "next_run"},
     {"name": "US_RATING_BASE_URL", "label": "美股评级 API Base URL", "group": "牛牛美股", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "US_RATING_API_KEY", "label": "美股评级 API Key", "group": "牛牛美股", "kind": "secret", "default": "", "effect": "next_run"},
-    {"name": "US_RATING_CONTEXT_LENGTH", "label": "美股评级上下文长度", "group": "牛牛美股", "kind": "context_length", "default": "", "effect": "next_run"},
-    {"name": "US_RATING_MAX_TOKENS", "label": "美股评级最大输出长度", "group": "牛牛美股", "kind": "max_tokens", "default": "", "effect": "next_run"},
+    {"name": "US_RATING_CONTEXT_LENGTH", "label": "美股评级上下文长度", "group": "牛牛美股", "kind": "context_length", "default": DEFAULT_MODEL_CONTEXT_LENGTH, "effect": "next_run"},
+    {"name": "US_RATING_MAX_TOKENS", "label": "美股评级最大输出长度", "group": "牛牛美股", "kind": "max_tokens", "default": DEFAULT_MODEL_MAX_TOKENS, "effect": "next_run"},
     {"name": "CROSSDESK_BASE_URL", "label": "Crossdesk Base URL", "group": "上游模型覆盖", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "CROSSDESK_API_KEY", "label": "Crossdesk API Key", "group": "上游模型覆盖", "kind": "secret", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_GROK_MODEL", "label": "Grok 模型", "group": "牛牛美股", "kind": "text", "default": "grok-4.20-multi-agent-xhigh", "effect": "next_run"},
-    {"name": "DASHBOARD_GROK_CONTEXT_LENGTH", "label": "Grok 模型上下文长度", "group": "牛牛美股", "kind": "context_length", "default": "", "effect": "next_run"},
-    {"name": "DASHBOARD_GROK_MAX_TOKENS", "label": "Grok 最大输出长度", "group": "牛牛美股", "kind": "max_tokens", "default": "", "effect": "next_run"},
+    {"name": "DASHBOARD_GROK_CONTEXT_LENGTH", "label": "Grok 模型上下文长度", "group": "牛牛美股", "kind": "context_length", "default": DEFAULT_MODEL_CONTEXT_LENGTH, "effect": "next_run"},
+    {"name": "DASHBOARD_GROK_MAX_TOKENS", "label": "Grok 最大输出长度", "group": "牛牛美股", "kind": "max_tokens", "default": DEFAULT_MODEL_MAX_TOKENS, "effect": "next_run"},
     {"name": "DASHBOARD_GROK_BASE_URL", "label": "Grok API 地址", "group": "牛牛美股", "kind": "text", "default": "", "effect": "next_run"},
+    {"name": "DASHBOARD_GROK_API_KEY", "label": "Grok API 密钥", "group": "牛牛美股", "kind": "secret", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_NEWS_MODEL", "label": "消息面预检模型", "group": "消息面预检模型", "kind": "text", "default": "", "effect": "next_run"},
-    {"name": "DASHBOARD_NEWS_CONTEXT_LENGTH", "label": "消息面预检上下文长度", "group": "消息面预检模型", "kind": "context_length", "default": "", "effect": "next_run"},
-    {"name": "DASHBOARD_NEWS_MAX_TOKENS", "label": "消息面预检最大输出长度", "group": "消息面预检模型", "kind": "max_tokens", "default": "", "effect": "next_run"},
+    {"name": "DASHBOARD_NEWS_CONTEXT_LENGTH", "label": "消息面预检上下文长度", "group": "消息面预检模型", "kind": "context_length", "default": DEFAULT_MODEL_CONTEXT_LENGTH, "effect": "next_run"},
+    {"name": "DASHBOARD_NEWS_MAX_TOKENS", "label": "消息面预检最大输出长度", "group": "消息面预检模型", "kind": "max_tokens", "default": DEFAULT_MODEL_MAX_TOKENS, "effect": "next_run"},
     {"name": "DASHBOARD_NEWS_BASE_URL", "label": "消息面预检 API 地址", "group": "消息面预检模型", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_NEWS_API_KEY", "label": "消息面预检 API 密钥", "group": "消息面预检模型", "kind": "secret", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_NEWS_TIMEOUT", "label": "消息面预检请求超时", "group": "消息面预检模型", "kind": "int", "default": "45", "effect": "next_run"},
     {"name": "DASHBOARD_NEWS_MAX_RETRIES", "label": "消息面预检最大请求次数", "group": "消息面预检模型", "kind": "int", "default": "1", "effect": "next_run"},
+    {"name": "DASHBOARD_NEWS_CONCURRENCY", "label": "消息面预检并发数", "group": "消息面预检模型", "kind": "int", "default": "5", "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_MODEL", "label": "买卖决策模型", "group": "买卖决策模型", "kind": "text", "default": "deepseek-v4-pro", "effect": "next_run"},
-    {"name": "DASHBOARD_DECISION_CONTEXT_LENGTH", "label": "买卖决策上下文长度", "group": "买卖决策模型", "kind": "context_length", "default": "", "effect": "next_run"},
+    {"name": "DASHBOARD_DECISION_CONTEXT_LENGTH", "label": "买卖决策上下文长度", "group": "买卖决策模型", "kind": "context_length", "default": DEFAULT_MODEL_CONTEXT_LENGTH, "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_BASE_URL", "label": "买卖决策 API 地址", "group": "买卖决策模型", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_API_KEY", "label": "买卖决策 API 密钥", "group": "买卖决策模型", "kind": "secret", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_US_MARKET_SUMMARY_CRON", "label": "隔夜美股盘面总结时间", "group": "盘面监控生产时间点", "kind": "cron_time", "default": "0 8 * * 1-5", "effect": "next_run"},
-    {"name": "US_MARKET_SUMMARY_MAX_TOKENS", "label": "隔夜美股总结最大输出长度", "group": "盘面监控生产时间点", "kind": "max_tokens", "default": "", "effect": "next_run"},
+    {"name": "US_MARKET_SUMMARY_MAX_TOKENS", "label": "隔夜美股总结最大输出长度", "group": "盘面监控生产时间点", "kind": "max_tokens", "default": DEFAULT_MODEL_MAX_TOKENS, "effect": "next_run"},
     {"name": "DASHBOARD_MARKET_AUCTION_CRON", "label": "盘前竞价监控时间", "group": "盘面监控生产时间点", "kind": "cron_time", "default": "25 9 * * 1-5", "effect": "next_run"},
     {"name": "DASHBOARD_MARKET_MIDDAY_CRON", "label": "午盘监控时间", "group": "盘面监控生产时间点", "kind": "cron_time", "default": "40 11 * * 1-5", "effect": "next_run"},
     {"name": "DASHBOARD_MARKET_CLOSE_CRON", "label": "盘后监控时间", "group": "盘面监控生产时间点", "kind": "cron_time", "default": "10 15 * * 1-5", "effect": "next_run"},
     {"name": "A_SHARE_MODEL_SUMMARY_ENABLED", "label": "A股盘面模型总结", "group": "盘面监控生产时间点", "kind": "bool", "default": "1", "effect": "next_run", "bool_no_default": "1"},
     {"name": "A_SHARE_MODEL_SUMMARY_MODEL", "label": "A股盘面总结模型", "group": "盘面监控生产时间点", "kind": "text", "default": "", "effect": "next_run"},
-    {"name": "A_SHARE_MODEL_SUMMARY_CONTEXT_LENGTH", "label": "A股盘面总结上下文长度", "group": "盘面监控生产时间点", "kind": "context_length", "default": "", "effect": "next_run"},
-    {"name": "A_SHARE_MODEL_SUMMARY_MAX_TOKENS", "label": "A股盘面总结最大输出长度", "group": "盘面监控生产时间点", "kind": "max_tokens", "default": "", "effect": "next_run"},
+    {"name": "A_SHARE_MODEL_SUMMARY_CONTEXT_LENGTH", "label": "A股盘面总结上下文长度", "group": "盘面监控生产时间点", "kind": "context_length", "default": DEFAULT_MODEL_CONTEXT_LENGTH, "effect": "next_run"},
+    {"name": "A_SHARE_MODEL_SUMMARY_MAX_TOKENS", "label": "A股盘面总结最大输出长度", "group": "盘面监控生产时间点", "kind": "max_tokens", "default": DEFAULT_MODEL_MAX_TOKENS, "effect": "next_run"},
     {"name": "A_SHARE_MODEL_SUMMARY_BASE_URL", "label": "A股盘面总结 API地址", "group": "盘面监控生产时间点", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "A_SHARE_MODEL_SUMMARY_API_KEY", "label": "A股盘面总结 API密钥", "group": "盘面监控生产时间点", "kind": "secret", "default": "", "effect": "next_run"},
     {"name": "A_SHARE_MODEL_SUMMARY_DEADLINE_SECONDS", "label": "A股模型总结总超时秒数", "group": "盘面监控生产时间点", "kind": "int", "default": "60", "effect": "next_run"},
     {"name": "A_SHARE_MODEL_SUMMARY_REQUEST_TIMEOUT_SECONDS", "label": "A股模型总结单次超时秒数", "group": "盘面监控生产时间点", "kind": "int", "default": "45", "effect": "next_run"},
     {"name": "X_WATCHLIST_ACCOUNTS", "label": "推文监控作者", "group": "牛牛美股", "kind": "handle_list", "default": "", "effect": "next_run"},
-    {"name": "X_WATCHLIST_MAX_TOKENS", "label": "X 监控最大输出长度", "group": "牛牛美股", "kind": "max_tokens", "default": "", "effect": "next_run"},
+    {"name": "X_WATCHLIST_MAX_TOKENS", "label": "X 监控最大输出长度", "group": "牛牛美股", "kind": "max_tokens", "default": DEFAULT_MODEL_MAX_TOKENS, "effect": "next_run"},
     {"name": "X_WATCHLIST_DAEMON_INTERVAL_SECONDS", "label": "推文监控间隔", "group": "牛牛美股", "kind": "int", "default": "1200", "effect": "next_run"},
     {"name": "DASHBOARD_US_RATING_CRON", "label": "美股买入评级时间", "group": "牛牛美股", "kind": "cron_time", "default": "0 11 * * *", "effect": "next_run"},
     {"name": "US_RATING_DEADLINE_SECONDS", "label": "美股评级总超时秒数", "group": "牛牛美股", "kind": "int", "default": "240", "effect": "next_run"},
@@ -301,7 +317,19 @@ ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
     {"name": "X_WATCHLIST_SENT_CONTEXT_REPAIR_ITEMS", "label": "X 已发修复条数", "group": "X 监控", "kind": "int", "default": "2", "effect": "next_run"},
 ]
 ENV_CONFIG_BY_NAME = {item["name"]: item for item in ENV_CONFIG_SCHEMA}
+CONTEST_SETTINGS_VISIBLE_ENV = "DASHBOARD_CONTEST_SETTINGS_VISIBLE"
+CONTEST_ENV_NAMES = [
+    "DASHBOARD_CONTEST_ENABLED",
+    "DASHBOARD_CONTEST_SERVER_URL",
+    "DASHBOARD_CONTEST_ID",
+    "DASHBOARD_CONTEST_NICKNAME",
+    "DASHBOARD_CONTEST_PARTICIPANT_ID",
+    "DASHBOARD_CONTEST_SECRET",
+    "DASHBOARD_CONTEST_TIMEOUT_SECONDS",
+    "DASHBOARD_CONTEST_STATE",
+]
 ADMIN_VISIBLE_ENV_NAMES = [
+    *CONTEST_ENV_NAMES,
     "DASHBOARD_US_FEATURES_ENABLED",
     "DASHBOARD_GROK_MODEL",
     "DASHBOARD_GROK_CONTEXT_LENGTH",
@@ -322,6 +350,7 @@ ADMIN_VISIBLE_ENV_NAMES = [
     "DASHBOARD_NEWS_API_KEY",
     "DASHBOARD_NEWS_TIMEOUT",
     "DASHBOARD_NEWS_MAX_RETRIES",
+    "DASHBOARD_NEWS_CONCURRENCY",
     "DASHBOARD_DECISION_MODEL",
     "DASHBOARD_DECISION_CONTEXT_LENGTH",
     "DASHBOARD_DECISION_BASE_URL",
@@ -371,6 +400,7 @@ TRADER_RUNTIME_ENV_NAMES = {
     "DASHBOARD_NEWS_API_KEY",
     "DASHBOARD_NEWS_TIMEOUT",
     "DASHBOARD_NEWS_MAX_RETRIES",
+    "DASHBOARD_NEWS_CONCURRENCY",
     "DASHBOARD_DECISION_MODEL",
     "DASHBOARD_DECISION_CONTEXT_LENGTH",
     "DASHBOARD_DECISION_BASE_URL",
@@ -1769,6 +1799,23 @@ def us_features_enabled(env_values: dict[str, str] | None = None) -> bool:
     return str(raw).strip().lower() in TRUTHY_VALUES
 
 
+def contest_settings_visible(env_values: dict[str, str] | None = None) -> bool:
+    values = env_values if env_values is not None else parse_env_file()
+    raw = os.environ.get(CONTEST_SETTINGS_VISIBLE_ENV)
+    if raw is None:
+        raw = values.get(CONTEST_SETTINGS_VISIBLE_ENV)
+    if raw is None or str(raw).strip() == "":
+        return True
+    return str(raw).strip().lower() in TRUTHY_VALUES
+
+
+def admin_visible_env_names(env_values: dict[str, str] | None = None) -> list[str]:
+    names = list(ADMIN_VISIBLE_ENV_NAMES)
+    if not contest_settings_visible(env_values):
+        names = [name for name in names if name not in CONTEST_ENV_NAMES]
+    return names
+
+
 def quote_env_value(value: str) -> str:
     value = str(value or "")
     if value and re.fullmatch(r"[A-Za-z0-9_@%+=:,./-]+", value):
@@ -1978,12 +2025,13 @@ CRON_TIME_CONFIGS = {
     "DASHBOARD_US_RATING_CRON": {"day_label": "每天"},
 }
 ADMIN_GROUP_NOTES = {
-    "牛牛美股": "集中管理 X/推文监控、美股买入评级和隔夜美股盘面总结使用的 Grok 配置。长度配置默认留空：上下文长度走模型窗口，最大输出长度走场景预算；关闭时隐藏 X/评级相关设置，隔夜美股总结仍会读取已配置的 Grok 参数。",
-    "消息面预检模型": "用于 A 股候选股最近 3 天消息面预检；需兼容 /chat/completions，且模型或网关应具备实时搜索能力。长度配置默认留空：上下文长度走模型窗口，最大输出长度走场景预算。模型和密钥留空则跳过。",
-    "买卖决策模型": "推荐使用 deepseek-v4-pro；也可填写其他兼容 /chat/completions 的模型服务。长度配置默认留空：上下文长度走模型窗口，最大输出长度走场景预算。",
+    "牛牛美股": "集中管理 X/推文监控、美股买入评级和隔夜美股盘面总结使用的 Grok 配置。长度默认：上下文 128000 tokens，最大输出 4096 tokens；关闭时隐藏 X/评级相关设置，隔夜美股总结仍会读取已配置的 Grok 参数。",
+    "消息面预检模型": "用于 A 股候选股最近 3 天消息面预检；需兼容 /chat/completions，且模型或网关应具备实时搜索能力。长度默认：上下文 128000 tokens，最大输出 4096 tokens。模型和密钥留空则跳过。",
+    "买卖决策模型": "推荐使用 deepseek-v4-pro；也可填写其他兼容 /chat/completions 的模型服务。长度默认：上下文 128000 tokens，最大输出 4096 tokens。",
     "选股及买卖决策时间点": "使用北京时间 HH:MM，可设置多个时间点。",
     "选股策略": "在内置策略和预设文字策略中选择一个激活；内置策略可选基础策略、Z哥或李大霄。",
-    "盘面监控生产时间点": "直接填写北京时间 HH:MM；隔夜美股总结默认交易日 08:00 生成，A 股盘面监控在交易时段触发；长度配置默认留空：上下文长度走模型窗口，最大输出长度走场景预算。",
+    "策略大赛": "登录比赛服务端、参加比赛，并管理本地比赛上报配置；本地模拟交易不因比赛拒单回滚。",
+    "盘面监控生产时间点": "直接填写北京时间 HH:MM；隔夜美股总结默认交易日 08:00 生成，A 股盘面监控在交易时段触发；长度默认：上下文 128000 tokens，最大输出 4096 tokens。",
     "指数行情更新周期": "单位为秒，保存后立即用于后续行情请求。",
 }
 US_FEATURE_GATED_GROUPS = {
@@ -2269,7 +2317,8 @@ def sync_business_runtime_settings(changed: dict[str, str] | list[str] | set[str
     else:
         changed_names = set(changed or [])
     env_values = parse_env_file()
-    for name in ADMIN_VISIBLE_ENV_NAMES:
+    visible_names = admin_visible_env_names(env_values)
+    for name in visible_names:
         if name in env_values:
             os.environ[name] = env_values[name]
 
@@ -2304,7 +2353,7 @@ def sync_business_runtime_settings(changed: dict[str, str] | list[str] | set[str
             API_RESPONSE_CACHE.pop("niuniu_practice_fast", None)
         applied.append("trader_runtime")
 
-    if changed_names & set(ADMIN_VISIBLE_ENV_NAMES):
+    if changed_names & set(visible_names):
         applied.append("env")
 
     return {"ok": True, "applied": sorted(set(applied)), "changed_names": sorted(changed_names)}
@@ -2341,9 +2390,10 @@ def business_config_fallback_value(name: str) -> tuple[str, str]:
 
 def build_admin_config_payload() -> dict[str, Any]:
     env_values = parse_env_file()
-    names = set(ADMIN_VISIBLE_ENV_NAMES)
+    visible_names = admin_visible_env_names(env_values)
+    names = set(visible_names)
     items = []
-    admin_order = {name: idx for idx, name in enumerate(ADMIN_VISIBLE_ENV_NAMES)}
+    admin_order = {name: idx for idx, name in enumerate(visible_names)}
     for name in sorted(names, key=lambda n: admin_order.get(n, 999)):
         schema = ENV_CONFIG_BY_NAME.get(name, {"name": name, "label": name, "group": "其他", "kind": "text", "default": "", "effect": "restart"})
         fallback_value, fallback_source = business_config_fallback_value(name)
@@ -2554,6 +2604,7 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,#9
 .time-list-add,.time-list-remove{transition:border-color .12s ease,background .12s ease,color .12s ease}
 .time-list-add:hover,.time-list-remove:hover{border-color:rgba(125,211,252,.38);background:rgba(30,41,59,.72)}
 .okmsg,.errmsg{box-shadow:0 12px 34px rgba(0,0,0,.18)}
+__CONTEST_ADMIN_CSS__
 @media(max-width:1120px){.settings-shell{grid-template-columns:1fr}.settings-sidebar{position:static;top:auto}.settings-nav{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px}.settings-nav-link{grid-template-columns:auto minmax(max-content,1fr) auto;flex:0 0 auto}.settings-actions{max-width:none}}
 @media(max-width:940px){.settings-overview{align-items:stretch;flex-direction:column}.settings-overview-stats{justify-content:flex-start}.setting-row{grid-template-columns:1fr}.setting-state{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:620px){h1{font-size:24px}.settings-overview{padding:15px}.settings-overview-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.settings-stat{min-width:0}.settings-nav-link{min-height:34px}.settings-group-head{gap:10px}.settings-count{align-self:flex-start}.setting-state{grid-template-columns:1fr}.settings-actions{right:auto}}
@@ -2744,8 +2795,203 @@ document.addEventListener('click', function(event) {
     resetEnvSaveIfDirty(form);
   }
 });
+__CONTEST_ADMIN_JS__
 </script>
 </body></html>"""
+
+CONTEST_ADMIN_CSS = r"""
+.contest-settings-panel{padding:14px 18px;border-bottom:1px solid rgba(148,163,184,.10);background:rgba(2,6,12,.16)}
+.contest-panel{border:1px solid rgba(45,212,191,.20);border-radius:8px;background:rgba(2,6,23,.34);overflow:hidden}
+.contest-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border-bottom:1px solid rgba(148,163,184,.10);background:rgba(15,23,42,.46)}
+.contest-title{color:#dbeafe;font-size:13px;font-weight:900}
+.contest-state{color:#8da0b8;font-size:11px;font-weight:800;white-space:nowrap}
+.contest-body{display:grid;gap:10px;padding:10px 12px 12px}
+.contest-account-row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.contest-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.contest-login-grid{display:grid;grid-template-columns:minmax(180px,1.2fr) repeat(3,minmax(92px,.8fr)) auto auto auto;gap:7px;align-items:center}
+.contest-login-grid input{width:100%;min-width:0;border-radius:8px;padding:7px 9px;font-size:12px}
+.contest-btn{border-radius:8px;padding:7px 10px;border:1px solid rgba(45,212,191,.24);background:rgba(20,184,166,.14);color:#ccfbf1;font-size:12px;font-weight:850;white-space:nowrap}
+.contest-btn.secondary{border-color:rgba(148,163,184,.18);background:rgba(15,23,42,.62);color:#dbeafe}
+.contest-list{display:grid;gap:7px}
+.contest-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px;align-items:center;border:1px solid rgba(148,163,184,.12);border-radius:8px;padding:9px;background:rgba(15,23,42,.38)}
+.contest-name{color:#eef4fb;font-size:13px;font-weight:850;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.contest-meta{margin-top:3px;color:#8da0b8;font-size:11px;overflow-wrap:anywhere}
+.contest-chip-row{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.contest-chip{border:1px solid rgba(96,165,250,.22);border-radius:8px;padding:2px 6px;color:#bfdbfe;background:rgba(37,99,235,.12);font-size:10.5px;font-weight:850}
+.contest-chip.joined{color:#bbf7d0;border-color:rgba(52,211,153,.24);background:rgba(6,78,59,.18)}
+.contest-message{color:#94a3b8;font-size:12px;overflow-wrap:anywhere}
+.contest-message.ok{color:#bbf7d0}
+.contest-message.err{color:#fecdd3}
+@media(max-width:940px){.contest-login-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.contest-row{grid-template-columns:1fr}.contest-row .contest-btn{width:100%}}
+@media(max-width:560px){.contest-login-grid{grid-template-columns:1fr}.contest-head{align-items:flex-start;flex-direction:column}}
+"""
+
+CONTEST_ADMIN_JS = r"""
+var contestStatusData = {ok:true, logged_in:false, available_contests:[]};
+var contestEventSource = null;
+function contestEl(id){return document.getElementById(id);}
+function contestEsc(value){return String(value == null ? '' : value).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];});}
+function contestJsArg(value){return contestEsc(JSON.stringify(String(value == null ? '' : value)));}
+function contestFmtAmount(value){var n=Number(value);return Number.isFinite(n)?n.toLocaleString('zh-CN',{maximumFractionDigits:2}):'--';}
+function contestRowsFromStatus(status){
+  var remote = status && status.contests && status.contests.ok ? status.contests.items : null;
+  return Array.isArray(remote) ? remote : (Array.isArray(status && status.available_contests) ? status.available_contests : []);
+}
+function renderContestPanel(){
+  var st = contestStatusData || {};
+  var rows = contestRowsFromStatus(st);
+  var pending = rows.filter(function(item){return !item.joined && ['active','upcoming'].includes(String(item.status || ''));});
+  var user = st.user || {};
+  var stateText = st.logged_in ? (pending.length ? '有 ' + pending.length + ' 场可参加' : (st.enabled ? '参赛中 ' + (st.active_contest_id || '') : '已登录')) : '未登录';
+  var message = st.local_message || st.last_error || '';
+  var messageClass = st.local_error ? 'err' : (message ? 'ok' : '');
+  var loginBlock = st.logged_in ? (
+    '<div class="contest-account-row">' +
+      '<div class="contest-message">账号：' + contestEsc(user.nickname || user.username || '已登录') + (st.active_contest_id ? ' · 当前比赛 ' + contestEsc(st.active_contest_id) : '') + '</div>' +
+      '<div class="contest-actions">' +
+        '<button type="button" class="contest-btn secondary" onclick="refreshContestStatus()">刷新</button>' +
+        '<button type="button" class="contest-btn secondary" onclick="contestLogout()">退出</button>' +
+      '</div>' +
+    '</div>'
+  ) : (
+    '<div class="contest-login-grid">' +
+      '<input id="contestServerUrl" placeholder="服务端 URL" value="' + contestEsc(st.server_url || '') + '" autocomplete="url">' +
+      '<input id="contestUsername" placeholder="用户名" autocomplete="username">' +
+      '<input id="contestPassword" placeholder="密码" type="password" autocomplete="current-password">' +
+      '<input id="contestNickname" placeholder="昵称" autocomplete="nickname">' +
+      '<button type="button" class="contest-btn" onclick="contestLogin(\'login\')">登录</button>' +
+      '<button type="button" class="contest-btn secondary" onclick="contestLogin(\'register\')">注册</button>' +
+      '<button type="button" class="contest-btn secondary" onclick="contestLinuxDoLogin()">LinuxDo 登录</button>' +
+    '</div>'
+  );
+  var list = rows.length ? '<div class="contest-list">' + rows.map(function(item){
+    var joined = !!item.joined || item.contest_id === st.active_contest_id;
+    var action = joined
+      ? '<button type="button" class="contest-btn secondary" onclick="refreshContestStatus()">已参加</button>'
+      : '<button type="button" class="contest-btn" onclick="contestJoin(' + contestJsArg(item.contest_id) + ')">参加</button>';
+    return '<div class="contest-row">' +
+      '<div>' +
+        '<div class="contest-name">' + contestEsc(item.name || item.contest_id || '--') + '</div>' +
+        '<div class="contest-meta">' + contestEsc(item.starts_at || '') + ' 至 ' + contestEsc(item.ends_at || '') + '</div>' +
+        '<div class="contest-chip-row">' +
+          '<span class="contest-chip">' + contestEsc(item.status || 'contest') + '</span>' +
+          (joined ? '<span class="contest-chip joined">已参加</span>' : '') +
+          '<span class="contest-chip">初始 ' + contestFmtAmount(item.initial_cash) + '</span>' +
+        '</div>' +
+      '</div>' +
+      '<div>' + action + '</div>' +
+    '</div>';
+  }).join('') + '</div>' : '<div class="contest-message">' + (st.logged_in ? '暂无比赛' : '登录后显示比赛') + '</div>';
+  return '<div id="contestPanel" class="contest-panel" data-contest-panel>' +
+    '<div class="contest-head"><div class="contest-title">策略大赛</div><div class="contest-state">' + contestEsc(stateText) + '</div></div>' +
+    '<div class="contest-body">' +
+      loginBlock +
+      (message ? '<div id="contestMessage" class="contest-message ' + messageClass + '">' + contestEsc(message) + '</div>' : '<div id="contestMessage" class="contest-message"></div>') +
+      list +
+    '</div>' +
+  '</div>';
+}
+function renderContestPanelIntoSettings(){
+  var panel = contestEl('contestPanel');
+  if (panel) panel.outerHTML = renderContestPanel();
+}
+function postContestApi(path, payload){
+  return fetch(path, {
+    method:'POST',
+    credentials:'same-origin',
+    headers:{'Content-Type':'application/json; charset=utf-8','Accept':'application/json','X-NiuOne-Action':'1'},
+    body:JSON.stringify(payload || {})
+  }).then(function(response){
+    return response.json().catch(function(){return null;}).then(function(data){
+      if (!response.ok || !data) throw new Error((data && data.error) || '请求失败');
+      return data;
+    });
+  });
+}
+function connectContestEvents(){
+  if (contestEventSource || typeof EventSource === 'undefined') return;
+  contestEventSource = new EventSource('/api/contest/events');
+  contestEventSource.addEventListener('contest', function(event){
+    try {
+      var data = JSON.parse(event.data || '{}');
+      contestStatusData = Object.assign({}, contestStatusData || {}, {local_error:false, local_message:'收到比赛通知：' + (data.contest_id || '新比赛')});
+    } catch (_err) {
+      contestStatusData = Object.assign({}, contestStatusData || {}, {local_error:false, local_message:'收到比赛通知'});
+    }
+    refreshContestStatus();
+  });
+  contestEventSource.onerror = function(){
+    if (contestEventSource) contestEventSource.close();
+    contestEventSource = null;
+    window.setTimeout(function(){if ((contestStatusData || {}).logged_in) connectContestEvents();}, 15000);
+  };
+}
+async function refreshContestStatus(){
+  try {
+    var response = await fetch('/api/contest/status', {credentials:'same-origin', headers:{'Accept':'application/json'}});
+    contestStatusData = await response.json();
+    if (contestStatusData && contestStatusData.logged_in) connectContestEvents();
+  } catch (error) {
+    contestStatusData = Object.assign({}, contestStatusData || {}, {local_error:true, local_message:String(error)});
+  }
+  renderContestPanelIntoSettings();
+}
+async function contestLogin(mode){
+  var payload = {
+    server_url: contestEl('contestServerUrl') ? contestEl('contestServerUrl').value : '',
+    username: contestEl('contestUsername') ? contestEl('contestUsername').value : '',
+    password: contestEl('contestPassword') ? contestEl('contestPassword').value : '',
+    nickname: contestEl('contestNickname') ? contestEl('contestNickname').value : ''
+  };
+  try {
+    var data = await postContestApi(mode === 'register' ? '/api/contest/register' : '/api/contest/login', payload);
+    contestStatusData = Object.assign({}, contestStatusData || {}, data, {local_error:!data.ok, local_message:data.ok ? '已连接比赛服务端' : (data.error || '登录失败')});
+    if (data.ok) await refreshContestStatus();
+  } catch (error) {
+    contestStatusData = Object.assign({}, contestStatusData || {}, {local_error:true, local_message:String(error)});
+  }
+  renderContestPanelIntoSettings();
+}
+async function contestLinuxDoLogin(){
+  var payload = {
+    server_url: contestEl('contestServerUrl') ? contestEl('contestServerUrl').value : ''
+  };
+  try {
+    var data = await postContestApi('/api/contest/linuxdo/start', payload);
+    if (data && data.ok && data.auth_url) {
+      window.location.href = data.auth_url;
+      return;
+    }
+    contestStatusData = Object.assign({}, contestStatusData || {}, data || {}, {local_error:true, local_message:(data && data.error) || 'LinuxDo 登录不可用'});
+  } catch (error) {
+    contestStatusData = Object.assign({}, contestStatusData || {}, {local_error:true, local_message:String(error)});
+  }
+  renderContestPanelIntoSettings();
+}
+async function contestJoin(id){
+  try {
+    var data = await postContestApi('/api/contest/join', {contest_id:id});
+    contestStatusData = Object.assign({}, contestStatusData || {}, data, {local_error:!data.ok, local_message:data.ok ? '已参加比赛' : (data.error || '参加失败')});
+    if (data.ok) await refreshContestStatus();
+  } catch (error) {
+    contestStatusData = Object.assign({}, contestStatusData || {}, {local_error:true, local_message:String(error)});
+  }
+  renderContestPanelIntoSettings();
+}
+async function contestLogout(){
+  try {
+    var data = await postContestApi('/api/contest/logout', {});
+    contestStatusData = {ok:true, logged_in:false, available_contests:[], local_error:!data.ok, local_message:data.ok ? '已退出比赛账号' : (data.error || '退出失败')};
+    if (contestEventSource) contestEventSource.close();
+    contestEventSource = null;
+  } catch (error) {
+    contestStatusData = Object.assign({}, contestStatusData || {}, {local_error:true, local_message:String(error)});
+  }
+  renderContestPanelIntoSettings();
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', refreshContestStatus, {once:true});
+else refreshContestStatus();
+"""
 
 INDEX_HTML = r"""<!doctype html>
 <html lang="zh-CN">
@@ -6994,14 +7240,14 @@ def render_env_input(item: dict[str, Any]) -> str:
     if kind == "context_length":
         return (
             f"<input type='text' name='env__{escaped_name}' value='{html.escape(value)}' "
-            "placeholder='留空=Auto；例如 128K、1M 或 1000000' inputmode='numeric'>"
-            "<div class='config-meta'>留空使用模型/网关默认上下文窗口；填写后保存为数字 tokens</div>"
+            "placeholder='默认 128000；例如 128K、1M 或 1000000' inputmode='numeric'>"
+            "<div class='config-meta'>默认 128000 tokens；填写后保存为数字 tokens</div>"
         )
     if kind == "max_tokens":
         return (
             f"<input type='text' name='env__{escaped_name}' value='{html.escape(value)}' "
-            "placeholder='留空=Auto；例如 4096 或 8192' inputmode='numeric'>"
-            "<div class='config-meta'>留空不写入覆盖值，运行时使用各场景内置输出预算；填写后覆盖请求 max_tokens</div>"
+            "placeholder='默认 4096；例如 2048 或 8192' inputmode='numeric'>"
+            "<div class='config-meta'>默认 4096 tokens；填写后覆盖请求 max_tokens</div>"
         )
     input_type = "number" if kind == "int" else "text"
     return f"<input type='{input_type}' name='env__{escaped_name}' value='{html.escape(value)}'>"
@@ -7019,6 +7265,17 @@ def render_nav_label(label: str) -> str:
     if len(label) < 2:
         return html.escape(label)
     return html.escape(label[0]) + f"<span>{html.escape(label[1:])}</span>"
+
+
+def render_contest_settings_panel() -> str:
+    return (
+        "<div class='contest-settings-panel'>"
+        "<div id=\"contestPanel\" class=\"contest-panel\" data-contest-panel>"
+        "<div class=\"contest-head\"><div class=\"contest-title\">策略大赛</div><div class=\"contest-state\">读取中</div></div>"
+        "<div class=\"contest-body\"><div class=\"contest-message\">正在读取比赛状态...</div></div>"
+        "</div>"
+        "</div>"
+    )
 
 
 def render_env_config_table(payload: dict[str, Any]) -> str:
@@ -7070,6 +7327,7 @@ def render_env_config_table(payload: dict[str, Any]) -> str:
                 "</div>"
                 "</div>"
             )
+        group_extra_html = render_contest_settings_panel() if group_name == "策略大赛" else ""
         gated_attrs = ""
         if group_name in US_FEATURE_GATED_GROUPS:
             gated_attrs = " data-feature-gated='us'"
@@ -7094,6 +7352,7 @@ def render_env_config_table(payload: dict[str, Any]) -> str:
             f"<span class='settings-count'>{len(group['items'])} 项</span>"
             "</div>"
             "<div class='settings-list'>"
+            + group_extra_html
             + "".join(rows)
             + "</div>"
             "</section>"
@@ -7146,7 +7405,10 @@ def render_yaml_config(payload: dict[str, Any]) -> str:
 def render_admin_page(params: dict[str, list[str]] | None = None) -> bytes:
     params = params or {}
     config_payload = build_admin_config_payload()
+    contest_visible = any(str(item.get("name") or "") in CONTEST_ENV_NAMES for item in config_payload.get("items") or [])
     page = ADMIN_HTML
+    page = page.replace('__CONTEST_ADMIN_CSS__', CONTEST_ADMIN_CSS if contest_visible else "")
+    page = page.replace('__CONTEST_ADMIN_JS__', CONTEST_ADMIN_JS if contest_visible else "")
     page = page.replace('__NOTICE__', render_admin_notice(params))
     page = page.replace('__ENV_CONFIG__', render_env_config_table(config_payload))
     return page.encode('utf-8')
@@ -7175,6 +7437,13 @@ class Handler(BaseHTTPRequestHandler):
             return True
         cf_visitor = self.headers.get("CF-Visitor") or ""
         return '"scheme":"https"' in cf_visitor.replace(" ", "").lower()
+
+    def public_base_url(self) -> str:
+        proto = "https" if self.is_secure_request() else "http"
+        host = str(self.headers.get("Host") or "").strip()
+        if not host:
+            host = f"{self.client_address[0]}:{self.server.server_address[1]}" if getattr(self, "server", None) else "127.0.0.1"
+        return f"{proto}://{host}"
 
     def query_token(self) -> str:
         parsed = urlparse(self.path)
@@ -7403,6 +7672,21 @@ class Handler(BaseHTTPRequestHandler):
                 result[key] = values[-1] if values else ""
         return result
 
+    def read_json_body(self) -> dict[str, Any]:
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            length = 0
+        if length > MAX_POST_BODY_BYTES:
+            raise RequestTooLarge(f"request body too large: {length}")
+        raw = self.rfile.read(length)
+        if not raw:
+            return {}
+        data = json.loads(raw.decode("utf-8", "ignore"))
+        if not isinstance(data, dict):
+            raise ValueError("json_object_required")
+        return data
+
     def send_payload(self, payload: bytes, *, content_type: str = "application/json; charset=utf-8",
                      edge_ttl: int = 10, browser_ttl: int = 3, cache_hit: bool | None = None) -> None:
         body, gzipped = self.maybe_gzip_payload(payload, content_type)
@@ -7430,6 +7714,27 @@ class Handler(BaseHTTPRequestHandler):
     def send_json_uncached(self, result: dict[str, Any], *, no_store: bool = True) -> None:
         payload = json.dumps(result, ensure_ascii=False).encode("utf-8")
         self.send_payload(payload, edge_ttl=0 if no_store else 1)
+
+    def send_contest_sse(self, result: dict[str, Any]) -> None:
+        events = result.get("events") if isinstance(result, dict) else []
+        chunks: list[str] = []
+        if isinstance(events, list):
+            for item in events:
+                if not isinstance(item, dict):
+                    continue
+                data = json.dumps(item.get("data") or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                chunks.append(
+                    f"id: {int(item.get('id') or 0)}\n"
+                    f"event: {item.get('event') or 'message'}\n"
+                    f"data: {data}\n\n"
+                )
+        body = ("".join(chunks) if chunks else ": heartbeat\n\n").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.write_response(body)
 
     def do_HEAD(self) -> None:
         parsed = urlparse(self.path)
@@ -7533,6 +7838,23 @@ class Handler(BaseHTTPRequestHandler):
             token_key = hash_token(self.request_token())[:16] if self.request_token() else self.client_ip()
             if not self.enforce_rate_limit("auth", token_key, RATE_LIMIT_AUTH):
                 return
+        if parsed.path == "/api/contest/linuxdo/complete":
+            query = parse_qs(parsed.query)
+            result = contest_client.complete_linuxdo_login(
+                str(query.get("server_url", [""])[0] or ""),
+                str(query.get("ticket", [""])[0] or ""),
+            )
+            if result.get("ok"):
+                self.redirect("/admin?contest_login=linuxdo_ok")
+            else:
+                self.redirect("/admin?contest_login=linuxdo_error")
+            return
+        if parsed.path == "/api/contest/events":
+            self.send_contest_sse(contest_client.fetch_contest_events())
+            return
+        if parsed.path == "/api/contest/status":
+            self.send_json_uncached(contest_client.client_status(fetch_remote=True))
+            return
         if parsed.path == "/api/x_media":
             params = parse_qs(parsed.query)
             media_url = params.get("url", [""])[0].strip()
@@ -7681,6 +8003,53 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_html(render_admin_password_page("管理员密码错误"), status=403)
             return
+        if parsed.path.startswith("/api/contest/"):
+            if not self.require_user():
+                return
+            if not self.require_api_action_request():
+                return
+            try:
+                payload = self.read_json_body()
+                if parsed.path == "/api/contest/login":
+                    result = contest_client.login_user(
+                        str(payload.get("server_url") or ""),
+                        str(payload.get("username") or ""),
+                        str(payload.get("password") or ""),
+                    )
+                elif parsed.path == "/api/contest/linuxdo/start":
+                    result = contest_client.start_linuxdo_login(
+                        str(payload.get("server_url") or ""),
+                        self.public_base_url().rstrip("/") + "/api/contest/linuxdo/complete",
+                    )
+                elif parsed.path == "/api/contest/register":
+                    result = contest_client.register_user(
+                        str(payload.get("server_url") or ""),
+                        str(payload.get("username") or ""),
+                        str(payload.get("password") or ""),
+                        str(payload.get("nickname") or ""),
+                    )
+                elif parsed.path == "/api/contest/join":
+                    result = contest_client.join_contest(str(payload.get("contest_id") or ""))
+                elif parsed.path == "/api/contest/logout":
+                    result = contest_client.logout_user()
+                else:
+                    self.send_json_error(404, "not_found")
+                    return
+            except RequestTooLarge:
+                self.send_response(413)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.write_response(json.dumps({"ok": False, "error": "request_too_large"}, ensure_ascii=False).encode("utf-8"))
+                return
+            except json.JSONDecodeError:
+                self.send_json_uncached({"ok": False, "error": "invalid_json"})
+                return
+            except Exception as exc:
+                self.send_json_uncached({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+                return
+            self.send_json_uncached(result)
+            return
         if parsed.path in {"/api/b1_screen", "/api/b1_screen/trigger"}:
             params = parse_qs(parsed.query)
             if parsed.path == "/api/b1_screen" and params.get("force", ["0"])[0].lower() not in {"1", "true", "yes"}:
@@ -7727,10 +8096,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 form = self.read_form()
+                visible_names = set(admin_visible_env_names())
                 updates = {
                     key[len("env__"):]: value
                     for key, value in form.items()
-                    if key.startswith("env__") and key[len("env__"):] in ADMIN_VISIBLE_ENV_NAMES
+                    if key.startswith("env__") and key[len("env__"):] in visible_names
                 }
                 updates = normalize_business_updates(updates)
                 validate_business_updates(updates)

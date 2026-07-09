@@ -17,6 +17,7 @@ class UsRatingReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
             code = f"""
 import importlib.util, json, sys
 sys.path.insert(0, {str(SRC)!r})
@@ -51,6 +52,7 @@ print(json.dumps(captured, ensure_ascii=False))
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
             env['US_RATING_CONTEXT_LENGTH'] = '128K'
             code = f"""
 import importlib.util, json, sys
@@ -60,7 +62,7 @@ m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 m._get_crossdesk_credentials = lambda: ('https://rating.example/v1', 'secret')
 captured = {{}}
-def fake_call(base_url, api_key, messages, max_tokens=8192):
+def fake_call(base_url, api_key, messages, max_tokens=4096):
     captured.update({{'base_url': base_url, 'api_key': api_key, 'max_tokens': max_tokens}})
     return '- TEST: upgraded by Example'
 m._call_api = fake_call
@@ -74,13 +76,14 @@ print(json.dumps({{
             out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
             data = json.loads(out)
             self.assertEqual(data['context_length'], 128000)
-            self.assertEqual(data['max_tokens'], 8192)
+            self.assertEqual(data['max_tokens'], 4096)
             self.assertIn('TEST', data['result'])
 
     def test_us_rating_max_tokens_sets_report_output_tokens(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
             env['US_RATING_CONTEXT_LENGTH'] = '128K'
             env['US_RATING_MAX_TOKENS'] = '4096'
             code = f"""
@@ -91,7 +94,7 @@ m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 m._get_crossdesk_credentials = lambda: ('https://rating.example/v1', 'secret')
 captured = {{}}
-def fake_call(base_url, api_key, messages, max_tokens=8192):
+def fake_call(base_url, api_key, messages, max_tokens=4096):
     captured.update({{'max_tokens': max_tokens}})
     return '- TEST: upgraded by Example'
 m._call_api = fake_call
@@ -112,6 +115,7 @@ print(json.dumps({{
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
             code = f"""
 import importlib.util, json, sys
 sys.path.insert(0, {str(SRC)!r})
@@ -137,6 +141,7 @@ print(json.dumps({{
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
             sample = """**牛牛大王，美股机构买入评级日报（2026年06月23日）**
 
 - TEST / Test Corp
@@ -182,6 +187,7 @@ print(json.dumps({{
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
             code = f"""
 import importlib.util, json, sys
 from pathlib import Path

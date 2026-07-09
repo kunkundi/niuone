@@ -12,6 +12,7 @@ import urllib.parse
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / 'app'
@@ -736,14 +737,20 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertIn("document.addEventListener('input', handleUsFeatureToggle);", body)
         self.assertIn('Grok 模型', body)
         self.assertIn('Grok 模型上下文长度', body)
+        self.assertIn('Grok API 地址', body)
+        self.assertIn('Grok API 密钥', body)
         self.assertIn('美股评级上下文长度', body)
         self.assertIn('推文监控作者', body)
         self.assertIn('推文监控间隔', body)
         self.assertIn('美股买入评级时间', body)
         self.assertLess(body.index('开启牛牛美股'), body.index('消息面预检模型'))
         self.assertLess(body.index('Grok 模型'), body.index('消息面预检模型'))
+        self.assertLess(body.index('Grok API 地址'), body.index('Grok API 密钥'))
+        self.assertLess(body.index('Grok API 密钥'), body.index('消息面预检模型'))
         self.assertLess(body.index('推文监控作者'), body.index('消息面预检模型'))
         self.assertLess(body.index('美股买入评级时间'), body.index('消息面预检模型'))
+        self.assertIn("name='env__DASHBOARD_GROK_API_KEY'", body)
+        self.assertNotIn("<div class='config-label'>DASHBOARD_GROK_API_KEY</div>", body)
         self.assertNotIn('推文监控/美股买入评级模型', body)
         self.assertNotIn('<h2>推文监控作者</h2>', body)
         self.assertNotIn('<h2>推文监控周期</h2>', body)
@@ -751,8 +758,8 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertIn('买卖决策模型', body)
         self.assertIn('买卖决策上下文长度', body)
         self.assertIn('消息面预检上下文长度', body)
-        self.assertIn('留空使用模型/网关默认上下文窗口', body)
-        self.assertIn('运行时使用各场景内置输出预算', body)
+        self.assertIn('默认 128000 tokens', body)
+        self.assertIn('默认 4096 tokens', body)
         self.assertIn('选股及买卖决策时间点', body)
         self.assertIn('选股策略', body)
         self.assertIn('当前策略来源', body)
@@ -902,17 +909,30 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(item['effective'], '')
 
     def test_admin_config_decodes_preset_strategy_text(self):
-        dashboard.DASHBOARD_ENV_FILE.write_text(
-            "DASHBOARD_STRATEGY_SOURCE=preset_text\n"
-            "DASHBOARD_PRESET_STRATEGY_TEXT='强趋势回踩\\n跌破5日线离场'\n"
-            "DASHBOARD_TRADE_DISCIPLINE_TEXT='纪律一\\n纪律二'\n",
-            encoding='utf-8',
-        )
+        original_env_values = {
+            name: dashboard.os.environ.get(name)
+            for name in [dashboard.STRATEGY_SOURCE_ENV, dashboard.PRESET_STRATEGY_TEXT_ENV, dashboard.TRADE_DISCIPLINE_TEXT_ENV]
+        }
+        try:
+            for name in original_env_values:
+                dashboard.os.environ.pop(name, None)
+            dashboard.DASHBOARD_ENV_FILE.write_text(
+                "DASHBOARD_STRATEGY_SOURCE=preset_text\n"
+                "DASHBOARD_PRESET_STRATEGY_TEXT='强趋势回踩\\n跌破5日线离场'\n"
+                "DASHBOARD_TRADE_DISCIPLINE_TEXT='纪律一\\n纪律二'\n",
+                encoding='utf-8',
+            )
 
-        payload = dashboard.build_admin_config_payload()
-        source_item = next(item for item in payload['items'] if item['name'] == dashboard.STRATEGY_SOURCE_ENV)
-        text_item = next(item for item in payload['items'] if item['name'] == dashboard.PRESET_STRATEGY_TEXT_ENV)
-        discipline_item = next(item for item in payload['items'] if item['name'] == dashboard.TRADE_DISCIPLINE_TEXT_ENV)
+            payload = dashboard.build_admin_config_payload()
+            source_item = next(item for item in payload['items'] if item['name'] == dashboard.STRATEGY_SOURCE_ENV)
+            text_item = next(item for item in payload['items'] if item['name'] == dashboard.PRESET_STRATEGY_TEXT_ENV)
+            discipline_item = next(item for item in payload['items'] if item['name'] == dashboard.TRADE_DISCIPLINE_TEXT_ENV)
+        finally:
+            for name, value in original_env_values.items():
+                if value is None:
+                    dashboard.os.environ.pop(name, None)
+                else:
+                    dashboard.os.environ[name] = value
 
         self.assertEqual(source_item['effective'], '预设文字')
         self.assertEqual(source_item['file_value'], 'preset_text')
@@ -921,9 +941,20 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(discipline_item['file_value'], '纪律一\n纪律二')
         self.assertEqual(discipline_item['effective'], '纪律一\n纪律二')
 
-    def test_model_length_defaults_are_auto_in_admin_config(self):
+    def test_model_length_defaults_are_explicit_in_admin_config(self):
         payload = dashboard.build_admin_config_payload()
         by_name = {item['name']: item for item in payload['items']}
+
+        for name in [
+            'US_RATING_CONTEXT_LENGTH',
+            'DASHBOARD_GROK_CONTEXT_LENGTH',
+            'DASHBOARD_NEWS_CONTEXT_LENGTH',
+            'DASHBOARD_DECISION_CONTEXT_LENGTH',
+            'A_SHARE_MODEL_SUMMARY_CONTEXT_LENGTH',
+        ]:
+            item = by_name[name]
+            self.assertEqual(item['default'], '128000')
+            self.assertEqual(item['file_value'], '128000')
 
         for name in [
             'DASHBOARD_DECISION_MAX_TOKENS',
@@ -935,13 +966,14 @@ class DashboardAuthTests(unittest.TestCase):
             'X_WATCHLIST_MAX_TOKENS',
         ]:
             item = by_name[name]
-            self.assertEqual(item['default'], '')
-            self.assertEqual(item['file_value'], '')
+            self.assertEqual(item['default'], '4096')
+            self.assertEqual(item['file_value'], '4096')
 
         body = dashboard.render_admin_page().decode('utf-8')
-        self.assertIn("placeholder='留空=Auto；例如 4096 或 8192'", body)
-        self.assertIn('运行时使用各场景内置输出预算', body)
-        self.assertIn("placeholder='留空=Auto；例如 128K、1M 或 1000000'", body)
+        self.assertIn("placeholder='默认 4096；例如 2048 或 8192'", body)
+        self.assertIn('默认 4096 tokens', body)
+        self.assertIn("placeholder='默认 128000；例如 128K、1M 或 1000000'", body)
+        self.assertIn('默认 128000 tokens', body)
 
     def test_business_settings_are_local_to_dashboard_env(self):
         original_env_file = dashboard.DASHBOARD_ENV_FILE
@@ -1264,6 +1296,121 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(restart_calls, [])
         self.assertFalse(response['changed'])
         self.assertEqual(response['restart']['skipped'], 'unchanged')
+
+    def test_contest_dashboard_api_login_status_and_join(self):
+        login_body = json.dumps({
+            'server_url': 'http://contest.test',
+            'username': 'alice',
+            'password': 'secret123',
+        }).encode('utf-8')
+        with patch.object(dashboard.contest_client, 'login_user', return_value={'ok': True, 'user': {'nickname': 'Alice'}}) as login:
+            handler = FakeHandler(
+                '/api/contest/login',
+                method='POST',
+                headers={'Content-Length': str(len(login_body)), 'X-NiuOne-Action': '1'},
+                body=login_body,
+            )
+            handler.do_POST()
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(json.loads(handler.wfile.getvalue())['user']['nickname'], 'Alice')
+        login.assert_called_once_with('http://contest.test', 'alice', 'secret123')
+
+        with patch.object(dashboard.contest_client, 'client_status', return_value={'ok': True, 'logged_in': True, 'available_contests': []}) as status:
+            handler = FakeHandler('/api/contest/status')
+            handler.do_GET()
+        self.assertEqual(handler.status, 200)
+        self.assertTrue(json.loads(handler.wfile.getvalue())['logged_in'])
+        status.assert_called_once_with(fetch_remote=True)
+
+        join_body = json.dumps({'contest_id': 'demo'}).encode('utf-8')
+        with patch.object(dashboard.contest_client, 'join_contest', return_value={'ok': True, 'contest_id': 'demo', 'participant_id': 'p1'}) as join:
+            handler = FakeHandler(
+                '/api/contest/join',
+                method='POST',
+                headers={'Content-Length': str(len(join_body)), 'X-NiuOne-Action': '1'},
+                body=join_body,
+            )
+            handler.do_POST()
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(json.loads(handler.wfile.getvalue())['participant_id'], 'p1')
+        join.assert_called_once_with('demo')
+
+    def test_contest_dashboard_linuxdo_start_and_complete(self):
+        start_body = json.dumps({'server_url': 'http://contest.test'}).encode('utf-8')
+        with patch.object(dashboard.contest_client, 'start_linuxdo_login', return_value={
+            'ok': True,
+            'auth_url': 'https://connect.linux.do/oauth2/authorize?state=abc',
+        }) as start:
+            handler = FakeHandler(
+                '/api/contest/linuxdo/start',
+                method='POST',
+                headers={
+                    'Content-Length': str(len(start_body)),
+                    'X-NiuOne-Action': '1',
+                    'Host': '127.0.0.1:8787',
+                },
+                body=start_body,
+            )
+            handler.do_POST()
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(json.loads(handler.wfile.getvalue())['auth_url'], 'https://connect.linux.do/oauth2/authorize?state=abc')
+        start.assert_called_once_with(
+            'http://contest.test',
+            'http://127.0.0.1:8787/api/contest/linuxdo/complete',
+        )
+
+        complete_url = '/api/contest/linuxdo/complete?ticket=lt_ticket&server_url=http%3A%2F%2Fcontest.test'
+        with patch.object(dashboard.contest_client, 'complete_linuxdo_login', return_value={
+            'ok': True,
+            'user': {'nickname': 'Alice LinuxDo'},
+        }) as complete:
+            handler = FakeHandler(complete_url, headers={'Host': '127.0.0.1:8787'})
+            handler.do_GET()
+        self.assertEqual(handler.status, 303)
+        self.assertEqual(handler.header('Location'), '/admin?contest_login=linuxdo_ok')
+        complete.assert_called_once_with('http://contest.test', 'lt_ticket')
+
+    def test_settings_page_contains_contest_panel_hooks_and_home_omits_panel(self):
+        body = dashboard.render_admin_page().decode('utf-8')
+        self.assertIn("<h2>策略大赛</h2>", body)
+        first_group_start = body.index("class='settings-group'")
+        first_group_end = body.index("</section>", first_group_start)
+        first_group_html = body[first_group_start:first_group_end]
+        self.assertIn("<h2>策略大赛</h2>", first_group_html)
+        contest_group_start = body.index("<h2>策略大赛</h2>")
+        contest_group_end = body.index("</section>", contest_group_start)
+        contest_group_html = body[contest_group_start:contest_group_end]
+
+        self.assertIn('id="contestPanel"', contest_group_html)
+        self.assertIn('/api/contest/status', body)
+        self.assertIn('/api/contest/events', body)
+        self.assertIn('/api/contest/linuxdo/start', body)
+        self.assertIn('LinuxDo', body)
+        self.assertIn('new EventSource', body)
+        self.assertIn('function renderContestPanel', body)
+        self.assertNotIn('${renderContestPanel()}', dashboard.INDEX_HTML)
+
+    def test_contest_settings_visibility_is_decided_server_side(self):
+        with patch.object(dashboard, 'contest_settings_visible', return_value=False, create=True):
+            payload = dashboard.build_admin_config_payload()
+            body = dashboard.render_admin_page().decode('utf-8')
+
+        self.assertFalse(any(str(item.get('name') or '').startswith('DASHBOARD_CONTEST_') for item in payload['items']))
+        self.assertNotIn('<h2>策略大赛</h2>', body)
+        self.assertNotIn('id="contestPanel"', body)
+        self.assertNotIn('/api/contest/status', body)
+
+    def test_contest_dashboard_events_proxy_streams_sse(self):
+        payload = {'ok': True, 'events': [{'id': 9, 'event': 'contest', 'data': {'contest_id': 'demo'}}]}
+        with patch.object(dashboard.contest_client, 'fetch_contest_events', return_value=payload) as events:
+            handler = FakeHandler('/api/contest/events')
+            handler.do_GET()
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(handler.header('Content-Type'), 'text/event-stream; charset=utf-8')
+        body = handler.wfile.getvalue().decode('utf-8')
+        self.assertIn('event: contest', body)
+        self.assertIn('"contest_id":"demo"', body)
+        events.assert_called_once_with()
 
 
 if __name__ == '__main__':

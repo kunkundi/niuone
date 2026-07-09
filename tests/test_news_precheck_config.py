@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "app"
 NEWS_ENV_KEYS = {
+    "DASHBOARD_ENV_FILE",
     "DASHBOARD_NEWS_MODEL",
     "DASHBOARD_NEWS_CONTEXT_LENGTH",
     "DASHBOARD_NEWS_MAX_TOKENS",
@@ -17,6 +19,7 @@ NEWS_ENV_KEYS = {
     "DASHBOARD_NEWS_API_KEY",
     "DASHBOARD_NEWS_TIMEOUT",
     "DASHBOARD_NEWS_MAX_RETRIES",
+    "DASHBOARD_NEWS_CONCURRENCY",
     "DASHBOARD_GROK_MODEL",
     "DASHBOARD_GROK_BASE_URL",
     "DASHBOARD_GROK_API_KEY",
@@ -28,6 +31,7 @@ def import_trader_with_env(updates: dict[str, str]):
         sys.path.insert(0, str(SRC))
     for key in NEWS_ENV_KEYS:
         os.environ.pop(key, None)
+    os.environ["DASHBOARD_ENV_FILE"] = str(ROOT / ".missing-dashboard.env")
     os.environ.update(updates)
     spec = importlib.util.spec_from_file_location(
         f"niuniu_practice_trader_under_test_{len(sys.modules)}",
@@ -97,7 +101,7 @@ class NewsPrecheckConfigTests(unittest.TestCase):
         self.assertEqual(captured["model_name"], "search-model")
         self.assertEqual(captured["max_retries"], 1)
         self.assertEqual(captured["timeout"], 45)
-        self.assertIn("【消息面预检（实时搜索）】", result)
+        self.assertIn("【消息面预检（实时搜索", result)
         self.assertNotIn("Grok", result)
 
     def test_request_chat_content_sends_compatible_user_agent(self):
@@ -195,6 +199,61 @@ class NewsPrecheckConfigTests(unittest.TestCase):
         self.assertEqual(captured["max_retries"], 2)
         self.assertEqual(captured["timeout"], 30)
 
+    def test_news_precheck_checks_candidates_concurrently_and_preserves_order(self):
+        module = import_trader_with_env({
+            "DASHBOARD_NEWS_BASE_URL": "https://news.example/v1",
+            "DASHBOARD_NEWS_API_KEY": "news-secret",
+            "DASHBOARD_NEWS_MODEL": "search-model",
+            "DASHBOARD_NEWS_CONCURRENCY": "3",
+        })
+        prompts = []
+
+        def fake_request(base_url, api_key, payload, model_name, max_retries=3, timeout=60):
+            prompt = payload["messages"][0]["content"]
+            prompts.append(prompt)
+            if "000001" in prompt:
+                time.sleep(0.05)
+                return "- 000001 平安银行：无重大消息（中性）"
+            if "000002" in prompt:
+                return "- 000002 万科A：融资消息偏弱（利空）"
+            return "- 000003 国农科技：订单消息偏强（利好）"
+
+        module.request_chat_content = fake_request
+        result = module.check_candidate_news_precheck([
+            {"code": "000001", "name": "平安银行"},
+            {"code": "000002", "name": "万科A"},
+            {"code": "000003", "name": "国农科技"},
+        ])
+
+        self.assertIn("并发3", result)
+        self.assertEqual(len(prompts), 3)
+        self.assertTrue(all(not ("000001" in prompt and "000002" in prompt) for prompt in prompts))
+        self.assertLess(result.index("000001"), result.index("000002"))
+        self.assertLess(result.index("000002"), result.index("000003"))
+
+    def test_news_precheck_keeps_partial_results_when_one_parallel_request_fails(self):
+        module = import_trader_with_env({
+            "DASHBOARD_NEWS_BASE_URL": "https://news.example/v1",
+            "DASHBOARD_NEWS_API_KEY": "news-secret",
+            "DASHBOARD_NEWS_MODEL": "search-model",
+            "DASHBOARD_NEWS_CONCURRENCY": "2",
+        })
+
+        def fake_request(base_url, api_key, payload, model_name, max_retries=3, timeout=60):
+            prompt = payload["messages"][0]["content"]
+            if "000002" in prompt:
+                raise RuntimeError("rate limited")
+            return "- 000001 平安银行：无重大消息（中性）"
+
+        module.request_chat_content = fake_request
+        result = module.check_candidate_news_precheck([
+            {"code": "000001", "name": "平安银行"},
+            {"code": "000002", "name": "万科A"},
+        ])
+
+        self.assertIn("000001 平安银行", result)
+        self.assertIn("000002 万科A：消息面预检失败", result)
+
     def test_news_precheck_context_length_does_not_set_max_tokens(self):
         module = import_trader_with_env({
             "DASHBOARD_NEWS_BASE_URL": "https://news.example/v1",
@@ -212,7 +271,7 @@ class NewsPrecheckConfigTests(unittest.TestCase):
         module.check_candidate_news_precheck([{"code": "000001", "name": "平安银行"}])
 
         self.assertEqual(module.NEWS_PRECHECK_CONTEXT_LENGTH, 128000)
-        self.assertEqual(captured["payload"]["max_tokens"], 600)
+        self.assertEqual(captured["payload"]["max_tokens"], 4096)
 
     def test_news_precheck_max_tokens_sets_output_tokens(self):
         module = import_trader_with_env({
@@ -240,7 +299,7 @@ class NewsPrecheckConfigTests(unittest.TestCase):
         })
 
         self.assertEqual(module.NEWS_PRECHECK_CONTEXT_LENGTH, 1000000)
-        self.assertEqual(module.NEWS_PRECHECK_MAX_TOKENS, 600)
+        self.assertEqual(module.NEWS_PRECHECK_MAX_TOKENS, 4096)
 
     def test_parse_chat_completion_content_accepts_sse_stream(self):
         module = import_trader_with_env({})

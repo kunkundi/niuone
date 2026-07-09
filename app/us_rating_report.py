@@ -108,8 +108,8 @@ def _token_count_env(*names: str, default: int) -> int:
 
 US_RATING_DEADLINE_SECONDS = _int_env("US_RATING_DEADLINE_SECONDS", 240, min_value=30)
 US_RATING_REQUEST_TIMEOUT_SECONDS = _int_env("US_RATING_REQUEST_TIMEOUT_SECONDS", 120, min_value=10)
-US_RATING_CONTEXT_LENGTH = _token_count_env("US_RATING_CONTEXT_LENGTH", "DASHBOARD_GROK_CONTEXT_LENGTH", default=0)
-US_RATING_MAX_TOKENS = _token_count_env("US_RATING_MAX_TOKENS", default=8192)
+US_RATING_CONTEXT_LENGTH = _token_count_env("US_RATING_CONTEXT_LENGTH", "DASHBOARD_GROK_CONTEXT_LENGTH", default=128000)
+US_RATING_MAX_TOKENS = _token_count_env("US_RATING_MAX_TOKENS", default=4096)
 
 
 def _load_config():
@@ -144,7 +144,7 @@ def _is_transient_error(err):
     return any(s in text for s in ("timed out", "timeout", "temporarily", "connection reset", "empty stream", "ssl"))
 
 
-def _call_api(base_url, api_key, messages, max_tokens=8192):
+def _call_api(base_url, api_key, messages, max_tokens=US_RATING_MAX_TOKENS):
     body = json.dumps({
         "model": US_RATING_MODEL,
         "messages": messages,

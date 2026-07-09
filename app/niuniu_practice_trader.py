@@ -12,6 +12,7 @@ Rules implemented:
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import math
 import os
@@ -119,6 +120,7 @@ def load_dashboard_env() -> None:
         "DASHBOARD_NEWS_API_KEY",
         "DASHBOARD_NEWS_TIMEOUT",
         "DASHBOARD_NEWS_MAX_RETRIES",
+        "DASHBOARD_NEWS_CONCURRENCY",
         "DASHBOARD_DECISION_MODEL",
         "DASHBOARD_DECISION_CONTEXT_LENGTH",
         "DASHBOARD_DECISION_BASE_URL",
@@ -138,6 +140,14 @@ def load_dashboard_env() -> None:
         "DASHBOARD_MIN_CASH_RESERVE_PCT",
         "DASHBOARD_MARKET_GUIDANCE_ENABLED",
         "DASHBOARD_MORNING_MAX_OPEN_POSITIONS",
+        "DASHBOARD_CONTEST_ENABLED",
+        "DASHBOARD_CONTEST_SERVER_URL",
+        "DASHBOARD_CONTEST_ID",
+        "DASHBOARD_CONTEST_NICKNAME",
+        "DASHBOARD_CONTEST_PARTICIPANT_ID",
+        "DASHBOARD_CONTEST_SECRET",
+        "DASHBOARD_CONTEST_TIMEOUT_SECONDS",
+        "DASHBOARD_CONTEST_STATE",
         STRATEGY_SOURCE_ENV,
         PERSONA_STRATEGY_ENV,
         PRESET_STRATEGY_TEXT_ENV,
@@ -287,12 +297,14 @@ SINA_QUOTE_URL = "https://hq.sinajs.cn/list="
 EASTMONEY_STOCK_URL = "https://push2.eastmoney.com/api/qt/stock/get"
 EASTMONEY_UT = "bd1d9ddb04089700cf9c27f6f7426281"
 MODEL = os.environ.get("DASHBOARD_DECISION_MODEL") or "deepseek-v4-pro"
-DECISION_MAX_TOKENS = env_int("DASHBOARD_DECISION_MAX_TOKENS", 6000)
+DECISION_CONTEXT_LENGTH = env_token_count("DASHBOARD_DECISION_CONTEXT_LENGTH", 128000)
+DECISION_MAX_TOKENS = env_int("DASHBOARD_DECISION_MAX_TOKENS", 4096)
 DECISION_REQUEST_TIMEOUT = env_int("DASHBOARD_DECISION_TIMEOUT", 180)
 NEWS_PRECHECK_REQUEST_TIMEOUT = max(5, env_int("DASHBOARD_NEWS_TIMEOUT", 45))
 NEWS_PRECHECK_MAX_RETRIES = max(1, env_int("DASHBOARD_NEWS_MAX_RETRIES", 1))
-NEWS_PRECHECK_CONTEXT_LENGTH = env_token_count("DASHBOARD_NEWS_CONTEXT_LENGTH", 0)
-NEWS_PRECHECK_MAX_TOKENS = env_token_count("DASHBOARD_NEWS_MAX_TOKENS", 600)
+NEWS_PRECHECK_CONCURRENCY = max(1, min(5, env_int("DASHBOARD_NEWS_CONCURRENCY", 5)))
+NEWS_PRECHECK_CONTEXT_LENGTH = env_token_count("DASHBOARD_NEWS_CONTEXT_LENGTH", 128000)
+NEWS_PRECHECK_MAX_TOKENS = env_token_count("DASHBOARD_NEWS_MAX_TOKENS", 4096)
 PROVIDER_DISPLAY_NAME = "Crossdesk.ccwu.cc"
 CROSSDESK_PROVIDER_NAME = "Crossdesk.ccwu.cc"
 TRADE_LOG_LIMIT = 200
@@ -4202,42 +4214,105 @@ def compact_portfolio_for_decision(portfolio: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def check_candidate_news_precheck(candidates: list[dict[str, Any]]) -> str:
-    """用独立实时检索模型搜索 top5 候选股的最新消息面，返回结构化摘要。
-    
-    Returns: 格式化的消息面文本，供决策 prompt 使用。
-    """
-    if not candidates:
-        return ""
+def format_candidate_label(candidate: dict[str, Any]) -> str:
+    code = str(candidate.get("code") or "").strip()
+    name = str(candidate.get("name") or "").strip()
+    return " ".join(part for part in [code, name] if part).strip() or "未知股票"
 
-    news_config = load_news_precheck_config()
-    if news_config is None:
-        return ""
-    base_url, api_key, model = news_config
-    
-    stock_list = "、".join(f"{c.get('code','')} {c.get('name','')}" for c in candidates[:5])
-    
-    prompt = f"""搜索以下A股最近3天的重大消息（利好/利空/中性），每只一句话：
-{stock_list}
+
+def build_single_candidate_news_prompt(candidate: dict[str, Any]) -> str:
+    label = format_candidate_label(candidate)
+    return f"""搜索以下A股最近3天的重大消息（利好/利空/中性），只针对这一只股票：
+{label}
 
 格式：
 - 代码 名称：一句话总结（利好/利空/中性）
-只输出有明确消息的股，无消息的省略。"""
+如没有明确重大消息，输出：
+- 代码 名称：最近3天无明确重大消息（中性）"""
 
+
+def request_single_candidate_news_precheck(
+    candidate: dict[str, Any],
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+) -> str:
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": build_single_candidate_news_prompt(candidate)}],
         "max_tokens": NEWS_PRECHECK_MAX_TOKENS,
     }
-    content = request_chat_content(
+    return request_chat_content(
         base_url,
         api_key,
         payload,
         model,
         max_retries=NEWS_PRECHECK_MAX_RETRIES,
         timeout=NEWS_PRECHECK_REQUEST_TIMEOUT,
-    )
-    return f"【消息面预检（实时搜索）】\n{content.strip()}"
+    ).strip()
+
+
+def format_news_precheck_error(candidate: dict[str, Any], exc: Exception) -> str:
+    detail = clip_text(f"{type(exc).__name__}: {exc}", 160)
+    return f"- {format_candidate_label(candidate)}：消息面预检失败（{detail}）"
+
+
+def check_candidate_news_precheck(candidates: list[dict[str, Any]]) -> str:
+    """并发搜索 top5 候选股的最新消息面，返回结构化摘要。
+
+    Returns: 格式化的消息面文本，供决策 prompt 使用。
+    """
+    top_candidates = [c for c in candidates[:5] if isinstance(c, dict)]
+    if not top_candidates:
+        return ""
+
+    news_config = load_news_precheck_config()
+    if news_config is None:
+        return ""
+    base_url, api_key, model = news_config
+
+    def fetch(candidate: dict[str, Any]) -> str:
+        return request_single_candidate_news_precheck(
+            candidate,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+        )
+
+    results: list[str] = [""] * len(top_candidates)
+    failures: list[str] = []
+    success_count = 0
+    workers = min(NEWS_PRECHECK_CONCURRENCY, len(top_candidates))
+    if workers <= 1:
+        for idx, candidate in enumerate(top_candidates):
+            try:
+                results[idx] = fetch(candidate)
+                success_count += 1
+            except Exception as exc:
+                failures.append(format_news_precheck_error(candidate, exc))
+                results[idx] = failures[-1]
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            future_by_index = {
+                pool.submit(fetch, candidate): idx
+                for idx, candidate in enumerate(top_candidates)
+            }
+            for future in concurrent.futures.as_completed(future_by_index):
+                idx = future_by_index[future]
+                candidate = top_candidates[idx]
+                try:
+                    results[idx] = future.result()
+                    success_count += 1
+                except Exception as exc:
+                    failures.append(format_news_precheck_error(candidate, exc))
+                    results[idx] = failures[-1]
+
+    if failures and success_count == 0:
+        raise RuntimeError("全部股票消息面预检失败：" + "；".join(failures[:3]))
+
+    content = "\n".join(item.strip() for item in results if item and item.strip()).strip()
+    return f"【消息面预检（实时搜索，并发{workers}）】\n{content}"
 
 
 def current_strategy_source() -> str:
@@ -4840,6 +4915,9 @@ def execute_actions(
                              "commission": fees["commission"], "transfer_fee": fees["transfer_fee"],
                              "stamp_duty": fees["stamp_duty"], "fee": fees["total_fee"],
                              "total_cost": round(total_cost, 2), "price_source": price_source,
+                             "quote_time": q.get("quote_time") or now_ts(),
+                             "quote_source": q.get("source") or price_source,
+                             "_contest_quote_snapshot": _json_safe_copy(q),
                              "order_position_pct": order_position_pct,
                              "position_after_trade_pct": position_after_trade_pct,
                              "total_position_after_trade_pct": total_position_after_trade_pct,
@@ -4911,6 +4989,9 @@ def execute_actions(
                              "stamp_duty": fees["stamp_duty"], "fee": fees["total_fee"],
                              "net_proceeds": round(net_proceeds, 2), "pnl": round(realized_pnl, 2),
                              "pnl_pct": round(realized_pnl_pct, 2), "price_source": price_source,
+                             "quote_time": q.get("quote_time") or now_ts(),
+                             "quote_source": q.get("source") or price_source,
+                             "_contest_quote_snapshot": _json_safe_copy(q),
                              "order_position_pct": order_position_pct,
                              "position_before_trade_pct": position_before_trade_pct,
                              "position_after_trade_pct": position_after_trade_pct,
@@ -4919,6 +5000,7 @@ def execute_actions(
                              "buy_strategy": entry_strategy, "exit_rule": exit_rule,
                              "strategy_mark": entry_mark, "exit_strategy_mark": exit_mark})
     state["cash"] = round(cash, 2)
+    _sync_contest_trades(executed)
     state.setdefault("trade_log", []).extend(executed)
     del state["trade_log"][:-TRADE_LOG_LIMIT]
     return executed
@@ -4941,6 +5023,25 @@ def _sync_trades_to_db(executed: list[dict[str, Any]]):
         for item in executed:
             _rt(item)
     except Exception: pass
+
+
+def _sync_contest_trades(executed: list[dict[str, Any]]) -> None:
+    """Mirror local fills to the contest server without affecting local trading."""
+    if not executed:
+        return
+    try:
+        import contest_client
+        if contest_client.is_enabled():
+            contest_client.submit_trades(executed)
+    except Exception as exc:
+        contest_id = os.environ.get("DASHBOARD_CONTEST_ID") or ""
+        for item in executed:
+            item["contest_id"] = contest_id
+            item["contest_status"] = "upload_failed"
+            item["contest_reject_reason"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        for item in executed:
+            item.pop("_contest_quote_snapshot", None)
 
 
 def _sync_positions_to_db(state: dict[str, Any]):

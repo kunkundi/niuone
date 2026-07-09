@@ -37,8 +37,8 @@ class AShareGrokSummaryTests(unittest.TestCase):
         mod = load_module_with_env({"A_SHARE_MODEL_SUMMARY_CONTEXT_LENGTH": "256K"})
 
         self.assertEqual(mod.A_SHARE_MODEL_SUMMARY_CONTEXT_LENGTH, 256000)
-        self.assertEqual(mod.A_SHARE_MODEL_SUMMARY_MAX_TOKENS, 1800)
-        self.assertEqual(mod.call_grok_api.__kwdefaults__["max_tokens"], 1800)
+        self.assertEqual(mod.A_SHARE_MODEL_SUMMARY_MAX_TOKENS, 4096)
+        self.assertEqual(mod.call_grok_api.__kwdefaults__["max_tokens"], 4096)
 
     def test_max_tokens_env_sets_model_summary_output_tokens(self):
         mod = load_module_with_env({
@@ -102,7 +102,7 @@ class AShareGrokSummaryTests(unittest.TestCase):
         original_model = mod.A_SHARE_MODEL_SUMMARY_MODEL
         try:
             mod.A_SHARE_MODEL_SUMMARY_MODEL = "model-test"
-            mod.call_grok_api = lambda messages, max_tokens=1800: json.dumps({
+            mod.call_grok_api = lambda messages, max_tokens=4096: json.dumps({
                 "tone": "defensive",
                 "tone_label": "防守",
                 "summary": "A股午盘涨少跌多，资金分散，午后先防守。",
@@ -147,7 +147,7 @@ class AShareGrokSummaryTests(unittest.TestCase):
             mod.A_SHARE_MODEL_SUMMARY_MODEL = "model-test"
             captured = {}
 
-            def fake_call(messages, max_tokens=1800):
+            def fake_call(messages, max_tokens=4096):
                 captured["prompt"] = messages[-1]["content"]
                 return json.dumps({
                     "tone": "cautious",

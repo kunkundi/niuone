@@ -41,8 +41,8 @@ print(json.dumps({{
             out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
             data = json.loads(out)
             self.assertEqual(data['context_length'], 128000)
-            self.assertEqual(data['configured_max_tokens'], 0)
-            self.assertEqual(data['max_tokens'], 1500)
+            self.assertEqual(data['configured_max_tokens'], 4096)
+            self.assertEqual(data['max_tokens'], 4096)
 
     def test_x_watchlist_max_tokens_sets_output_tokens(self):
         with tempfile.TemporaryDirectory() as tmp:
