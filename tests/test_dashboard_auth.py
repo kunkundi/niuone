@@ -84,6 +84,7 @@ class DashboardAuthTests(unittest.TestCase):
         dashboard.CRON_STATE_DIR = self.tmp_path / 'cron' / 'state'
         dashboard.API_RESPONSE_CACHE.clear()
         dashboard.API_CACHE_KEY_LOCKS.clear()
+        dashboard.API_CACHE_KEY_GENERATIONS.clear()
         dashboard.RATE_LIMIT_BUCKETS.clear()
         dashboard.ensure_stats_db()
 
@@ -616,6 +617,9 @@ class DashboardAuthTests(unittest.TestCase):
 
     def test_fast_practice_payload_uses_trader_trade_rule_note(self):
         class FakeTrader:
+            MODEL = 'gpt-regression-test'
+            PROVIDER_DISPLAY_NAME = 'provider-regression-test'
+
             def load_state(self):
                 return {'equity_history': [], 'daily_equity_history': []}
 
@@ -646,6 +650,8 @@ class DashboardAuthTests(unittest.TestCase):
             dashboard.trading_day_status = original_trading_day_status
 
         self.assertEqual(payload['trade_rule_note'], '统一风控说明')
+        self.assertEqual(payload['decision_model'], 'gpt-regression-test')
+        self.assertEqual(payload['decision_provider'], 'provider-regression-test')
         self.assertEqual(payload['snapshot_mode'], 'fast')
 
     def test_fast_practice_payload_includes_compact_multi_day_calendar_history(self):
@@ -947,7 +953,7 @@ class DashboardAuthTests(unittest.TestCase):
 
     def test_index_template_loads_calendar_history_without_waiting_for_full_snapshot(self):
         self.assertIn("const VIEW_STATE_KEY = 'niuniu-dashboard-view-state-v5';", dashboard.INDEX_HTML)
-        self.assertIn("fetchJson('/api/niuniu_practice?fast=1&calendar_schema=1')", dashboard.INDEX_HTML)
+        self.assertIn("'/api/niuniu_practice?fast=1&calendar_schema=1'", dashboard.INDEX_HTML)
         self.assertIn("fetchJson('/api/niuniu_practice?snapshot_schema=2')", dashboard.INDEX_HTML)
         self.assertIn('const fullPracticePromise = practiceFullRequest;', dashboard.INDEX_HTML)
         self.assertIn('function mergePracticePayloadSnapshots', dashboard.INDEX_HTML)
@@ -1030,6 +1036,10 @@ const manyOld = {
   equity_history:Array.from({length:2500}, (_, idx) => ({time:`2026-07-09 ${String(idx).padStart(5, '0')}`, equity:idx})),
 };
 const capped = mergePracticePayloadSnapshots(newerFast, manyOld);
+const modelRefresh = mergePracticePayloadSnapshots(
+  {...full, decision_model:'deepseek-v4-pro', decision_provider:'old-provider'},
+  {...fast, decision_model:'gpt-regression-test', decision_provider:'new-provider'},
+);
 process.stdout.write(JSON.stringify({
   businessErrorUsable:isUsablePracticePayload(fast),
   unavailableRejected:!isUsablePracticePayload({...fast, equity_history_scope:'unavailable'}),
@@ -1039,6 +1049,7 @@ process.stdout.write(JSON.stringify({
   compactDateNotRehydrated:JSON.stringify(compactAuthoritative.equity_history.map(row => row.time)) === JSON.stringify(['2026-07-10 11:00:00']),
   newerErrorPreserved:newerSource.last_error === '模型暂时不可用',
   historyCapped:capped.equity_history.length === 2000 && capped.equity_history.at(-1).time === '2026-07-10 11:00:00',
+  modelMetadataUsesIncoming:modelRefresh.decision_model === 'gpt-regression-test' && modelRefresh.decision_provider === 'new-provider',
 }));
 """
         result = subprocess.run(
@@ -1050,6 +1061,47 @@ process.stdout.write(JSON.stringify({
         checks = json.loads(result.stdout)
 
         self.assertTrue(all(checks.values()), checks)
+
+    def test_index_template_does_not_guess_missing_decision_model(self):
+        self.assertIn("const decisionModel = String(p.decision_model || '').trim();", dashboard.INDEX_HTML)
+        self.assertIn("practiceFullSnapshotStatus === 'error' ? '未知' : '加载中'", dashboard.INDEX_HTML)
+        self.assertIn('delete niuniuPracticeData.decision_model;', dashboard.INDEX_HTML)
+        self.assertIn('delete niuniuPracticeData.decision_provider;', dashboard.INDEX_HTML)
+        self.assertIn("{cache: 'no-cache'}", dashboard.INDEX_HTML)
+        self.assertNotIn("p.decision_model || 'deepseek-v4-pro'", dashboard.INDEX_HTML)
+
+    def test_cache_invalidation_prevents_inflight_model_snapshot_from_repopulating_cache(self):
+        cache_key = dashboard.PRACTICE_FAST_CACHE_KEY
+        producer_started = dashboard.threading.Event()
+        release_producer = dashboard.threading.Event()
+        result = {}
+
+        def old_model_producer():
+            producer_started.set()
+            self.assertTrue(release_producer.wait(timeout=2))
+            return {'decision_model': 'deepseek-v4-pro'}
+
+        def populate_old_model():
+            result['payload'], result['hit'] = dashboard.cache_get_json(cache_key, 60, old_model_producer)
+
+        worker = dashboard.threading.Thread(target=populate_old_model)
+        worker.start()
+        self.assertTrue(producer_started.wait(timeout=2))
+        dashboard.invalidate_api_cache(cache_key)
+        release_producer.set()
+        worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(result['hit'])
+        self.assertNotIn(cache_key, dashboard.API_RESPONSE_CACHE)
+
+        payload, hit = dashboard.cache_get_json(
+            cache_key,
+            60,
+            lambda: {'decision_model': 'gpt-regression-test'},
+        )
+        self.assertFalse(hit)
+        self.assertEqual(json.loads(payload)['decision_model'], 'gpt-regression-test')
 
     def test_index_template_intraday_curve_renders_single_point_from_opening_base(self):
         self.assertIn('if (rawPoints.length < (isDailyMode ? 2 : 1))', dashboard.INDEX_HTML)

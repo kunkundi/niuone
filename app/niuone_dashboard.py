@@ -134,6 +134,7 @@ CN_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
 API_RESPONSE_CACHE: dict[str, dict[str, Any]] = {}
 API_RESPONSE_LOCK = threading.RLock()
 API_CACHE_KEY_LOCKS: dict[str, threading.Lock] = {}
+API_CACHE_KEY_GENERATIONS: dict[str, int] = {}
 API_CACHE_MAX_ENTRIES = int(os.environ.get("DASHBOARD_API_CACHE_MAX_ENTRIES", "256") or "256")
 X_MEDIA_CACHE: dict[str, dict[str, Any]] = {}
 X_MEDIA_CACHE_LOCK = threading.RLock()
@@ -1113,6 +1114,11 @@ def get_practice_payload_fast() -> dict[str, Any]:
         payload["strategy_performance"] = compact_strategy_performance(strategy_performance)
         if hasattr(trader, "build_trade_rule_note"):
             payload["trade_rule_note"] = trader.build_trade_rule_note()
+        # The fast snapshot is rendered before the full snapshot on most page
+        # loads, so it must carry the same model identity as the full payload.
+        # Otherwise the browser has no authoritative value during hydration.
+        payload["decision_model"] = str(getattr(trader, "MODEL", "") or "")
+        payload["decision_provider"] = str(getattr(trader, "PROVIDER_DISPLAY_NAME", "") or "")
         annotate_practice_snapshot(payload, mode="fast", history_scope="latest_day")
         annotate_practice_payload_clock(payload, now=now)
         return payload
@@ -1121,6 +1127,7 @@ def get_practice_payload_fast() -> dict[str, Any]:
         payload = {"positions": [], "cash": 0, "total_equity": 0, "initial_cash": 0,
                    "total_pnl": 0, "total_pnl_pct": 0, "trade_log": [], "decision_log": [],
                    "equity_history": [], "trade_markers": [], "last_error": str(exc),
+                   "decision_model": "", "decision_provider": "",
                    "calendar_history": {"schema_version": CALENDAR_HISTORY_SCHEMA_VERSION, "complete": False, "days": {}}}
         annotate_practice_snapshot(payload, mode="fast", history_scope="unavailable")
         return annotate_practice_payload_clock(payload)
@@ -1794,9 +1801,14 @@ def cache_get_json(cache_key: str, ttl: int, producer) -> tuple[bytes, bool]:
             cached = API_RESPONSE_CACHE.get(cache_key)
             if cached and now - float(cached.get("ts") or 0) < ttl:
                 return cached["payload"], True
+            generation = API_CACHE_KEY_GENERATIONS.get(cache_key, 0)
         result = producer()
         payload = json.dumps(result, ensure_ascii=False).encode("utf-8")
         with API_RESPONSE_LOCK:
+            # A producer can still be running when a settings update invalidates
+            # its key. Do not let that obsolete result repopulate the cache.
+            if API_CACHE_KEY_GENERATIONS.get(cache_key, 0) != generation:
+                return payload, False
             API_RESPONSE_CACHE[cache_key] = {"ts": time.time(), "payload": payload}
             if len(API_RESPONSE_CACHE) > API_CACHE_MAX_ENTRIES:
                 oldest = sorted(API_RESPONSE_CACHE.items(), key=lambda item: float(item[1].get("ts") or 0))
@@ -1804,6 +1816,13 @@ def cache_get_json(cache_key: str, ttl: int, producer) -> tuple[bytes, bool]:
                     API_RESPONSE_CACHE.pop(old_key, None)
                     API_CACHE_KEY_LOCKS.pop(old_key, None)
         return payload, False
+
+
+def invalidate_api_cache(*cache_keys: str) -> None:
+    with API_RESPONSE_LOCK:
+        for cache_key in cache_keys:
+            API_RESPONSE_CACHE.pop(cache_key, None)
+            API_CACHE_KEY_GENERATIONS[cache_key] = API_CACHE_KEY_GENERATIONS.get(cache_key, 0) + 1
 
 
 def cached_json_data(cache_key: str, ttl: int, producer, fallback: dict[str, Any]) -> dict[str, Any]:
@@ -2538,9 +2557,7 @@ def sync_business_runtime_settings(changed: dict[str, str] | list[str] | set[str
         with TRADER_MODULE_LOCK:
             TRADER_MODULE = None
             TRADER_MODULE_MTIME = 0.0
-        with API_RESPONSE_LOCK:
-            API_RESPONSE_CACHE.pop("niuniu_practice", None)
-            API_RESPONSE_CACHE.pop(PRACTICE_FAST_CACHE_KEY, None)
+        invalidate_api_cache("niuniu_practice", PRACTICE_FAST_CACHE_KEY)
         applied.append("trader_runtime")
 
     if changed_names & set(visible_names):
@@ -4069,7 +4086,13 @@ function restoreViewState() {
     marketFlowData = cached.marketFlowData || marketFlowData;
     usMarketSummaryData = cached.usMarketSummaryData || usMarketSummaryData;
     practiceCandidatesData = cached.practiceCandidatesData || practiceCandidatesData;
-    niuniuPracticeData = cached.niuniuPracticeData || niuniuPracticeData;
+    if (cached.niuniuPracticeData) {
+      niuniuPracticeData = {...cached.niuniuPracticeData};
+      // The portfolio can be warmed from sessionStorage, but model identity is
+      // runtime configuration and must be confirmed by a fresh API response.
+      delete niuniuPracticeData.decision_model;
+      delete niuniuPracticeData.decision_provider;
+    }
     practiceBenchmarksData = cached.practiceBenchmarksData || practiceBenchmarksData;
     usQuotesData = cached.usQuotesData || usQuotesData;
     if (!initialParams.has('curve') && ['intraday', 'daily'].includes(cached.practiceCurveMode)) {
@@ -4431,6 +4454,13 @@ function mergePracticePayloadSnapshots(current, incoming) {
   const live = incomingIsFresher ? incoming : current;
   const other = incomingIsFresher ? current : incoming;
   const merged = {...other, ...live};
+  // Model identity describes the current server configuration, not the age of
+  // the portfolio snapshot. Prefer freshly fetched metadata over a warmer but
+  // stale sessionStorage snapshot even when the latter has fuller history.
+  for (const key of ['decision_model', 'decision_provider']) {
+    const incomingValue = String(incoming?.[key] || '').trim();
+    if (incomingValue) merged[key] = incomingValue;
+  }
   merged.equity_history = mergePracticeEquityRows(live, other);
   const liveDailyRows = Array.isArray(live.daily_equity_history) ? live.daily_equity_history : other.daily_equity_history;
   merged.daily_equity_history = mergePracticeDailyRows([], liveDailyRows).slice(-500);
@@ -4443,14 +4473,17 @@ function mergePracticePayloadSnapshots(current, incoming) {
 async function loadPracticePage() {
   const seq = ++practiceLoadSeq;
   practiceFullSnapshotStatus = 'loading';
-  const fetchJson = url => fetch(url).then(response => {
+  const fetchJson = (url, options = {}) => fetch(url, options).then(response => {
     if (!response.ok) throw new Error(`${url} HTTP ${response.status}`);
     return response.json();
   });
   // Start every source together. The fast portfolio no longer waits for the
   // candidate scan, while the full snapshot hydrates richer historical data.
   const candidatesPromise = fetchJson('/api/practice_candidates');
-  const fastPracticePromise = fetchJson('/api/niuniu_practice?fast=1&calendar_schema=1');
+  const fastPracticePromise = fetchJson(
+    '/api/niuniu_practice?fast=1&calendar_schema=1',
+    {cache: 'no-cache'},
+  );
   if (!practiceFullRequest) {
     practiceFullRequest = fetchJson('/api/niuniu_practice?snapshot_schema=2').then(
       payload => {
@@ -5908,7 +5941,9 @@ function renderPracticePanel() {
   const ruleModal = renderPracticeRuleNoteModal(ruleNote);
   const channelText = quote.quote_time ? `腾讯${channels.tencent ?? 0}/东财${channels.eastmoney ?? 0}/Sina${channels.sina ?? 0}/单票${channels.single ?? 0}` : '';
   const quoteNote = quote.quote_time ? `行情：${esc(quote.quote_time)} 更新${quote.updated ?? 0}只 ${channelText}${quote.fallback ? `，回退${quote.fallback}只` : ''}` : '';
-  const ruleMeta = [`模型：${esc(p.decision_model || 'deepseek-v4-pro')}`, quoteNote].filter(Boolean).join('｜');
+  const decisionModel = String(p.decision_model || '').trim();
+  const missingModelLabel = practiceFullSnapshotStatus === 'error' ? '未知' : '加载中';
+  const ruleMeta = [`模型：${esc(decisionModel || missingModelLabel)}`, quoteNote].filter(Boolean).join('｜');
   return `<section class="sector-cloud" style="margin-bottom:18px">
     <h3>实战页面 · 模拟账户</h3>
     ${p.trading_paused ? `<div style=\"background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.35);border-radius:12px;padding:10px 14px;margin:10px 0;display:flex;justify-content:space-between;align-items:center\">
