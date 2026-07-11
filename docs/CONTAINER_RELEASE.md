@@ -1,5 +1,7 @@
 # 容器镜像发布流程
 
+简体中文 | [English](CONTAINER_RELEASE_EN.md)
+
 本文档面向 NiuOne 维护者，说明如何通过 GitHub Actions 构建并发布 Docker 镜像。发布逻辑以 [`.github/workflows/docker-publish.yml`](../.github/workflows/docker-publish.yml) 为准；如果本文档与工作流不一致，应以工作流为准并同步更新本文档。
 
 ## 1. 发布目标
