@@ -4,9 +4,11 @@ import gzip
 import io
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import unittest
 import sys
 import urllib.parse
@@ -149,6 +151,14 @@ class DashboardAuthTests(unittest.TestCase):
         write_only = FakeHandler(path='/api/admin/config/env', method='HEAD')
         write_only.do_HEAD()
         self.assertEqual(write_only.status, 404)
+
+        settings_group = FakeHandler(path='/admin/settings/notifications', method='HEAD')
+        settings_group.do_HEAD()
+        self.assertEqual(settings_group.status, 200)
+
+        missing_group = FakeHandler(path='/admin/settings/not-a-group', method='HEAD')
+        missing_group.do_HEAD()
+        self.assertEqual(missing_group.status, 404)
 
         action = FakeHandler(path='/api/niuniu_practice/resume', method='HEAD')
         action.do_HEAD()
@@ -1243,7 +1253,7 @@ process.stdout.write(JSON.stringify({
         }).encode('utf-8')
 
         rotate = FakeHandler(
-            path='/api/admin/config/env',
+            path='/api/admin/config/env/access-control',
             method='POST',
             headers={
                 'Content-Type': 'application/x-www-form-urlencoded',
@@ -1759,9 +1769,18 @@ process.stdout.write(JSON.stringify({
     def test_admin_page_only_shows_business_config_content(self):
         handler = FakeHandler(path='/admin', headers={'Cookie': self.admin_cookie()})
         handler.do_GET()
-        body = handler.wfile.getvalue().decode('utf-8')
+        index_body = handler.wfile.getvalue().decode('utf-8')
+        detail_bodies = [
+            dashboard.render_admin_group_page(group['slug']).decode('utf-8')
+            for group in dashboard.ADMIN_SETTING_GROUPS
+        ]
+        body = ''.join(detail_bodies) + index_body
 
         self.assertEqual(handler.status, 200)
+        self.assertEqual(index_body.count("class='settings-card'"), 10)
+        self.assertNotIn("id='env-config-form'", index_body)
+        self.assertIn("href='/admin/settings/notifications'", index_body)
+        self.assertIn('每个分组的修改分别保存', index_body)
         self.assertIn('<title>牛牛1号</title>', body)
         self.assertNotIn('<title>牛牛1号 · 设置</title>', body)
         self.assertNotIn('<title>牛牛1号 · 管理</title>', body)
@@ -1851,11 +1870,11 @@ process.stdout.write(JSON.stringify({
         self.assertIn("class='settings-actions'", body)
         self.assertIn("data-env-save-status role='status' aria-live='polite'", body)
         self.assertIn("data-env-save-button type='submit'", body)
-        self.assertIn("fetch('/api/admin/config/env'", body)
+        self.assertIn("form.getAttribute('data-save-endpoint') || '/api/admin/config/env'", body)
         self.assertIn("'X-NiuOne-Action': '1'", body)
         self.assertIn("window.location.replace('/admin')", body)
         self.assertIn('设置页管理员密码', body)
-        self.assertIn("正在保存业务配置", body)
+        self.assertIn("正在保存本组设置", body)
         self.assertIn("配置未变化，无需重新应用", body)
         self.assertIn('.save-button:active,.save-button.pressed', body)
         self.assertIn("document.addEventListener('pointerdown'", body)
@@ -1868,8 +1887,12 @@ process.stdout.write(JSON.stringify({
         self.assertIn("data-env-current='DASHBOARD_GROK_MODEL'", body)
         self.assertIn("当前状态：<span data-env-current='DASHBOARD_NOTIFICATION_ENABLED'>", body)
         self.assertIn('function applyEnvConfigState(form, config)', body)
-        self.assertIn('var submittedSnapshot = requestBody.toString();', body)
-        self.assertIn('var formUnchanged = envFormSnapshot(form) === submittedSnapshot;', body)
+        self.assertIn('var submittedSafeSnapshot = envFormSnapshot(form);', body)
+        self.assertIn("var submittedRevision = form.dataset.editRevision || '0';", body)
+        self.assertIn("var formUnchanged = (form.dataset.editRevision || '0') === submittedRevision;", body)
+        self.assertIn("data.set(input.name, '');", body)
+        self.assertIn('var envSavedSnapshots = new WeakMap();', body)
+        self.assertNotIn('form.dataset.savedSnapshot', body)
         self.assertIn("保存期间有新的修改，请再次保存", body)
         apply_function_start = body.index('function applyEnvConfigState(form, config)')
         apply_function_end = body.index('function setNotificationTestFeedback', apply_function_start)
@@ -1890,6 +1913,10 @@ process.stdout.write(JSON.stringify({
             apply_state_index,
         )
         self.assertLess(apply_state_index, save_feedback_index)
+        reauth_index = body.index('if (payload.reauth_required)')
+        reauth_mark_saved_index = body.index('markEnvFormSaved(form);', reauth_index)
+        reauth_redirect_index = body.index("window.location.replace('/admin');", reauth_index)
+        self.assertLess(reauth_mark_saved_index, reauth_redirect_index)
         self.assertIn('有未保存修改', body)
         self.assertNotIn("setEnvSaveFeedback(form, '', ''); }, 3800", body)
         self.assertNotIn('<table class=', body)
@@ -1917,6 +1944,197 @@ process.stdout.write(JSON.stringify({
         self.assertNotIn('新增配置项', body)
         self.assertNotIn('DASHBOARD_HOME', body)
         self.assertNotIn('LaunchAgent', body)
+
+    def test_admin_settings_groups_have_standalone_pages(self):
+        payload = dashboard.build_admin_config_payload()
+        index = dashboard.render_admin_page().decode('utf-8')
+        groups = dashboard.admin_setting_groups(payload)
+
+        self.assertEqual(len(groups), 10)
+        self.assertEqual(index.count("class='settings-card'"), len(groups))
+        self.assertNotIn("id='env-config-form'", index)
+        self.assertNotIn("name='env__", index)
+
+        rendered_names = set()
+        for group in groups:
+            slug = group['slug']
+            expected_names = {item['name'] for item in group['items']}
+            page = dashboard.render_admin_group_page(slug).decode('utf-8')
+            page_names = set(re.findall(r"name='env__([A-Z0-9_]+)'", page))
+            control_tags = re.findall(
+                r"<(?:input|select|textarea)\b[^>]*\bname='env__[^']+'[^>]*>",
+                page,
+            )
+
+            self.assertIn(f"href='/admin/settings/{slug}'", index)
+            self.assertEqual(page_names, expected_names, slug)
+            self.assertEqual(page.count("id='env-config-form'"), 1)
+            self.assertIn(f"data-save-endpoint='/api/admin/config/env/{slug}'", page)
+            self.assertIn('保存本组设置', page)
+            for control_tag in control_tags:
+                if "type='hidden'" not in control_tag:
+                    self.assertIn("aria-label='", control_tag, control_tag)
+            self.assertTrue(rendered_names.isdisjoint(page_names), slug)
+            rendered_names.update(page_names)
+
+        self.assertEqual(rendered_names, set(dashboard.ADMIN_VISIBLE_ENV_NAMES))
+        us_page = dashboard.render_admin_group_page('us-market').decode('utf-8')
+        self.assertEqual(us_page.count('<h2>牛牛美股</h2>'), 1)
+        self.assertEqual(us_page.count("name='env__X_WATCHLIST_MAX_TOKENS'"), 1)
+        self.assertEqual(len(dashboard.admin_setting_group_env_names('us-market')), 14)
+        notification_page = dashboard.render_admin_group_page('notifications').decode('utf-8')
+        self.assertIn("aria-labelledby='notification-channel-name-feishu'", notification_page)
+
+    def test_admin_settings_group_routes_require_auth_and_handle_unknown_groups(self):
+        locked = FakeHandler(path='/admin/settings/notifications')
+        locked.do_GET()
+        locked_body = locked.wfile.getvalue().decode('utf-8')
+        self.assertEqual(locked.status, 200)
+        self.assertIn('<h1>设置页验证</h1>', locked_body)
+        self.assertNotIn("name='env__DASHBOARD_NOTIFICATION_ENABLED'", locked_body)
+
+        cookie = self.admin_cookie()
+        unlocked = FakeHandler(
+            path='/admin/settings/notifications',
+            headers={'Cookie': cookie},
+        )
+        unlocked.do_GET()
+        unlocked_body = unlocked.wfile.getvalue().decode('utf-8')
+        self.assertEqual(unlocked.status, 200)
+        self.assertIn('<h1>交易通知</h1>', unlocked_body)
+        self.assertIn("name='env__DASHBOARD_NOTIFICATION_ENABLED'", unlocked_body)
+
+        missing = FakeHandler(
+            path='/admin/settings/not-a-group',
+            headers={'Cookie': cookie},
+        )
+        missing.do_GET()
+        self.assertEqual(missing.status, 404)
+        self.assertIn('未找到该设置分组', missing.wfile.getvalue().decode('utf-8'))
+
+    def test_group_save_ignores_fields_from_other_settings_groups(self):
+        original_values = {
+            name: dashboard.os.environ.get(name)
+            for name in (
+                'DASHBOARD_NEWS_MODEL',
+                'DASHBOARD_NEWS_API_KEY',
+                'DASHBOARD_GROK_MODEL',
+            )
+        }
+        try:
+            for name in original_values:
+                dashboard.os.environ.pop(name, None)
+            dashboard.DASHBOARD_ENV_FILE.write_text(
+                'DASHBOARD_NEWS_MODEL=old-news\nDASHBOARD_GROK_MODEL=old-grok\n',
+                encoding='utf-8',
+            )
+            dashboard.os.environ['DASHBOARD_GROK_MODEL'] = 'process-grok'
+            dashboard.os.environ['DASHBOARD_NEWS_API_KEY'] = 'process-news-secret'
+            body = urllib.parse.urlencode({
+                'env__DASHBOARD_NEWS_MODEL': 'new-news',
+                'env__DASHBOARD_NEWS_API_KEY': '',
+                'env__DASHBOARD_GROK_MODEL': 'cross-group-attempt',
+            }).encode('utf-8')
+            handler = FakeHandler(
+                path='/api/admin/config/env/news-precheck',
+                method='POST',
+                headers={
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Content-Length': str(len(body)),
+                    'Cookie': self.admin_cookie(),
+                    dashboard.ACTION_HEADER_NAME: '1',
+                },
+                body=body,
+            )
+            handler.do_POST()
+            result = json.loads(handler.wfile.getvalue().decode('utf-8'))
+            stored = dashboard.parse_env_file(
+                dashboard.DASHBOARD_ENV_FILE,
+                include_container_overrides=False,
+            )
+            runtime_grok = dashboard.os.environ.get('DASHBOARD_GROK_MODEL')
+            runtime_news_secret = dashboard.os.environ.get('DASHBOARD_NEWS_API_KEY')
+        finally:
+            for name, value in original_values.items():
+                if value is None:
+                    dashboard.os.environ.pop(name, None)
+                else:
+                    dashboard.os.environ[name] = value
+
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(result['group']['slug'], 'news-precheck')
+        self.assertEqual(result['changed_names'], ['DASHBOARD_NEWS_MODEL'])
+        self.assertEqual(stored['DASHBOARD_NEWS_MODEL'], 'new-news')
+        self.assertEqual(stored['DASHBOARD_GROK_MODEL'], 'old-grok')
+        self.assertEqual(runtime_grok, 'process-grok')
+        self.assertEqual(runtime_news_secret, 'process-news-secret')
+
+        missing = FakeHandler(
+            path='/api/admin/config/env/not-a-group',
+            method='POST',
+            headers={
+                'Cookie': self.admin_cookie(),
+                dashboard.ACTION_HEADER_NAME: '1',
+            },
+        )
+        missing.do_POST()
+        self.assertEqual(missing.status, 404)
+        self.assertEqual(
+            json.loads(missing.wfile.getvalue().decode('utf-8'))['error'],
+            'unknown_settings_group',
+        )
+
+    def test_group_persist_lock_covers_runtime_sync(self):
+        original_write = dashboard._write_env_file_values_unlocked
+        original_sync = dashboard.sync_business_runtime_settings
+        first_sync_started = threading.Event()
+        release_first_sync = threading.Event()
+        second_write_started = threading.Event()
+        events = []
+
+        def fake_write(updates, path=None, *, clear_names=None):
+            name = next(iter(updates))
+            events.append(f'write:{name}')
+            if name == 'SECOND':
+                second_write_started.set()
+            return {
+                'ok': True,
+                'changed': True,
+                'changed_names': [name],
+            }
+
+        def fake_sync(changed, *, sync_names=None):
+            name = next(iter(changed))
+            events.append(f'sync:{name}')
+            if name == 'FIRST':
+                first_sync_started.set()
+                release_first_sync.wait(2)
+            return {'ok': True, 'changed_names': list(changed), 'applied': []}
+
+        first = threading.Thread(
+            target=dashboard.persist_and_sync_business_updates,
+            args=({'FIRST': '1'},),
+        )
+        second = threading.Thread(
+            target=dashboard.persist_and_sync_business_updates,
+            args=({'SECOND': '1'},),
+        )
+        try:
+            dashboard._write_env_file_values_unlocked = fake_write
+            dashboard.sync_business_runtime_settings = fake_sync
+            first.start()
+            self.assertTrue(first_sync_started.wait(1))
+            second.start()
+            interleaved = second_write_started.wait(0.1)
+        finally:
+            release_first_sync.set()
+            first.join(2)
+            second.join(2)
+            dashboard._write_env_file_values_unlocked = original_write
+            dashboard.sync_business_runtime_settings = original_sync
+
+        self.assertFalse(interleaved)
+        self.assertEqual(events, ['write:FIRST', 'sync:FIRST', 'write:SECOND', 'sync:SECOND'])
 
     def test_admin_password_is_redacted_from_page_and_config_api(self):
         secret = '绝不回显的管理员密码'
@@ -1986,6 +2204,40 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(item['file_value'], 'foo,bar,baz,qux')
         self.assertEqual(item['handle_values'], ['foo', 'bar', 'baz', 'qux'])
         self.assertEqual(item['effective'], 'foo、bar、baz、qux')
+
+    def test_admin_config_loads_yaml_once_per_payload(self):
+        original_loader = dashboard.load_yaml_config
+        provider_names = (
+            'DASHBOARD_GROK_BASE_URL',
+            'DASHBOARD_GROK_API_KEY',
+            'DASHBOARD_DECISION_BASE_URL',
+            'DASHBOARD_DECISION_API_KEY',
+        )
+        original_values = {name: dashboard.os.environ.pop(name, None) for name in provider_names}
+        calls = []
+        try:
+            dashboard.load_yaml_config = lambda: calls.append(True) or {
+                'custom_providers': [{
+                    'name': 'Crossdesk',
+                    'base_url': 'https://crossdesk.example/v1',
+                    'api_key': 'crossdesk-secret',
+                }],
+            }
+            payload = dashboard.build_admin_config_payload()
+        finally:
+            dashboard.load_yaml_config = original_loader
+            for name, value in original_values.items():
+                if value is None:
+                    dashboard.os.environ.pop(name, None)
+                else:
+                    dashboard.os.environ[name] = value
+
+        self.assertEqual(len(calls), 1)
+        by_name = {item['name']: item for item in payload['items']}
+        self.assertEqual(by_name['DASHBOARD_GROK_BASE_URL']['effective'], 'https://crossdesk.example/v1')
+        self.assertEqual(by_name['DASHBOARD_DECISION_BASE_URL']['effective'], 'https://crossdesk.example/v1')
+        self.assertEqual(by_name['DASHBOARD_GROK_API_KEY']['current_state'], '已设置')
+        self.assertNotIn('crossdesk-secret', json.dumps(payload, ensure_ascii=False))
 
     def test_admin_config_respects_explicit_empty_x_watchlist_accounts(self):
         dashboard.CRON_STATE_DIR.mkdir(parents=True)
@@ -2063,7 +2315,7 @@ process.stdout.write(JSON.stringify({
             self.assertEqual(item['default'], '4096')
             self.assertEqual(item['file_value'], '4096')
 
-        body = dashboard.render_admin_page().decode('utf-8')
+        body = dashboard.render_admin_group_page('decision-model').decode('utf-8')
         self.assertIn("placeholder='默认 4096；例如 2048 或 8192'", body)
         self.assertIn('默认 4096 tokens', body)
         self.assertIn("placeholder='默认 128000；例如 128K、1M 或 1000000'", body)

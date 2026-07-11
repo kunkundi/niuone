@@ -157,6 +157,7 @@ RATE_LIMIT_BUCKETS: dict[tuple[str, str], tuple[float, int]] = {}
 RATE_LIMIT_LOCK = threading.Lock()
 ADMIN_TOKEN_LOCK = threading.Lock()
 VISIT_STATS_LOCK = threading.RLock()
+ENV_FILE_WRITE_LOCK = threading.RLock()
 PRACTICE_CANDIDATES_CACHE_KEY = "practice_candidates"
 PRACTICE_CANDIDATES_API_PATHS = frozenset({"/api/practice_candidates", "/api/b1_screen"})
 PRACTICE_CANDIDATES_REFRESH_API_PATHS = frozenset({"/api/practice_candidates/refresh", "/api/b1_screen/trigger"})
@@ -2113,6 +2114,20 @@ def write_env_file_values(
     *,
     clear_names: set[str] | None = None,
 ) -> dict[str, Any]:
+    with ENV_FILE_WRITE_LOCK:
+        return _write_env_file_values_unlocked(
+            updates,
+            path,
+            clear_names=clear_names,
+        )
+
+
+def _write_env_file_values_unlocked(
+    updates: dict[str, str],
+    path: Path | None = None,
+    *,
+    clear_names: set[str] | None = None,
+) -> dict[str, Any]:
     path = path or DASHBOARD_ENV_FILE
     existing = parse_env_file(path, include_container_overrides=False)
     next_values = dict(existing)
@@ -2160,11 +2175,25 @@ def write_env_file_values(
     for name in ordered_names:
         lines.append(f"{name}={quote_env_value(next_values.get(name, ''))}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    content = "\n".join(lines).rstrip() + "\n"
+    temporary_path = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(4)}.tmp"
+    )
+    temporary_fd: int | None = None
     try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+        temporary_fd = os.open(
+            temporary_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        with os.fdopen(temporary_fd, "w", encoding="utf-8") as stream:
+            temporary_fd = None
+            stream.write(content)
+        temporary_path.replace(path)
+    finally:
+        if temporary_fd is not None:
+            os.close(temporary_fd)
+        temporary_path.unlink(missing_ok=True)
     return {
         "ok": True,
         "path": str(path),
@@ -2288,6 +2317,74 @@ ADMIN_GROUP_NOTES = {
     "选股策略": "在内置策略和预设文字策略中选择一个激活；内置策略可选基础策略、Z哥或李大霄。",
     "盘面监控生产时间点": "直接填写北京时间 HH:MM；隔夜美股总结默认交易日 08:00 生成，A 股盘面监控在交易时段触发；长度默认：上下文 128000 tokens，最大输出 4096 tokens。",
     "指数行情更新周期": "单位为秒，保存后立即用于后续行情请求。",
+}
+ADMIN_SETTING_GROUPS: tuple[dict[str, str], ...] = (
+    {
+        "slug": "access-control",
+        "name": "访问控制",
+        "summary": "管理设置页管理员密码与访问凭据。",
+        "icon": "安全",
+    },
+    {
+        "slug": "us-market",
+        "name": "牛牛美股",
+        "summary": "配置美股功能、Grok 接入、推文监控与评级任务。",
+        "icon": "美股",
+    },
+    {
+        "slug": "news-precheck",
+        "name": "消息面预检模型",
+        "summary": "配置候选股消息面预检使用的模型、网关与并发参数。",
+        "icon": "预检",
+    },
+    {
+        "slug": "decision-model",
+        "name": "买卖决策模型",
+        "summary": "配置交易决策模型、情报能力、仓位约束与交易纪律。",
+        "icon": "决策",
+    },
+    {
+        "slug": "notifications",
+        "name": "交易通知",
+        "summary": "管理成交通知总开关，以及飞书、钉钉等推送渠道。",
+        "icon": "通知",
+    },
+    {
+        "slug": "decision-times",
+        "name": "选股及买卖决策时间点",
+        "summary": "维护选股、开盘离场与尾盘离场的北京时间。",
+        "icon": "时间",
+    },
+    {
+        "slug": "stock-strategy",
+        "name": "选股策略",
+        "summary": "选择内置策略或维护自定义预设文字策略。",
+        "icon": "策略",
+    },
+    {
+        "slug": "market-monitoring",
+        "name": "盘面监控生产时间点",
+        "summary": "配置隔夜美股与 A 股盘前、午盘、盘后的监控任务。",
+        "icon": "盘面",
+    },
+    {
+        "slug": "task-scheduling",
+        "name": "任务调度",
+        "summary": "设置后台任务失败后的重试次数与间隔。",
+        "icon": "调度",
+    },
+    {
+        "slug": "indices-refresh",
+        "name": "指数行情更新周期",
+        "summary": "调整指数行情数据的刷新频率。",
+        "icon": "行情",
+    },
+)
+ADMIN_SETTING_GROUP_BY_SLUG = {
+    str(group["slug"]): group for group in ADMIN_SETTING_GROUPS
+}
+ADMIN_SETTING_GROUP_BY_NAME = {
+    str(group["name"]): group for group in ADMIN_SETTING_GROUPS
 }
 NOTIFICATION_GENERAL_CONFIG_NAMES = (
     "DASHBOARD_NOTIFICATION_ENABLED",
@@ -2628,15 +2725,22 @@ def validate_business_updates(updates: dict[str, str]) -> None:
             normalize_context_length_update(value)
 
 
-def sync_business_runtime_settings(changed: dict[str, str] | list[str] | set[str] | tuple[str, ...] | None) -> dict[str, Any]:
+def sync_business_runtime_settings(
+    changed: dict[str, str] | list[str] | set[str] | tuple[str, ...] | None,
+    *,
+    sync_names: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     global ADMIN_PASSWORD, B1_CANDIDATE_REFRESH_LAST_TS, B1_SCHEDULE_TIMES, TRADER_MODULE, TRADER_MODULE_MTIME
     if isinstance(changed, dict):
         changed_names = set(changed.keys())
     else:
         changed_names = set(changed or [])
+    runtime_names = set(sync_names) if sync_names is not None else set(changed_names)
     env_values = parse_env_file()
     visible_names = admin_visible_env_names(env_values)
     for name in visible_names:
+        if name not in runtime_names:
+            continue
         if name in env_values:
             os.environ[name] = env_values[name]
         elif name in changed_names:
@@ -2681,6 +2785,26 @@ def sync_business_runtime_settings(changed: dict[str, str] | list[str] | set[str
     return {"ok": True, "applied": sorted(set(applied)), "changed_names": sorted(changed_names)}
 
 
+def persist_and_sync_business_updates(
+    updates: dict[str, str],
+    *,
+    clear_names: set[str] | None = None,
+) -> dict[str, Any]:
+    """Persist and hot-apply one validated update set as a single operation."""
+
+    with ENV_FILE_WRITE_LOCK:
+        result = _write_env_file_values_unlocked(
+            updates,
+            clear_names=clear_names,
+        )
+        sync_names = set(updates) | set(clear_names or set())
+        result["runtime"] = sync_business_runtime_settings(
+            result.get("changed_names") or [],
+            sync_names=sync_names,
+        )
+        return result
+
+
 def crossdesk_provider_values() -> dict[str, str]:
     try:
         cfg = load_yaml_config()
@@ -2698,11 +2822,16 @@ def crossdesk_provider_values() -> dict[str, str]:
     return {}
 
 
-def business_config_fallback_value(name: str) -> tuple[str, str]:
-    provider = crossdesk_provider_values()
+def business_config_fallback_value(
+    name: str,
+    *,
+    crossdesk_provider: dict[str, str] | None = None,
+) -> tuple[str, str]:
     if name in {"DASHBOARD_GROK_BASE_URL", "DASHBOARD_DECISION_BASE_URL"}:
+        provider = crossdesk_provider if crossdesk_provider is not None else crossdesk_provider_values()
         return provider.get("base_url", ""), "config.yaml" if provider.get("base_url") else "default"
     if name in {"DASHBOARD_GROK_API_KEY", "DASHBOARD_DECISION_API_KEY"}:
+        provider = crossdesk_provider if crossdesk_provider is not None else crossdesk_provider_values()
         return provider.get("api_key", ""), "config.yaml" if provider.get("api_key") else "default"
     if name == "X_WATCHLIST_ACCOUNTS":
         handles = x_watchlist_state_accounts()
@@ -2712,13 +2841,17 @@ def business_config_fallback_value(name: str) -> tuple[str, str]:
 
 def build_admin_config_payload() -> dict[str, Any]:
     env_values = parse_env_file()
+    crossdesk_provider = crossdesk_provider_values()
     visible_names = admin_visible_env_names(env_values)
     names = set(visible_names)
     items = []
     admin_order = {name: idx for idx, name in enumerate(visible_names)}
     for name in sorted(names, key=lambda n: admin_order.get(n, 999)):
         schema = ENV_CONFIG_BY_NAME.get(name, {"name": name, "label": name, "group": "其他", "kind": "text", "default": "", "effect": "restart"})
-        fallback_value, fallback_source = business_config_fallback_value(name)
+        fallback_value, fallback_source = business_config_fallback_value(
+            name,
+            crossdesk_provider=crossdesk_provider,
+        )
         default_value = schema.get("default", "")
         if name in os.environ:
             effective = os.environ.get(name, "")
@@ -2926,13 +3059,14 @@ __ERROR__
 
 ADMIN_HTML = r"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>牛牛1号</title>
+<title>__DOCUMENT_TITLE__</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%AE%3C/text%3E%3C/svg%3E">
 <style>
 :root{color-scheme:dark;--bg:#07090d;--surface:#10151b;--surface2:#151b23;--line:#26313d;--line2:#334155;--text:#f3f6fb;--muted:#94a3b8;--soft:#cbd5e1;--accent:#2dd4bf;--blue:#60a5fa;--red:#fb7185;--green:#34d399;--yellow:#fbbf24}*{box-sizing:border-box}[hidden]{display:none!important}html{scroll-behavior:smooth}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:linear-gradient(180deg,#0b1016 0%,var(--bg) 48%,#050608 100%);color:var(--text);min-height:100vh}.admin-header{border-bottom:1px solid rgba(148,163,184,.16);background:rgba(7,9,13,.88);backdrop-filter:blur(16px);padding:22px clamp(16px,4vw,42px)}.admin-header-inner{max-width:1180px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}.eyebrow{font-size:12px;font-weight:850;color:var(--accent);letter-spacing:.04em;margin-bottom:6px}h1{margin:0;font-size:30px;letter-spacing:0}h2{margin:0;font-size:18px;letter-spacing:0}p{margin:0}.muted{color:var(--muted)}.toplink{color:#dbeafe;text-decoration:none;border:1px solid rgba(148,163,184,.20);background:rgba(15,23,42,.62);border-radius:8px;padding:9px 12px;font-weight:850}.toplink:hover{border-color:rgba(96,165,250,.54);background:rgba(30,41,59,.72)}.admin-main{width:min(1180px,100%);margin:0 auto;padding:20px clamp(14px,4vw,42px) 34px;display:grid;gap:16px}.settings-form{display:grid;gap:14px}.settings-group{border:1px solid rgba(148,163,184,.16);border-radius:8px;background:rgba(16,21,27,.88);box-shadow:0 18px 56px rgba(0,0,0,.22);overflow:hidden}.settings-group-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px 18px;border-bottom:1px solid rgba(148,163,184,.12);background:rgba(21,27,35,.72)}.settings-group-note{color:var(--muted);font-size:13px;line-height:1.5;margin-top:5px}.settings-count{font-size:12px;color:#a7f3d0;border:1px solid rgba(45,212,191,.24);background:rgba(20,184,166,.10);border-radius:999px;padding:3px 8px;white-space:nowrap}.settings-list{display:grid}.setting-row{display:grid;grid-template-columns:minmax(170px,.72fr) minmax(250px,1fr) minmax(220px,.84fr);gap:16px;align-items:start;padding:16px 18px;border-top:1px solid rgba(148,163,184,.10)}.setting-row:first-child{border-top:0}.setting-copy{display:grid;gap:4px;min-width:0}.config-label{font-weight:850;color:#e5edf8;line-height:1.35}.setting-editor{min-width:0}.setting-editor input,.setting-editor select{width:100%;min-width:0}.setting-state{display:grid;gap:8px;min-width:0}.setting-state-item{display:grid;gap:3px}.setting-state-label{font-size:11px;color:#7b8aa0;font-weight:850}.config-meta{font-size:12px;color:#b6c2d2;max-width:100%;overflow-wrap:anywhere;line-height:1.45}.config-empty{color:#64748b}input,select,textarea,button{border:1px solid var(--line);background:#0b0f15;color:var(--text);border-radius:8px;padding:10px 12px;font:inherit;min-width:0}input:focus,select:focus,textarea:focus{outline:2px solid rgba(96,165,250,.70);outline-offset:1px;border-color:rgba(96,165,250,.62)}textarea{width:100%;min-height:460px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.45;resize:vertical}button{cursor:pointer;font-weight:850;background:linear-gradient(135deg,rgba(20,184,166,.92),rgba(96,165,250,.76));border:0;color:#061017}.save-button{min-height:42px;padding:10px 16px;justify-self:end;transition:transform .12s ease,filter .12s ease,background .12s ease}.save-button:disabled{cursor:wait;filter:saturate(.65);opacity:.82}.save-button.saved{background:linear-gradient(135deg,rgba(52,211,153,.95),rgba(45,212,191,.78))}.save-button.error{background:linear-gradient(135deg,rgba(251,113,133,.95),rgba(248,113,113,.76));color:#fff}.settings-actions{position:sticky;bottom:14px;z-index:3;display:flex;justify-content:flex-end;align-items:center;gap:10px;padding:10px;border:1px solid rgba(148,163,184,.18);border-radius:8px;background:rgba(8,11,16,.86);backdrop-filter:blur(14px);box-shadow:0 18px 54px rgba(0,0,0,.30)}.settings-save-status{min-height:20px;font-size:13px;line-height:1.4;color:var(--muted);text-align:right;overflow-wrap:anywhere}.settings-save-status.ok{color:#86efac}.settings-save-status.error{color:#fecdd3}.settings-save-status.busy{color:#bfdbfe}.time-list-control{display:grid;gap:8px}.time-list-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:6px}.time-list-item{display:grid;grid-template-columns:minmax(92px,1fr) 34px;gap:4px;align-items:center}.time-list-item input{min-width:0}.time-list-add,.time-list-remove{display:inline-grid;place-items:center;padding:0;border-radius:8px;border:1px solid rgba(148,163,184,.22);background:rgba(15,23,42,.78);color:#dbeafe}.time-list-add{width:38px;height:38px;justify-self:start}.time-list-remove{width:34px;height:38px;color:#fecdd3}.okmsg{border:1px solid rgba(52,211,153,.28);background:rgba(6,78,59,.20);color:#bbf7d0;border-radius:8px;padding:11px 13px}.errmsg{border:1px solid rgba(251,113,133,.34);background:rgba(127,29,29,.22);color:#fecdd3;border-radius:8px;padding:11px 13px}@media(max-width:940px){.setting-row{grid-template-columns:1fr;gap:10px}.setting-state{grid-template-columns:repeat(2,minmax(0,1fr))}.save-button{width:100%}.settings-actions{position:static;align-items:stretch;flex-direction:column}.settings-save-status{text-align:left}}@media(max-width:620px){.admin-header{padding:18px 14px}.admin-main{padding:16px 12px 26px}.settings-group-head,.setting-row{padding:14px}.setting-state{grid-template-columns:1fr}.time-list-grid{grid-template-columns:1fr}.toplink{width:100%;text-align:center}}</style>
 <style>
 .admin-header{position:sticky;top:0;z-index:8;padding:16px clamp(16px,4vw,42px);background:rgba(7,10,14,.92);box-shadow:0 12px 34px rgba(0,0,0,.22)}
 .admin-header-inner{max-width:1320px}
+.admin-header-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .eyebrow{color:#7dd3fc}
 h1{font-size:26px}
 .admin-main{width:min(1320px,100%);gap:18px}
@@ -2945,6 +3079,21 @@ h1{font-size:26px}
 .settings-stat{display:grid;gap:2px;min-width:86px;padding:9px 11px;border:1px solid rgba(148,163,184,.14);border-radius:8px;background:rgba(2,6,12,.34)}
 .settings-stat-value{font-size:18px;font-weight:900;color:#ecfeff;line-height:1}
 .settings-stat-label{font-size:11px;font-weight:850;color:#8ea4bb}
+.settings-index{display:grid;gap:18px}
+.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.settings-card{position:relative;display:grid;grid-template-columns:56px minmax(0,1fr) auto;gap:15px;align-items:center;min-height:132px;padding:18px;border:1px solid rgba(148,163,184,.17);border-radius:12px;background:linear-gradient(145deg,rgba(17,24,34,.94),rgba(10,18,25,.88));color:inherit;text-decoration:none;box-shadow:0 16px 46px rgba(0,0,0,.18);transition:transform .14s ease,border-color .14s ease,background .14s ease,box-shadow .14s ease}
+.settings-card:hover,.settings-card:focus-visible{transform:translateY(-2px);border-color:rgba(125,211,252,.42);background:linear-gradient(145deg,rgba(21,31,44,.98),rgba(11,24,32,.94));box-shadow:0 20px 52px rgba(0,0,0,.25);outline:0}
+.settings-card-icon{display:grid;place-items:center;width:56px;height:56px;border:1px solid rgba(125,211,252,.24);border-radius:12px;background:linear-gradient(145deg,rgba(14,165,233,.16),rgba(20,184,166,.10));color:#a5f3fc;font-size:13px;font-weight:900;letter-spacing:.04em}
+.settings-card-copy{display:grid;gap:6px;min-width:0}
+.settings-card-title{font-size:17px;font-weight:900;color:#eff6ff;line-height:1.3}
+.settings-card-summary{color:#91a2b7;font-size:13px;line-height:1.55}
+.settings-card-meta{display:flex;align-items:center;gap:7px;color:#7dd3fc;font-size:12px;font-weight:850}
+.settings-card-arrow{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;background:rgba(125,211,252,.08);color:#bae6fd;font-size:20px;transition:transform .14s ease,background .14s ease}
+.settings-card:hover .settings-card-arrow,.settings-card:focus-visible .settings-card-arrow{transform:translateX(2px);background:rgba(125,211,252,.16)}
+.settings-breadcrumbs{display:flex;align-items:center;gap:8px;color:#7890a8;font-size:13px}
+.settings-breadcrumbs a{color:#bae6fd;text-decoration:none;font-weight:850}
+.settings-breadcrumbs a:hover{text-decoration:underline}
+.settings-detail{display:grid;gap:14px;min-width:0}
 .settings-shell{display:grid;grid-template-columns:210px minmax(0,1fr);gap:16px;align-items:start}
 .settings-sidebar{position:sticky;top:88px;display:grid;gap:10px;min-width:0;padding:12px;border:1px solid rgba(148,163,184,.16);border-radius:8px;background:rgba(10,14,20,.78);backdrop-filter:blur(14px);box-shadow:0 14px 42px rgba(0,0,0,.18)}
 .settings-nav-title{font-size:12px;font-weight:900;color:#e2e8f0;padding:0 4px 2px}
@@ -3020,10 +3169,10 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,#9
 .notification-channel-empty{padding:14px;border:1px dashed rgba(148,163,184,.18);border-radius:8px;color:#7f8ea3;background:rgba(2,6,12,.22);font-size:13px;text-align:center}
 .okmsg,.errmsg{box-shadow:0 12px 34px rgba(0,0,0,.18)}
 @media(max-width:1120px){.settings-shell{grid-template-columns:1fr}.settings-sidebar{position:static;top:auto}.settings-nav{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px}.settings-nav-link{grid-template-columns:auto minmax(max-content,1fr) auto;flex:0 0 auto}.settings-actions{max-width:none}}
-@media(max-width:940px){.settings-overview{align-items:stretch;flex-direction:column}.settings-overview-stats{justify-content:flex-start}.setting-row{grid-template-columns:1fr}.setting-state{grid-template-columns:repeat(2,minmax(0,1fr))}.notification-channel-grid{grid-template-columns:1fr}}
-@media(max-width:620px){h1{font-size:24px}.settings-overview{padding:15px}.settings-overview-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.settings-stat{min-width:0}.settings-nav-link{min-height:34px}.settings-group-head{gap:10px}.settings-count{align-self:flex-start}.setting-state{grid-template-columns:1fr}.settings-actions{right:auto}.notification-settings{padding:12px}.notification-general-grid,.notification-channel-add-row{grid-template-columns:1fr}.notification-channel-add{width:100%}}
+@media(max-width:940px){.settings-overview{align-items:stretch;flex-direction:column}.settings-overview-stats{justify-content:flex-start}.settings-grid{grid-template-columns:1fr}.setting-row{grid-template-columns:1fr}.setting-state{grid-template-columns:repeat(2,minmax(0,1fr))}.notification-channel-grid{grid-template-columns:1fr}}
+@media(max-width:620px){h1{font-size:24px}.admin-header-actions{width:100%}.admin-header-actions .toplink{width:auto;flex:1}.settings-overview{padding:15px}.settings-overview-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.settings-stat{min-width:0}.settings-card{grid-template-columns:46px minmax(0,1fr) auto;gap:11px;min-height:116px;padding:15px}.settings-card-icon{width:46px;height:46px;font-size:12px}.settings-card-summary{font-size:12px}.settings-nav-link{min-height:34px}.settings-group-head{gap:10px}.settings-count{align-self:flex-start}.setting-state{grid-template-columns:1fr}.settings-actions{right:auto}.notification-settings{padding:12px}.notification-general-grid,.notification-channel-add-row{grid-template-columns:1fr}.notification-channel-add{width:100%}}
 </style>
-</head><body><header class="admin-header"><div class="admin-header-inner"><div><div class="eyebrow">牛牛1号</div><h1>设置</h1></div><a class="toplink" href="/">返回首页</a></div></header>
+</head><body><header class="admin-header"><div class="admin-header-inner"><div><div class="eyebrow">牛牛1号 · 设置</div><h1>__PAGE_TITLE__</h1></div><div class="admin-header-actions">__HEADER_ACTIONS__</div></div></header>
 <main class="admin-main">
 __NOTICE__
 __ENV_CONFIG__
@@ -3125,17 +3274,39 @@ document.addEventListener('pointerdown', function(event) {
 });
 function envFormSnapshot(form) {
   if (!form || !window.FormData || !window.URLSearchParams) return '';
-  return new URLSearchParams(new FormData(form)).toString();
+  var data = new FormData(form);
+  form.querySelectorAll('input[type="password"][name]').forEach(function(input) {
+    data.set(input.name, '');
+  });
+  return new URLSearchParams(data).toString();
 }
+function envFormHasUnsavedSecret(form) {
+  if (!form) return false;
+  return Array.prototype.some.call(
+    form.querySelectorAll('input[type="password"]'),
+    function(input) { return input.value !== ''; }
+  );
+}
+var envSavedSnapshots = new WeakMap();
 function markEnvFormSaved(form) {
   if (!form) return;
-  form.dataset.savedSnapshot = envFormSnapshot(form);
+  envSavedSnapshots.set(form, envFormSnapshot(form));
   form.dataset.savedState = '1';
 }
 function resetEnvSaveIfDirty(form) {
-  if (!form || form.id !== 'env-config-form' || form.dataset.savedState !== '1') return;
+  if (!form || form.id !== 'env-config-form' || !envSavedSnapshots.has(form)) return;
+  form.dataset.editRevision = String(Number(form.dataset.editRevision || '0') + 1);
+  var savedSnapshot = envSavedSnapshots.get(form);
   var currentSnapshot = envFormSnapshot(form);
-  if (!currentSnapshot || currentSnapshot === form.dataset.savedSnapshot) return;
+  if (!currentSnapshot) return;
+  if (currentSnapshot === savedSnapshot && !envFormHasUnsavedSecret(form)) {
+    if (form.dataset.savedState === '0') {
+      form.dataset.savedState = '1';
+      setEnvSaveFeedback(form, '', '');
+    }
+    return;
+  }
+  if (form.dataset.savedState === '0') return;
   form.dataset.savedState = '0';
   setEnvSaveFeedback(form, '', '有未保存修改');
 }
@@ -3147,7 +3318,7 @@ function setEnvSaveFeedback(form, state, message) {
     status.className = 'settings-save-status' + (state ? ' ' + state : '');
   }
   if (!button) return;
-  if (!button.dataset.defaultText) button.dataset.defaultText = button.textContent || '保存业务配置';
+  if (!button.dataset.defaultText) button.dataset.defaultText = button.textContent || '保存本组设置';
   button.classList.remove('saved', 'error');
   if (state === 'busy') {
     button.disabled = true;
@@ -3163,9 +3334,18 @@ function setEnvSaveFeedback(form, state, message) {
     button.textContent = '保存失败';
   } else {
     button.disabled = false;
-    button.textContent = button.dataset.defaultText || '保存业务配置';
+    button.textContent = button.dataset.defaultText || '保存本组设置';
   }
 }
+function initializeEnvForm() {
+  var form = document.getElementById('env-config-form');
+  if (form) {
+    form.dataset.editRevision = '0';
+    markEnvFormSaved(form);
+  }
+}
+document.addEventListener('DOMContentLoaded', initializeEnvForm);
+initializeEnvForm();
 document.addEventListener('input', function(event) {
   var target = event.target;
   var form = target && target.closest ? target.closest('#env-config-form') : null;
@@ -3260,9 +3440,11 @@ document.addEventListener('submit', function(event) {
   if (!window.fetch || !window.FormData || !window.URLSearchParams) return;
   event.preventDefault();
   var requestBody = new URLSearchParams(new FormData(form));
-  var submittedSnapshot = requestBody.toString();
-  setEnvSaveFeedback(form, 'busy', '正在保存业务配置...');
-  fetch('/api/admin/config/env', {
+  var submittedSafeSnapshot = envFormSnapshot(form);
+  var submittedRevision = form.dataset.editRevision || '0';
+  var saveEndpoint = form.getAttribute('data-save-endpoint') || '/api/admin/config/env';
+  setEnvSaveFeedback(form, 'busy', '正在保存本组设置...');
+  fetch(saveEndpoint, {
     method: 'POST',
     credentials: 'same-origin',
     headers: {'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'Accept': 'application/json', 'X-NiuOne-Action': '1'},
@@ -3275,12 +3457,13 @@ document.addEventListener('submit', function(event) {
       return payload;
     });
   }).then(function(payload) {
-    var formUnchanged = envFormSnapshot(form) === submittedSnapshot;
+    var formUnchanged = (form.dataset.editRevision || '0') === submittedRevision;
     if (formUnchanged) {
       applyEnvConfigState(form, payload.config);
       clearRemovedNotificationChannelFields(form);
     }
     if (payload.reauth_required) {
+      markEnvFormSaved(form);
       window.location.replace('/admin');
       return;
     }
@@ -3290,11 +3473,19 @@ document.addEventListener('submit', function(event) {
     if (formUnchanged) {
       setEnvSaveFeedback(form, 'ok', businessSaveMessage(payload));
     } else {
+      envSavedSnapshots.set(form, submittedSafeSnapshot);
+      form.dataset.savedState = '0';
       setEnvSaveFeedback(form, '', businessSaveMessage(payload) + '；保存期间有新的修改，请再次保存');
     }
   }).catch(function(error) {
     setEnvSaveFeedback(form, 'error', error && error.message ? error.message : '保存失败，请稍后重试');
   });
+});
+window.addEventListener('beforeunload', function(event) {
+  var form = document.getElementById('env-config-form');
+  if (!form || form.dataset.savedState !== '0') return;
+  event.preventDefault();
+  event.returnValue = '';
 });
 document.addEventListener('click', function(event) {
   var target = event.target;
@@ -3370,6 +3561,10 @@ document.addEventListener('click', function(event) {
     input.type = control.getAttribute('data-input-type') || 'time';
     input.name = fieldName;
     input.placeholder = control.getAttribute('data-placeholder') || '';
+    var inputLabel = control.getAttribute('data-input-label') || '';
+    if (inputLabel) {
+      input.setAttribute('aria-label', inputLabel + ' ' + (items.children.length + 1));
+    }
     if (input.type === 'text') {
       input.autocapitalize = 'off';
       input.spellcheck = false;
@@ -7986,13 +8181,16 @@ def render_admin_notice(params: dict[str, list[str]]) -> str:
 
 def render_env_input(item: dict[str, Any]) -> str:
     name = str(item.get("name") or "")
+    label = str(item.get("label") or name)
     kind = str(item.get("kind") or "text")
     value = str(item.get("file_value") or "")
     escaped_name = html.escape(name)
+    escaped_label = html.escape(label)
+    aria_label = f" aria-label='{escaped_label}'"
     if item.get("secret"):
         placeholder = html.escape(str(item.get("file_state") or display_secret(None)))
         return (
-            f"<input type='password' name='env__{escaped_name}' "
+            f"<input type='password' name='env__{escaped_name}'{aria_label} "
             f"placeholder='{placeholder}' autocomplete='new-password'>"
         )
     if kind == "bool":
@@ -8005,7 +8203,7 @@ def render_env_input(item: dict[str, Any]) -> str:
                 toggle_attr = ""
             default_option = ""
         return (
-            f"<select name='env__{escaped_name}'{toggle_attr}>"
+            f"<select name='env__{escaped_name}'{toggle_attr}{aria_label}>"
             f"{default_option}"
             f"<option value='1' {'selected' if current == '1' else ''}>启用</option>"
             f"<option value='0' {'selected' if current == '0' else ''}>停用</option>"
@@ -8014,28 +8212,30 @@ def render_env_input(item: dict[str, Any]) -> str:
     if kind == "cron_time":
         day_label = html.escape(str(item.get("day_label") or ""))
         return (
-            f"<input type='time' name='env__{escaped_name}' value='{html.escape(value)}'>"
+            f"<input type='time' name='env__{escaped_name}'{aria_label} value='{html.escape(value)}'>"
             f"<div class='config-meta'>北京时间{(' · ' + day_label) if day_label else ''}</div>"
         )
     if kind == "time":
         return (
-            f"<input type='time' name='env__{escaped_name}' value='{html.escape(value)}'>"
+            f"<input type='time' name='env__{escaped_name}'{aria_label} value='{html.escape(value)}'>"
             "<div class='config-meta'>北京时间</div>"
         )
     if kind == "time_list":
         values = list(item.get("time_values") or split_hhmm_values(value))
         field_name = f"env__{escaped_name}"
         inputs = []
-        for slot_value in values:
+        for index, slot_value in enumerate(values, start=1):
             inputs.append(
                 "<div class='time-list-item'>"
-                f"<input type='time' name='{field_name}' value='{html.escape(slot_value)}'>"
+                f"<input type='time' name='{field_name}' aria-label='{escaped_label} {index}' "
+                f"value='{html.escape(slot_value)}'>"
                 "<button type='button' class='time-list-remove' data-time-list-remove "
                 "aria-label='删除时间点' title='删除时间点'>x</button>"
                 "</div>"
             )
         return (
-            f"<div class='time-list-control' data-time-list data-field-name='{field_name}' data-input-type='time'>"
+            f"<div class='time-list-control' data-time-list data-field-name='{field_name}' "
+            f"data-input-type='time' data-input-label='{escaped_label}'>"
             f"<input type='hidden' name='{field_name}' value=''>"
             "<div class='time-list-grid' data-time-list-items>"
             + "".join(inputs)
@@ -8047,16 +8247,18 @@ def render_env_input(item: dict[str, Any]) -> str:
         values = list(item.get("handle_values") or split_handle_values(value))
         field_name = f"env__{escaped_name}"
         inputs = []
-        for handle in values:
+        for index, handle in enumerate(values, start=1):
             inputs.append(
                 "<div class='time-list-item'>"
-                f"<input type='text' name='{field_name}' value='{html.escape(handle)}' placeholder='handle' autocapitalize='off' spellcheck='false'>"
+                f"<input type='text' name='{field_name}' aria-label='{escaped_label} {index}' "
+                f"value='{html.escape(handle)}' placeholder='handle' autocapitalize='off' spellcheck='false'>"
                 "<button type='button' class='time-list-remove' data-time-list-remove "
                 "aria-label='删除作者' title='删除作者'>x</button>"
                 "</div>"
             )
         return (
-            f"<div class='time-list-control' data-time-list data-field-name='{field_name}' data-input-type='text' data-placeholder='handle'>"
+            f"<div class='time-list-control' data-time-list data-field-name='{field_name}' "
+            f"data-input-type='text' data-placeholder='handle' data-input-label='{escaped_label}'>"
             f"<input type='hidden' name='{field_name}' value=''>"
             "<div class='time-list-grid' data-time-list-items>"
             + "".join(inputs)
@@ -8078,7 +8280,8 @@ def render_env_input(item: dict[str, Any]) -> str:
             color = html.escape(str(option.get("color") or "#94a3b8"))
             option_html.append(
                 f"<label class='strategy-option' style='--strategy-color:{color}'>"
-                f"<input type='radio' name='{field_name}' value='{html.escape(source_id)}'{checked} data-strategy-source-toggle>"
+                f"<input type='radio' name='{field_name}' value='{html.escape(source_id)}'{checked} "
+                f"aria-label='{escaped_label}：{label}' data-strategy-source-toggle>"
                 "<span class='strategy-option-main'>"
                 f"<span class='strategy-option-title'><span class='strategy-option-dot'></span>{label}</span>"
                 f"<span class='strategy-option-desc'>{desc}</span>"
@@ -8093,7 +8296,7 @@ def render_env_input(item: dict[str, Any]) -> str:
     if kind == "preset_strategy_text":
         max_chars = int(item.get("preset_strategy_max_chars") or PRESET_STRATEGY_TEXT_MAX_CHARS)
         return (
-            f"<textarea class='preset-strategy-textarea' name='env__{escaped_name}' "
+            f"<textarea class='preset-strategy-textarea' name='env__{escaped_name}'{aria_label} "
             f"maxlength='{max_chars}' spellcheck='false' placeholder='例如：只做主线强趋势回踩，买入后跌破5日线离场；盈利超过8%后分批止盈。'>"
             f"{html.escape(value)}</textarea>"
             "<div class='config-meta'>激活后由买卖决策模型优化为选股、买入、卖出和仓位规则</div>"
@@ -8101,7 +8304,7 @@ def render_env_input(item: dict[str, Any]) -> str:
     if kind == "trade_discipline_text":
         max_chars = int(item.get("trade_discipline_max_chars") or TRADE_DISCIPLINE_TEXT_MAX_CHARS)
         return (
-            f"<textarea class='trade-discipline-textarea' name='env__{escaped_name}' "
+            f"<textarea class='trade-discipline-textarea' name='env__{escaped_name}'{aria_label} "
             f"maxlength='{max_chars}' spellcheck='false' placeholder='留空时使用内置交易纪律'>"
             f"{html.escape(value)}</textarea>"
             "<div class='config-meta'>直接写入买卖决策模型 prompt 的“必须遵守”段；留空时使用内置默认纪律</div>"
@@ -8122,7 +8325,8 @@ def render_env_input(item: dict[str, Any]) -> str:
             color = html.escape(str(option.get("color") or "#94a3b8"))
             option_html.append(
                 f"<label class='strategy-option' style='--strategy-color:{color}'>"
-                f"<input type='{input_type}' name='{field_name}' value='{html.escape(strategy_id)}'{checked}>"
+                f"<input type='{input_type}' name='{field_name}' value='{html.escape(strategy_id)}'{checked} "
+                f"aria-label='{escaped_label}：{label}'>"
                 "<span class='strategy-option-main'>"
                 f"<span class='strategy-option-title'><span class='strategy-option-dot'></span>{label}</span>"
                 f"<span class='strategy-option-desc'>{desc}</span>"
@@ -8137,18 +8341,21 @@ def render_env_input(item: dict[str, Any]) -> str:
         )
     if kind == "context_length":
         return (
-            f"<input type='text' name='env__{escaped_name}' value='{html.escape(value)}' "
+            f"<input type='text' name='env__{escaped_name}'{aria_label} value='{html.escape(value)}' "
             "placeholder='默认 128000；例如 128K、1M 或 1000000' inputmode='numeric'>"
             "<div class='config-meta'>默认 128000 tokens；填写后保存为数字 tokens</div>"
         )
     if kind == "max_tokens":
         return (
-            f"<input type='text' name='env__{escaped_name}' value='{html.escape(value)}' "
+            f"<input type='text' name='env__{escaped_name}'{aria_label} value='{html.escape(value)}' "
             "placeholder='默认 4096；例如 2048 或 8192' inputmode='numeric'>"
             "<div class='config-meta'>默认 4096 tokens；填写后覆盖请求 max_tokens</div>"
         )
     input_type = "number" if kind == "int" else "text"
-    return f"<input type='{input_type}' name='env__{escaped_name}' value='{html.escape(value)}'>"
+    return (
+        f"<input type='{input_type}' name='env__{escaped_name}'{aria_label} "
+        f"value='{html.escape(value)}'>"
+    )
 
 
 def render_notification_field(item: dict[str, Any], *, compact: bool = False) -> str:
@@ -8204,11 +8411,12 @@ def render_notification_settings(items: list[dict[str, Any]]) -> str:
             f"<input type='hidden' name='env__{html.escape(enabled_name)}' value='{'1' if selected else '0'}' "
             "data-notification-channel-enabled>"
             "<div class='notification-channel-card-head'>"
-            f"<div><div class='notification-channel-name'>{html.escape(label)}</div>"
+            f"<div><div class='notification-channel-name' id='notification-channel-name-{html.escape(channel_id)}'>{html.escape(label)}</div>"
             f"<div class='notification-channel-desc'>{html.escape(description)}</div></div>"
             f"<button type='button' class='notification-channel-remove' data-notification-channel-remove='{html.escape(channel_id)}'>移除</button>"
             "</div>"
-            f"<fieldset class='notification-channel-fields' data-notification-channel-fields{fieldset_disabled}>"
+            f"<fieldset class='notification-channel-fields' data-notification-channel-fields{fieldset_disabled} "
+            f"aria-labelledby='notification-channel-name-{html.escape(channel_id)}'>"
             + "".join(channel_fields)
             + "</fieldset>"
             "<div class='notification-channel-actions'>"
@@ -8245,6 +8453,9 @@ def render_notification_settings(items: list[dict[str, Any]]) -> str:
 
 
 def admin_group_anchor(group_name: str) -> str:
+    group = ADMIN_SETTING_GROUP_BY_NAME.get(group_name)
+    if group:
+        return f"settings-{group['slug']}"
     slug = re.sub(r"[^a-z0-9]+", "-", group_name.lower()).strip("-")
     if slug:
         return f"settings-{slug}"
@@ -8252,127 +8463,166 @@ def admin_group_anchor(group_name: str) -> str:
     return f"settings-{digest}"
 
 
-def render_nav_label(label: str) -> str:
-    if len(label) < 2:
-        return html.escape(label)
-    return html.escape(label[0]) + f"<span>{html.escape(label[1:])}</span>"
+def admin_setting_groups(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Collect visible settings by logical group, even when schema items are non-contiguous."""
+
+    items_by_group: dict[str, list[dict[str, Any]]] = {
+        str(group["name"]): [] for group in ADMIN_SETTING_GROUPS
+    }
+    for item in payload.get("items") or []:
+        group_name = str(item.get("group") or "其他")
+        items_by_group.setdefault(group_name, []).append(item)
+    return [
+        {**group, "items": items_by_group.get(str(group["name"]), [])}
+        for group in ADMIN_SETTING_GROUPS
+        if items_by_group.get(str(group["name"]))
+    ]
 
 
-def render_env_config_table(payload: dict[str, Any]) -> str:
-    us_feature_enabled = False
-    groups: list[dict[str, Any]] = []
-    current_group: dict[str, Any] | None = None
-    for item in payload["items"]:
+def admin_setting_group_env_names(group_slug: str) -> set[str]:
+    group = ADMIN_SETTING_GROUP_BY_SLUG.get(str(group_slug or ""))
+    if not group:
+        return set()
+    group_name = str(group["name"])
+    return {
+        name
+        for name in admin_visible_env_names()
+        if str(ENV_CONFIG_BY_NAME.get(name, {}).get("group") or "其他") == group_name
+    }
+
+
+def admin_us_feature_enabled(payload: dict[str, Any]) -> bool:
+    for item in payload.get("items") or []:
         if item.get("name") == "DASHBOARD_US_FEATURES_ENABLED":
-            us_feature_enabled = str(item.get("effective") or item.get("file_value") or "").strip().lower() in {"1", "true", "yes", "on"}
-        group = str(item.get("group") or "其他")
-        if current_group is None or current_group["name"] != group:
-            current_group = {"name": group, "items": [], "anchor": admin_group_anchor(group)}
-            groups.append(current_group)
-        current_group["items"].append(item)
+            raw = item.get("effective") or item.get("file_value") or ""
+            return str(raw).strip().lower() in TRUTHY_VALUES
+    return False
 
-    sections: list[str] = []
-    nav_items: list[str] = []
+
+def render_admin_settings_index(payload: dict[str, Any]) -> str:
+    groups = admin_setting_groups(payload)
+    cards: list[str] = []
     for group in groups:
-        group_name = str(group["name"])
-        group_anchor = str(group["anchor"])
-        note = ADMIN_GROUP_NOTES.get(group_name, "")
-        note_html = f"<p class='settings-group-note'>{html.escape(note)}</p>" if note else ""
-        rows: list[str] = []
-        notification_group = group_name == "交易通知"
-        if notification_group:
-            group_body = render_notification_settings(group["items"])
-            nav_count = len(NOTIFICATION_CHANNEL_SETTINGS)
-            count_label = f"{nav_count} 个渠道"
-        else:
-            for item in group["items"]:
-                name = str(item.get("name") or "")
-                label = str(item.get("label") or name)
-                current = str(item.get("current_state") or "")
-                default = str(item.get("default") or "")
-                current_html = html.escape(current) if current else "<span class='config-empty'>未设置</span>"
-                default_html = html.escape(default) if default else "<span class='config-empty'>未设置</span>"
-                row_attrs = "class='setting-row'"
-                if name in US_FEATURE_GATED_NAMES:
-                    row_attrs += " data-feature-gated='us'"
-                    if not us_feature_enabled:
-                        row_attrs += " hidden aria-hidden='true'"
-                    else:
-                        row_attrs += " aria-hidden='false'"
-                if name == PERSONA_STRATEGY_ENV:
-                    row_attrs += f" data-strategy-source-gated='{STRATEGY_SOURCE_BUILTIN}'"
-                elif name == PRESET_STRATEGY_TEXT_ENV:
-                    row_attrs += " data-strategy-source-gated='preset_text'"
-                rows.append(
-                    f"<div {row_attrs}>"
-                    f"<div class='setting-copy'><div class='config-label'>{html.escape(label)}</div></div>"
-                    f"<div class='setting-editor'>{render_env_input(item)}</div>"
-                    "<div class='setting-state'>"
-                    f"<div class='setting-state-item'><div class='setting-state-label'>当前状态</div>"
-                    f"<div class='config-meta' data-env-current='{html.escape(name)}'>{current_html}</div></div>"
-                    f"<div class='setting-state-item'><div class='setting-state-label'>默认</div><div class='config-meta'>{default_html}</div></div>"
-                    "</div>"
-                    "</div>"
-                )
-            group_body = "<div class='settings-list'>" + "".join(rows) + "</div>"
-            nav_count = len(group["items"])
-            count_label = f"{nav_count} 项"
-        gated_attrs = ""
-        if group_name in US_FEATURE_GATED_GROUPS:
-            gated_attrs = " data-feature-gated='us'"
-            if not us_feature_enabled:
-                gated_attrs += " hidden aria-hidden='true'"
-            else:
-                gated_attrs += " aria-hidden='false'"
-        nav_items.append(
-            f"<a class='settings-nav-link' href='#{group_anchor}'{gated_attrs}>"
-            f"<span class='settings-nav-index'>{len(nav_items) + 1:02d}</span>"
-            f"<span class='settings-nav-label'>{render_nav_label(group_name)}</span>"
-            f"<span class='settings-nav-count'>{nav_count}</span>"
+        slug = str(group["slug"])
+        name = str(group["name"])
+        summary = str(group.get("summary") or ADMIN_GROUP_NOTES.get(name) or "维护该分组的业务配置。")
+        icon = str(group.get("icon") or "设置")
+        item_count = len(group["items"])
+        cards.append(
+            f"<a class='settings-card' href='/admin/settings/{html.escape(slug)}' "
+            f"aria-label='进入{html.escape(name)}设置'>"
+            f"<span class='settings-card-icon' aria-hidden='true'>{html.escape(icon)}</span>"
+            "<span class='settings-card-copy'>"
+            f"<span class='settings-card-title'>{html.escape(name)}</span>"
+            f"<span class='settings-card-summary'>{html.escape(summary)}</span>"
+            f"<span class='settings-card-meta'>{item_count} 项设置 · 单独保存</span>"
+            "</span>"
+            "<span class='settings-card-arrow' aria-hidden='true'>›</span>"
             "</a>"
         )
-        sections.append(
-            "<section class='settings-group'"
-            f" id='{group_anchor}'"
-            + gated_attrs
-            + ">"
-            "<div class='settings-group-head'>"
-            f"<div><h2>{html.escape(group_name)}</h2>{note_html}</div>"
-            f"<span class='settings-count'>{html.escape(count_label)}</span>"
-            "</div>"
-            + group_body
-            + "</section>"
-        )
-
     return (
-        "<form id='env-config-form' class='settings-form' method='post' action='/admin/config/env'>"
+        "<div class='settings-index'>"
         "<div id='config' class='settings-overview'>"
         "<div class='settings-overview-copy'>"
         "<h2>业务配置</h2>"
-        "<p class='muted'>按分组维护运行参数、模型接入、任务时间和策略开关；保存后会写入本地配置并同步可热应用项。</p>"
+        "<p class='muted'>选择一个分组进入独立页面；每个分组的修改分别保存，不会覆盖其他分组。</p>"
         "</div>"
         "<div class='settings-overview-stats'>"
         f"<div class='settings-stat'><span class='settings-stat-value'>{len(groups)}</span><span class='settings-stat-label'>分组</span></div>"
-        f"<div class='settings-stat'><span class='settings-stat-value'>{len(payload['items'])}</span><span class='settings-stat-label'>配置项</span></div>"
+        f"<div class='settings-stat'><span class='settings-stat-value'>{len(payload.get('items') or [])}</span><span class='settings-stat-label'>配置项</span></div>"
         "</div>"
         "</div>"
-        "<div class='settings-shell'>"
-        "<aside class='settings-sidebar' aria-label='设置分组'>"
-        "<div class='settings-nav-title'>分组</div>"
-        "<nav class='settings-nav'>"
-        + "".join(nav_items)
-        + "</nav>"
-        "</aside>"
-        "<div class='settings-content'>"
-        + "".join(sections)
-        + "</div>"
+        f"<nav class='settings-grid' aria-label='设置分组'>{''.join(cards)}</nav>"
         "</div>"
+    )
+
+
+def render_admin_group_section(group: dict[str, Any], *, us_feature_enabled: bool) -> str:
+    group_name = str(group["name"])
+    group_anchor = admin_group_anchor(group_name)
+    items = list(group.get("items") or [])
+    note = ADMIN_GROUP_NOTES.get(group_name, "")
+    note_html = f"<p class='settings-group-note'>{html.escape(note)}</p>" if note else ""
+    rows: list[str] = []
+    if group_name == "交易通知":
+        group_body = render_notification_settings(items)
+        count_label = f"{len(NOTIFICATION_CHANNEL_SETTINGS)} 个渠道"
+    else:
+        for item in items:
+            name = str(item.get("name") or "")
+            label = str(item.get("label") or name)
+            current = str(item.get("current_state") or "")
+            default = str(item.get("default") or "")
+            current_html = html.escape(current) if current else "<span class='config-empty'>未设置</span>"
+            default_html = html.escape(default) if default else "<span class='config-empty'>未设置</span>"
+            row_attrs = "class='setting-row'"
+            if name in US_FEATURE_GATED_NAMES:
+                row_attrs += " data-feature-gated='us'"
+                if not us_feature_enabled:
+                    row_attrs += " hidden aria-hidden='true'"
+                else:
+                    row_attrs += " aria-hidden='false'"
+            if name == PERSONA_STRATEGY_ENV:
+                row_attrs += f" data-strategy-source-gated='{STRATEGY_SOURCE_BUILTIN}'"
+            elif name == PRESET_STRATEGY_TEXT_ENV:
+                row_attrs += " data-strategy-source-gated='preset_text'"
+            rows.append(
+                f"<div {row_attrs}>"
+                f"<div class='setting-copy'><div class='config-label'>{html.escape(label)}</div></div>"
+                f"<div class='setting-editor'>{render_env_input(item)}</div>"
+                "<div class='setting-state'>"
+                f"<div class='setting-state-item'><div class='setting-state-label'>当前状态</div>"
+                f"<div class='config-meta' data-env-current='{html.escape(name)}'>{current_html}</div></div>"
+                f"<div class='setting-state-item'><div class='setting-state-label'>默认</div><div class='config-meta'>{default_html}</div></div>"
+                "</div>"
+                "</div>"
+            )
+        group_body = "<div class='settings-list'>" + "".join(rows) + "</div>"
+        count_label = f"{len(items)} 项"
+    return (
+        f"<section class='settings-group' id='{html.escape(group_anchor)}'>"
+        "<div class='settings-group-head'>"
+        f"<div><h2>{html.escape(group_name)}</h2>{note_html}</div>"
+        f"<span class='settings-count'>{html.escape(count_label)}</span>"
+        "</div>"
+        + group_body
+        + "</section>"
+    )
+
+
+def render_admin_settings_group(payload: dict[str, Any], group_slug: str) -> str | None:
+    selected = next(
+        (group for group in admin_setting_groups(payload) if group["slug"] == group_slug),
+        None,
+    )
+    if selected is None:
+        return None
+    group_name = str(selected["name"])
+    escaped_slug = html.escape(group_slug)
+    return (
+        "<div class='settings-detail'>"
+        "<nav class='settings-breadcrumbs' aria-label='面包屑'>"
+        "<a href='/admin'>设置</a><span aria-hidden='true'>/</span>"
+        f"<span aria-current='page'>{html.escape(group_name)}</span>"
+        "</nav>"
+        f"<form id='env-config-form' class='settings-form' method='post' "
+        f"action='/admin/config/env/{escaped_slug}' data-settings-group='{escaped_slug}' "
+        f"data-save-endpoint='/api/admin/config/env/{escaped_slug}'>"
+        f"<input type='hidden' name='settings_group' value='{escaped_slug}'>"
+        + render_admin_group_section(selected, us_feature_enabled=admin_us_feature_enabled(payload))
         + "<div class='settings-actions'>"
         "<div class='settings-save-status' data-env-save-status role='status' aria-live='polite'></div>"
-        "<button class='save-button' data-env-save-button type='submit'>保存业务配置</button>"
+        "<button class='save-button' data-env-save-button type='submit'>保存本组设置</button>"
         "</div>"
         "</form>"
+        "</div>"
     )
+
+
+def render_env_config_table(payload: dict[str, Any], group_slug: str | None = None) -> str:
+    if group_slug is None:
+        return render_admin_settings_index(payload)
+    return render_admin_settings_group(payload, group_slug) or ""
 
 
 def render_yaml_config(payload: dict[str, Any]) -> str:
@@ -8411,13 +8661,55 @@ def render_admin_login_page(error: str = "") -> bytes:
     )
 
 
-def render_admin_page(params: dict[str, list[str]] | None = None) -> bytes:
-    params = params or {}
-    config_payload = build_admin_config_payload()
+def render_admin_document(
+    content: str,
+    *,
+    page_title: str,
+    document_title: str,
+    params: dict[str, list[str]] | None = None,
+    detail: bool = False,
+) -> bytes:
+    header_actions = ["<a class='toplink' href='/'>返回首页</a>"]
+    if detail:
+        header_actions.insert(0, "<a class='toplink' href='/admin'>全部设置</a>")
     page = ADMIN_HTML
-    page = page.replace('__NOTICE__', render_admin_notice(params))
-    page = page.replace('__ENV_CONFIG__', render_env_config_table(config_payload))
+    page = page.replace('__DOCUMENT_TITLE__', html.escape(document_title))
+    page = page.replace('__PAGE_TITLE__', html.escape(page_title))
+    page = page.replace('__HEADER_ACTIONS__', "".join(header_actions))
+    page = page.replace('__NOTICE__', render_admin_notice(params or {}))
+    page = page.replace('__ENV_CONFIG__', content)
     return page.encode('utf-8')
+
+
+def render_admin_page(params: dict[str, list[str]] | None = None) -> bytes:
+    config_payload = build_admin_config_payload()
+    return render_admin_document(
+        render_admin_settings_index(config_payload),
+        page_title="设置",
+        document_title="牛牛1号",
+        params=params,
+    )
+
+
+def render_admin_group_page(
+    group_slug: str,
+    params: dict[str, list[str]] | None = None,
+) -> bytes | None:
+    group = ADMIN_SETTING_GROUP_BY_SLUG.get(str(group_slug or ""))
+    if not group:
+        return None
+    config_payload = build_admin_config_payload()
+    content = render_admin_settings_group(config_payload, group_slug)
+    if content is None:
+        return None
+    group_name = str(group["name"])
+    return render_admin_document(
+        content,
+        page_title=group_name,
+        document_title=f"{group_name} · 牛牛1号",
+        params=params,
+        detail=True,
+    )
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "NiuOneDashboard"
@@ -8650,6 +8942,14 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if not self.enforce_rate_limit("ip", self.client_ip(), RATE_LIMIT_ANON):
             return
+        admin_group_match = re.fullmatch(r"/admin/settings/([a-z0-9-]+)", parsed.path)
+        if admin_group_match:
+            status = 200 if admin_group_match.group(1) in ADMIN_SETTING_GROUP_BY_SLUG else 404
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
         if parsed.path == "/admin":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -8696,6 +8996,25 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if not self.enforce_rate_limit("ip", self.client_ip(), RATE_LIMIT_ANON):
+            return
+        admin_group_match = re.fullmatch(r"/admin/settings/([a-z0-9-]+)", parsed.path)
+        if admin_group_match:
+            if not self.require_admin():
+                return
+            page = render_admin_group_page(
+                admin_group_match.group(1),
+                parse_qs(parsed.query),
+            )
+            if page is None:
+                not_found = render_admin_document(
+                    "<div class='errmsg'>未找到该设置分组。</div>",
+                    page_title="设置分组不存在",
+                    document_title="设置分组不存在 · 牛牛1号",
+                    detail=True,
+                )
+                self.send_html(not_found, status=404)
+            else:
+                self.send_html(page)
             return
         if parsed.path == "/admin":
             if not self.require_admin():
@@ -8939,16 +9258,33 @@ class Handler(BaseHTTPRequestHandler):
             }
             self.send_json_uncached(send_notification_test(channel_id, overrides))
             return
-        if parsed.path in {"/admin/config/env", "/api/admin/config/env"}:
+        env_config_match = re.fullmatch(
+            r"/(?:api/)?admin/config/env(?:/([a-z0-9-]+))?",
+            parsed.path,
+        )
+        if env_config_match:
             if not self.require_admin():
                 return
             if not self.require_action_request():
                 return
             if not self.enforce_rate_limit("admin", self.client_ip(), RATE_LIMIT_ADMIN):
                 return
+            group_slug = env_config_match.group(1) or ""
+            is_api_request = parsed.path.startswith("/api/")
+            group = ADMIN_SETTING_GROUP_BY_SLUG.get(group_slug) if group_slug else None
+            if group_slug and group is None:
+                if is_api_request:
+                    self.send_json_error(404, "unknown_settings_group")
+                else:
+                    self.redirect("/admin?" + urlencode({"config_error": "未找到该设置分组"}))
+                return
             try:
                 form = self.read_form()
-                visible_names = set(admin_visible_env_names())
+                visible_names = (
+                    admin_setting_group_env_names(group_slug)
+                    if group_slug
+                    else set(admin_visible_env_names())
+                )
                 updates = {
                     key[len("env__"):]: value
                     for key, value in form.items()
@@ -8956,29 +9292,35 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 updates = normalize_business_updates(updates)
                 validate_business_updates(updates)
-                result = write_env_file_values(
+                result = persist_and_sync_business_updates(
                     updates,
                     clear_names=removed_notification_config_names(updates),
                 )
-                result["runtime"] = sync_business_runtime_settings(result.get("changed_names") or [])
                 result["reauth_required"] = "DASHBOARD_ADMIN_PASSWORD" in set(result.get("changed_names") or [])
                 if result.get("changed"):
                     result["restart"] = {"ok": False, "skipped": "hot_applied"}
                 else:
                     result["restart"] = {"ok": False, "skipped": "unchanged"}
-                if parsed.path.startswith("/api/"):
+                if group is not None:
+                    result["group"] = {
+                        "slug": group_slug,
+                        "name": str(group["name"]),
+                    }
+                if is_api_request:
                     result["config"] = build_admin_config_payload()
             except Exception as exc:
-                if parsed.path.startswith("/api/"):
+                if is_api_request:
                     self.send_json_uncached({"ok": False, "error": str(exc)})
                 else:
-                    self.redirect("/admin?" + urlencode({"config_error": str(exc)[:220]}) + "#config")
+                    error_target = f"/admin/settings/{group_slug}" if group_slug else "/admin"
+                    self.redirect(error_target + "?" + urlencode({"config_error": str(exc)[:220]}) + "#config")
                 return
-            if parsed.path.startswith("/api/"):
+            if is_api_request:
                 self.send_json_uncached(result)
             else:
                 saved_state = "env_hot" if result.get("changed") else "env_noop"
-                self.redirect(f"/admin?config_saved={saved_state}#config")
+                saved_target = f"/admin/settings/{group_slug}" if group_slug else "/admin"
+                self.redirect(f"{saved_target}?config_saved={saved_state}#config")
             return
         if parsed.path in {"/admin/config/yaml", "/api/admin/config/yaml"}:
             if not self.require_admin():

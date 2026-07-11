@@ -71,7 +71,7 @@ class TradeNotificationSettingsTests(unittest.TestCase):
         schema = [dashboard.ENV_CONFIG_BY_NAME[name] for name in NOTIFICATION_ENV_NAMES]
         self.assertTrue(all(item["group"] == "交易通知" for item in schema))
 
-        page = dashboard.render_admin_page().decode("utf-8")
+        page = dashboard.render_admin_group_page("notifications").decode("utf-8")
         self.assertEqual(page.count("<h2>交易通知</h2>"), 1)
         for label in (
             "启用模拟成交通知",
@@ -93,7 +93,7 @@ class TradeNotificationSettingsTests(unittest.TestCase):
             self.assertEqual(page.count(f"<option value='{channel}'"), 1)
 
     def test_unselected_channels_are_hidden_and_excluded_from_form_config(self):
-        page = dashboard.render_admin_page().decode("utf-8")
+        page = dashboard.render_admin_group_page("notifications").decode("utf-8")
 
         for channel in ("feishu", "dingtalk", "wecom", "telegram"):
             tag = notification_card_tag(page, channel)
@@ -114,28 +114,28 @@ class TradeNotificationSettingsTests(unittest.TestCase):
             self.env_path,
         )
 
-        page = dashboard.render_admin_page().decode("utf-8")
+        page = dashboard.render_admin_group_page("notifications").decode("utf-8")
         tag = notification_card_tag(page, "feishu")
         markup = notification_card_markup(page, "feishu")
         self.assertNotIn(" hidden", tag)
         self.assertIn("aria-hidden='false'", tag)
         self.assertIn("data-notification-channel-enabled>", markup)
         self.assertIn("value='1'", markup)
-        self.assertIn("data-notification-channel-fields>", markup)
+        self.assertIn("data-notification-channel-fields aria-labelledby='notification-channel-name-feishu'>", markup)
         self.assertNotIn("data-notification-channel-fields disabled", markup)
         self.assertIn("<option value='feishu' hidden disabled>", page)
         self.assertIn("data-notification-channel-empty hidden", page)
 
     def test_process_enabled_channel_is_visible_even_without_file_override(self):
         os.environ["DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED"] = "1"
-        page = dashboard.render_admin_page().decode("utf-8")
+        page = dashboard.render_admin_group_page("notifications").decode("utf-8")
 
         tag = notification_card_tag(page, "telegram")
         self.assertNotIn(" hidden", tag)
         self.assertIn("aria-hidden='false'", tag)
 
     def test_add_remove_interaction_hooks_are_embedded(self):
-        page = dashboard.render_admin_page().decode("utf-8")
+        page = dashboard.render_admin_group_page("notifications").decode("utf-8")
 
         self.assertIn("function setNotificationChannelVisibility", page)
         self.assertIn("function syncNotificationChannelSettings", page)
@@ -370,7 +370,7 @@ class TradeNotificationSettingsTests(unittest.TestCase):
         self.assertEqual(items["DASHBOARD_TELEGRAM_BOT_TOKEN"]["current_state"], "未设置")
         self.assertEqual(items["DASHBOARD_TELEGRAM_CHAT_ID"]["current_state"], "未设置")
 
-        page = dashboard.render_admin_page().decode("utf-8")
+        page = dashboard.render_admin_group_page("notifications").decode("utf-8")
         tag = notification_card_tag(page, "telegram")
         markup = notification_card_markup(page, "telegram")
         self.assertIn(" hidden", tag)
@@ -382,11 +382,10 @@ class TradeNotificationSettingsTests(unittest.TestCase):
             "data-env-current='DASHBOARD_TELEGRAM_CHAT_ID'>未设置</span>",
             markup,
         )
-        self.assertIn(
-            "name='env__DASHBOARD_TELEGRAM_BOT_TOKEN' placeholder='未设置'",
-            markup,
-        )
-        self.assertIn("name='env__DASHBOARD_TELEGRAM_CHAT_ID' value=''", markup)
+        self.assertIn("name='env__DASHBOARD_TELEGRAM_BOT_TOKEN'", markup)
+        self.assertIn("placeholder='未设置'", markup)
+        self.assertIn("name='env__DASHBOARD_TELEGRAM_CHAT_ID'", markup)
+        self.assertIn("value=''", markup)
 
     def test_configured_telegram_chat_id_uses_presence_state_in_payload_and_page(self):
         chat_id = "-1001234567890"
@@ -407,12 +406,10 @@ class TradeNotificationSettingsTests(unittest.TestCase):
         self.assertEqual(item["current_state"], "已设置")
         self.assertNotEqual(item["current_state"], chat_id)
 
-        page = dashboard.render_admin_page().decode("utf-8")
+        page = dashboard.render_admin_group_page("notifications").decode("utf-8")
         markup = notification_card_markup(page, "telegram")
-        self.assertIn(
-            f"name='env__DASHBOARD_TELEGRAM_CHAT_ID' value='{chat_id}'",
-            markup,
-        )
+        self.assertIn("name='env__DASHBOARD_TELEGRAM_CHAT_ID'", markup)
+        self.assertIn(f"value='{chat_id}'", markup)
         self.assertIn(
             "data-env-current='DASHBOARD_TELEGRAM_CHAT_ID'>已设置</span>",
             markup,
@@ -434,7 +431,7 @@ class TradeNotificationSettingsTests(unittest.TestCase):
         dashboard.write_env_file_values(secrets, self.env_path)
 
         payload = dashboard.build_admin_config_payload()
-        page = dashboard.render_admin_page().decode("utf-8")
+        page = dashboard.render_admin_group_page("notifications").decode("utf-8")
         items = {item["name"]: item for item in payload["items"]}
         for name, secret in secrets.items():
             self.assertTrue(items[name]["secret"])
