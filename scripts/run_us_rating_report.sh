@@ -14,6 +14,6 @@ export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 export DASHBOARD_CONFIG="${DASHBOARD_CONFIG:-$DASHBOARD_HOME/config.yaml}"
 export DASHBOARD_PUSH_HISTORY_DB="${DASHBOARD_PUSH_HISTORY_DB:-$DASHBOARD_HOME/push_history.db}"
 
-mkdir -p "$DASHBOARD_HOME/cron/output/fd0b807138f4" "$DASHBOARD_HOME/logs"
+mkdir -p "$DASHBOARD_HOME/logs"
 
-exec "$PYTHON_BIN" "$ROOT/app/us_rating_report.py" --archive-only "$@"
+exec "$PYTHON_BIN" "$ROOT/app/us_rating_report.py" --store-only "$@"

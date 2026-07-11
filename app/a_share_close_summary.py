@@ -890,14 +890,14 @@ def main():
         text = build_report(require_complete_spot=True)
         if text:
             from a_share_grok_summary import apply_grok_to_a_share_report
-            from niuone_dashboard_archive import archive_market_report
+            from market_report_store import store_market_report
             text = apply_grok_to_a_share_report(text, title=f"A股{TITLE}")
-            archive_market_report(text, job_id="67ac98149ead", title=f"A股{TITLE}", run_dt=NOW)
+            store_market_report(text, job_id="67ac98149ead", title=f"A股{TITLE}", run_dt=NOW)
             print(text)
         else:
             print("")
     except SpotSnapshotUnavailable as e:
-        print(f"牛牛大王，A股{TITLE}现货行情缺失或不完整，本轮不归档，等待调度器重试：{e}")
+        print(f"牛牛大王，A股{TITLE}现货行情缺失或不完整，本轮不入库，等待调度器重试：{e}")
         sys.exit(1)
     except Exception as e:
         print(f"牛牛大王，A股{TITLE}今天没有成功生成：{type(e).__name__}: {e}\n建议先手动看交易软件，稍后我可以帮你补一版。")

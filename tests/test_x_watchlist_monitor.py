@@ -127,7 +127,6 @@ print(json.dumps({{
   'dashboard_home': str(m.DASHBOARD_HOME),
   'state_path': str(m.STATE_PATH),
   'config_path': str(m.CONFIG_PATH),
-  'archive_dir': str(m.X_ARCHIVE_DIR),
   'has_telegram_delivery': hasattr(m, 'deliver_cards_directly') or hasattr(m, 'telegram_api_call'),
 }}, ensure_ascii=False))
 """
@@ -136,7 +135,6 @@ print(json.dumps({{
             self.assertEqual(data['dashboard_home'], tmp)
             self.assertEqual(data['state_path'], str(Path(tmp) / 'cron' / 'state' / 'x_watchlist_latest.json'))
             self.assertEqual(data['config_path'], str(Path(tmp) / 'config.yaml'))
-            self.assertEqual(data['archive_dir'], str(Path(tmp) / 'cron' / 'output' / 'x_watchlist_direct'))
             self.assertFalse(data['has_telegram_delivery'])
 
     def test_accounts_can_be_overridden_from_env(self):
@@ -218,7 +216,7 @@ print(json.dumps({{
             self.assertEqual(data['returned_accounts'], [])
             self.assertEqual(data['last_issue'], 'watchlist_accounts_empty')
 
-    def test_send_ready_items_archives_to_dashboard_only(self):
+    def test_send_ready_items_writes_to_dashboard_database_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env['DASHBOARD_HOME'] = tmp
@@ -240,25 +238,129 @@ post = {{
   'media': [],
 }}
 ok = m.send_ready_items('', '', state, [('测试账号', post, 'unit-post-1', 'tester')], {{}}, time.monotonic() + 30)
-archive_files = sorted(Path({tmp!r}).glob('cron/output/x_watchlist_direct/*.md'))
-archive_text = archive_files[0].read_text(encoding='utf-8') if archive_files else ''
+con = m.push_history.connect()
+try:
+    row = con.execute(
+        "SELECT category, content, metadata_json, delivery_json, raw_path FROM dashboard_messages WHERE external_id = ?",
+        ('unit-post-1',),
+    ).fetchone()
+finally:
+    con.close()
+metadata = json.loads(row['metadata_json']) if row and row['metadata_json'] else {{}}
+delivery = json.loads(row['delivery_json']) if row and row['delivery_json'] else {{}}
 print(json.dumps({{
   'ok': ok,
   'mode': state.get('last_delivery_mode'),
   'seen': state.get('seen_ids'),
-  'archive_count': len(archive_files),
-  'archive_has_dashboard_mode': '**Mode:** dashboard archive only' in archive_text,
-  'archive_mentions_telegram': 'telegram' in archive_text.lower(),
+  'record_category': row['category'] if row else '',
+  'record_raw_path': row['raw_path'] if row else None,
+  'record_contains_text': '测试推文正文' in (row['content'] if row else ''),
+  'metadata_post_id': (metadata.get('post') or {{}}).get('post_id'),
+  'delivery_mode': delivery.get('mode'),
+  'markdown_count': len(list(Path({tmp!r}).rglob('*.md'))),
 }}, ensure_ascii=False))
 """
             out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
             data = json.loads(out)
             self.assertTrue(data['ok'])
-            self.assertEqual(data['mode'], 'dashboard_archive_only')
+            self.assertEqual(data['mode'], 'dashboard_database_only')
             self.assertEqual(data['seen'], {'tester': ['unit-post-1']})
-            self.assertEqual(data['archive_count'], 1)
-            self.assertTrue(data['archive_has_dashboard_mode'])
-            self.assertFalse(data['archive_mentions_telegram'])
+            self.assertEqual(data['record_category'], 'x_monitor')
+            self.assertEqual(data['record_raw_path'], '')
+            self.assertTrue(data['record_contains_text'])
+            self.assertEqual(data['metadata_post_id'], 'unit-post-1')
+            self.assertEqual(data['delivery_mode'], 'dashboard_database_only')
+            self.assertEqual(data['markdown_count'], 0)
+
+    def test_database_failure_does_not_advance_seen_or_latest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
+            env.pop('DASHBOARD_X_WATCHLIST_STATE', None)
+            code = f"""
+import importlib.util, json, sys, time
+from pathlib import Path
+sys.path.insert(0, {str(SRC)!r})
+spec = importlib.util.spec_from_file_location('x_watchlist_monitor_under_test', {str(SRC / 'x_watchlist_monitor.py')!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.write_direct_x_alerts_to_db = lambda _items: 0
+state = {{'seen_ids': {{}}, 'latest': {{}}}}
+post = {{
+  'post_id': 'failed-post-1',
+  'time': '2026-06-23 10:00:00',
+  'chinese_text': '数据库失败时必须重试',
+  'conversation_type': 'original',
+  'media': [],
+}}
+ok = m.send_ready_items('', '', state, [('测试账号', post, 'failed-post-1', 'tester')], {{}}, time.monotonic() + 30)
+print(json.dumps({{
+  'ok': ok,
+  'seen': state.get('seen_ids'),
+  'latest': state.get('latest'),
+  'database_error': state.get('last_database_error'),
+  'markdown_count': len(list(Path({tmp!r}).rglob('*.md'))),
+}}, ensure_ascii=False))
+"""
+            out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
+            data = json.loads(out)
+            self.assertFalse(data['ok'])
+            self.assertEqual(data['seen'], {})
+            self.assertEqual(data['latest'], {})
+            self.assertEqual(data['database_error'], 'incomplete_write:0/1')
+            self.assertEqual(data['markdown_count'], 0)
+
+    def test_database_exception_and_partial_batch_keep_all_posts_retryable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
+            env.pop('DASHBOARD_X_WATCHLIST_STATE', None)
+            code = f"""
+import importlib.util, json, sys, time
+sys.path.insert(0, {str(SRC)!r})
+spec = importlib.util.spec_from_file_location('x_watchlist_monitor_under_test', {str(SRC / 'x_watchlist_monitor.py')!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+def item(post_id, minute):
+    return ('测试账号', {{
+        'post_id': post_id,
+        'time': f'2026-06-23 10:{{minute}}:00',
+        'chinese_text': post_id,
+        'conversation_type': 'original',
+        'media': [],
+    }}, post_id, 'tester')
+items = [item('batch-post-1', '00'), item('batch-post-2', '01')]
+exception_state = {{'seen_ids': {{}}, 'latest': {{}}}}
+def raise_write(_items):
+    raise RuntimeError('database unavailable')
+m.write_direct_x_alerts_to_db = raise_write
+exception_ok = m.send_ready_items('', '', exception_state, items, {{}}, time.monotonic() + 30)
+partial_state = {{'seen_ids': {{}}, 'latest': {{}}}}
+m.write_direct_x_alerts_to_db = lambda _items: 1
+partial_ok = m.send_ready_items('', '', partial_state, items, {{}}, time.monotonic() + 30)
+print(json.dumps({{
+  'exception_ok': exception_ok,
+  'exception_seen': exception_state.get('seen_ids'),
+  'exception_latest': exception_state.get('latest'),
+  'exception_error': exception_state.get('last_database_error'),
+  'partial_ok': partial_ok,
+  'partial_seen': partial_state.get('seen_ids'),
+  'partial_latest': partial_state.get('latest'),
+  'partial_error': partial_state.get('last_database_error'),
+}}, ensure_ascii=False))
+"""
+            out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
+            data = json.loads(out)
+            self.assertFalse(data['exception_ok'])
+            self.assertEqual(data['exception_seen'], {})
+            self.assertEqual(data['exception_latest'], {})
+            self.assertEqual(data['exception_error'], 'RuntimeError: database unavailable')
+            self.assertFalse(data['partial_ok'])
+            self.assertEqual(data['partial_seen'], {})
+            self.assertEqual(data['partial_latest'], {})
+            self.assertEqual(data['partial_error'], 'incomplete_write:1/2')
 
     def test_sent_missing_context_is_repaired_in_dashboard_db(self):
         with tempfile.TemporaryDirectory() as tmp:

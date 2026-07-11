@@ -1031,18 +1031,16 @@ def is_a_share_trading_day_for_summary(now: datetime) -> bool:
         return now.astimezone(CN_TZ).weekday() < 5
 
 
-def archive_us_market_summary(now: datetime | None = None) -> str | None:
+def store_us_market_summary(now: datetime | None = None) -> str | None:
     run_dt = _now_cn(now)
     if not is_a_share_trading_day_for_summary(run_dt):
         return None
     summary = fetch_us_market_summary(run_dt, prefer_archive=False, use_model=True, strict_model=True)
     save_summary_cache(summary)
     text = build_us_market_report_text(summary)
-    from niuone_dashboard_archive import archive_market_report
+    from market_report_store import store_market_report
 
-    path = archive_market_report(text, job_id=JOB_ID, title=JOB_TITLE, run_dt=run_dt)
-    if path:
-        print(f"archived: {path}", file=sys.stderr)
+    store_market_report(text, job_id=JOB_ID, title=JOB_TITLE, run_dt=run_dt)
     return text
 
 
@@ -1050,12 +1048,12 @@ if __name__ == "__main__":
     import json
 
     parser = argparse.ArgumentParser(description=JOB_TITLE)
-    parser.add_argument("--archive", action="store_true", help="写入盘面监控归档和消息历史")
+    parser.add_argument("--store", action="store_true", help="写入盘面监控消息数据库")
     parser.add_argument("--json", action="store_true", help="输出 JSON 摘要")
     args = parser.parse_args()
-    if args.archive:
+    if args.store:
         try:
-            report = archive_us_market_summary()
+            report = store_us_market_summary()
         except Exception as exc:
             print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
             sys.exit(1)

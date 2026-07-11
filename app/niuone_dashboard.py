@@ -229,10 +229,8 @@ ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
     {"name": "DASHBOARD_TRADER_SCRIPT", "label": "实战页面脚本", "group": "基础路径", "kind": "path", "default": str(SCRIPT_DIR / "niuniu_practice_trader.py"), "effect": "restart"},
     {"name": "DASHBOARD_B1_SCANNER", "label": "实战选股扫描脚本", "group": "基础路径", "kind": "path", "default": str(SCRIPT_DIR / "multi_strategy_screen.py"), "effect": "restart"},
     {"name": "DASHBOARD_CN_STOCK_TOOLS", "label": "A股行情工具脚本", "group": "基础路径", "kind": "path", "default": str(SCRIPT_DIR / "cn_stock_tools.py"), "effect": "restart"},
-    {"name": "DASHBOARD_US_RATING_OUTPUT_DIR", "label": "美股评级归档目录", "group": "基础路径", "kind": "path", "default": str(DASHBOARD_HOME / "cron" / "output" / "fd0b807138f4"), "effect": "next_run"},
     {"name": "DASHBOARD_CRON_JOBS", "label": "Cron jobs JSON", "group": "基础路径", "kind": "path", "default": str(DASHBOARD_HOME / "cron" / "jobs.json"), "effect": "next_run"},
     {"name": "DASHBOARD_X_WATCHLIST_STATE", "label": "X 监控状态文件", "group": "基础路径", "kind": "path", "default": str(DASHBOARD_HOME / "cron" / "state" / "x_watchlist_latest.json"), "effect": "next_run"},
-    {"name": "DASHBOARD_X_WATCHLIST_ARCHIVE_DIR", "label": "X 监控归档目录", "group": "基础路径", "kind": "path", "default": str(DASHBOARD_HOME / "cron" / "output" / "x_watchlist_direct"), "effect": "next_run"},
 
     {"name": "DASHBOARD_ADMIN_PASSWORD", "label": "设置页管理员密码", "group": "访问控制", "kind": "secret", "default": "", "effect": "runtime"},
     {"name": "DASHBOARD_EDGE_CACHE_ENABLED", "label": "允许 CDN 缓存 API", "group": "访问控制", "kind": "bool", "default": "0", "effect": "restart"},

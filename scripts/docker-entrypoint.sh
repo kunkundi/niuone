@@ -38,10 +38,8 @@ export DASHBOARD_NIUNIU_DB="$DASHBOARD_HOME/niuniu.db"
 export DASHBOARD_TRADER_SCRIPT="$ROOT/app/niuniu_practice_trader.py"
 export DASHBOARD_B1_SCANNER="$ROOT/app/multi_strategy_screen.py"
 export DASHBOARD_CN_STOCK_TOOLS="$ROOT/app/cn_stock_tools.py"
-export DASHBOARD_US_RATING_OUTPUT_DIR="$DASHBOARD_HOME/cron/output/fd0b807138f4"
 export DASHBOARD_CRON_JOBS="$DASHBOARD_HOME/cron/jobs.json"
 export DASHBOARD_X_WATCHLIST_STATE="$DASHBOARD_HOME/cron/state/x_watchlist_latest.json"
-export DASHBOARD_X_WATCHLIST_ARCHIVE_DIR="$DASHBOARD_HOME/cron/output/x_watchlist_direct"
 export NIUONE_ROOT="$ROOT"
 export X_WATCHLIST_MONITOR="$ROOT/app/x_watchlist_monitor.py"
 export X_WATCHLIST_PYTHON="$PYTHON_BIN"
@@ -51,7 +49,6 @@ export X_WATCHLIST_DAEMON_INNER_TIMEOUT_SECONDS="${X_WATCHLIST_DAEMON_INNER_TIME
 umask 077
 mkdir -p \
   "$DASHBOARD_HOME/cron/state" \
-  "$DASHBOARD_HOME/cron/output/x_watchlist_direct" \
   "$DASHBOARD_HOME/logs"
 
 if [[ $# -eq 0 ]]; then

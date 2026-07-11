@@ -23,16 +23,15 @@ def load_scheduler_module():
 
 
 class NiuoneCronSchedulerTests(unittest.TestCase):
-    def test_archive_only_job_retries_until_archive_marker(self):
+    def test_database_only_job_retries_until_process_succeeds(self):
         scheduler = load_scheduler_module()
         job = scheduler.Job(
             "TEST_CRON",
             "0 11 * * *",
             "test-job",
             "Test Job",
-            ("does_not_run.py", "--archive-only"),
+            ("does_not_run.py", "--store-only"),
             5,
-            False,
         )
         calls = []
         logs = []
@@ -49,11 +48,11 @@ class NiuoneCronSchedulerTests(unittest.TestCase):
             scheduler.log = lambda message: logs.append(message)
             scheduler.time.sleep = lambda _seconds: None
 
-            def fake_run(*_args, **_kwargs):
-                calls.append(True)
+            def fake_run(*_args, **kwargs):
+                calls.append(kwargs['env'].get('NIUONE_CRON_RUN_KEY'))
                 if len(calls) == 1:
                     return SimpleNamespace(returncode=1, stdout="", stderr="upstream timeout")
-                return SimpleNamespace(returncode=0, stdout="", stderr="archived: /tmp/report.md")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
 
             scheduler.subprocess.run = fake_run
             result = scheduler.run_job(job, datetime(2026, 6, 25, 11, 0, tzinfo=scheduler.CN_TZ))
@@ -65,8 +64,9 @@ class NiuoneCronSchedulerTests(unittest.TestCase):
             scheduler.STOP = False
 
         self.assertTrue(result.success)
-        self.assertEqual(result.archive_path, "/tmp/report.md")
         self.assertEqual(len(calls), 2)
+        self.assertEqual(calls, ['test-job:202606251100', 'test-job:202606251100'])
+        self.assertFalse(hasattr(scheduler, 'archive_job_output'))
         self.assertTrue(any("retry scheduled job=test-job" in item for item in logs))
 
     def test_retry_settings_clamp_invalid_values(self):
@@ -93,13 +93,14 @@ class NiuoneCronSchedulerTests(unittest.TestCase):
         self.assertTrue(scheduler.job_enabled(us_job, {"DASHBOARD_US_FEATURES_ENABLED": "1"}))
         self.assertTrue(scheduler.job_enabled(us_job, {"DASHBOARD_US_FEATURES_ENABLED": "true"}))
         self.assertTrue(scheduler.job_enabled(cn_job, {}))
+        self.assertEqual(us_job.command, ("us_rating_report.py", "--store-only"))
 
     def test_us_market_summary_runs_at_8_on_weekdays(self):
         scheduler = load_scheduler_module()
         job = next(job for job in scheduler.JOBS if job.env_name == "DASHBOARD_US_MARKET_SUMMARY_CRON")
 
         self.assertEqual(job.default_expr, "0 8 * * 1-5")
-        self.assertEqual(job.command, ("us_market_summary.py", "--archive"))
+        self.assertEqual(job.command, ("us_market_summary.py", "--store"))
         self.assertEqual(scheduler.normalize_job_expr(job, "08:00"), "0 8 * * 1-5")
         self.assertTrue(scheduler.job_enabled(job, {}))
 

@@ -106,7 +106,6 @@ def run_once() -> None:
     env.setdefault("DASHBOARD_CONFIG", str(DASHBOARD_HOME / "config.yaml"))
     env.setdefault("DASHBOARD_PUSH_HISTORY_DB", str(DASHBOARD_HOME / "push_history.db"))
     env.setdefault("DASHBOARD_X_WATCHLIST_STATE", str(DASHBOARD_HOME / "cron" / "state" / "x_watchlist_latest.json"))
-    env.setdefault("DASHBOARD_X_WATCHLIST_ARCHIVE_DIR", str(DASHBOARD_HOME / "cron" / "output" / "x_watchlist_direct"))
     env.setdefault("X_WATCHLIST_SCRIPT_ALARM_SECONDS", "140")
     env.setdefault("X_WATCHLIST_DEADLINE_SECONDS", "135")
     start = time.monotonic()

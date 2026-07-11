@@ -54,7 +54,7 @@ os.environ.setdefault("DASHBOARD_HOME", str(DASHBOARD_HOME))
 
 try:
     import push_history
-except Exception:  # Dashboard history must never block X archival.
+except Exception:  # The monitor keeps retry state when database storage is unavailable.
     push_history = None
 
 try:
@@ -137,7 +137,6 @@ STATE_PATH = Path(os.environ.get("DASHBOARD_X_WATCHLIST_STATE") or str(DASHBOARD
 CONFIG_PATH = Path(os.environ.get("DASHBOARD_CONFIG") or str(DASHBOARD_HOME / "config.yaml")).expanduser()
 JOBS_PATH = Path(os.environ.get("DASHBOARD_CRON_JOBS") or str(DASHBOARD_HOME / "cron" / "jobs.json")).expanduser()
 JOB_ID = "a7d479f754d2"
-X_ARCHIVE_DIR = Path(os.environ.get("DASHBOARD_X_WATCHLIST_ARCHIVE_DIR") or str(DASHBOARD_HOME / "cron" / "output" / "x_watchlist_direct")).expanduser()
 
 
 def watchlist_accounts_from_state(path: Path = STATE_PATH) -> list[str]:
@@ -419,7 +418,7 @@ def needs_context_repair(post):
 def should_hold_for_context(post):
     # Prefer not missing alerts over strict context completeness. Grok sometimes
     # times out while resolving reply/quote parents; holding those items made the
-    # dashboard archive appear stale. Set X_WATCHLIST_STRICT_CONTEXT_HOLD=1 to
+    # dashboard feed appear stale. Set X_WATCHLIST_STRICT_CONTEXT_HOLD=1 to
     # restore old behavior.
     if os.environ.get("X_WATCHLIST_STRICT_CONTEXT_HOLD", "0").lower() not in {"1", "true", "yes"}:
         return False
@@ -1107,8 +1106,8 @@ def print_pending_and_exit(state):
     pending = state.get("pending_delivery") or {}
     if not pending:
         return False
-    # User-facing X alerts should stay in the dashboard archive. Drop any legacy
-    # stdout fallback and let the normal archive path retry on a later poll.
+    # User-facing X alerts should stay in the dashboard database. Drop any legacy
+    # stdout fallback and let the normal database path retry on a later poll.
     state.pop("pending_delivery", None)
     state["last_delivery_mode"] = "stdout_fallback_suppressed"
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -1216,32 +1215,7 @@ def fmt_post(index, display_name, post, include_media_urls=True):
     return "\n".join(lines)
 
 
-def archive_direct_x_alert(send_items):
-    if not send_items:
-        return None
-    X_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-    now = datetime.now(timezone.utc)
-    local_time = now.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    path = X_ARCHIVE_DIR / f"{now.astimezone().strftime('%Y-%m-%d_%H-%M-%S')}.md"
-    blocks = []
-    for idx, (display_name, post, post_id, handle) in enumerate(send_items, 1):
-        block = fmt_post(idx, display_name, post, include_media_urls=False)
-        blocks.append(f"<!-- handle:{handle} post_id:{post_id} -->\n{block}")
-    body = "\n\n".join(blocks)
-    content = (
-        "# X Watchlist Dashboard Archive\n\n"
-        f"**Job ID:** {JOB_ID}\n"
-        f"**Run Time:** {local_time}\n"
-        "**Mode:** dashboard archive only\n"
-        "**Status:** archived\n\n"
-        "---\n"
-        f"{body}\n"
-    )
-    path.write_text(content, encoding="utf-8")
-    return path
-
-
-def write_direct_x_alerts_to_db(send_items, raw_path=None):
+def write_direct_x_alerts_to_db(send_items):
     if push_history is None or not send_items:
         return 0
     messages = []
@@ -1271,15 +1245,11 @@ def write_direct_x_alerts_to_db(send_items, raw_path=None):
             "content": content,
             "chars": len(content),
             "matched": True,
-            "kind": "dashboard_archive",
-            "delivery": {"mode": "dashboard_archive_only", "job_id": JOB_ID},
+            "kind": "database_record",
+            "delivery": {"mode": "dashboard_database_only", "job_id": JOB_ID},
             "metadata": {"handle": handle, "post": post},
-            "raw_path": f"{raw_path or ''}#post_id={post_id}" if raw_path else "",
         })
-    try:
-        return push_history.upsert_many(messages)
-    except Exception:
-        return 0
+    return push_history.upsert_many(messages)
 
 
 def looks_like_x_handle(value):
@@ -1308,7 +1278,7 @@ def compact_sent_context_entry(entry):
     return {key: entry.get(key) for key in keep_keys if entry.get(key) not in (None, "")}
 
 
-def remember_sent_missing_contexts(state, send_items, raw_path=None):
+def remember_sent_missing_contexts(state, send_items):
     queue = {}
     for entry in state.get("sent_missing_context") or []:
         if not isinstance(entry, dict):
@@ -1341,9 +1311,8 @@ def remember_sent_missing_contexts(state, send_items, raw_path=None):
             "chat": "x-watchlist",
             "external_id": str(post_id or ""),
             "title": "推特监控",
-            "kind": "dashboard_archive",
-            "delivery": {"mode": "dashboard_archive_only", "job_id": JOB_ID},
-            "raw_path": f"{raw_path or ''}#post_id={post_id}" if raw_path else existing.get("raw_path", ""),
+            "kind": "database_record",
+            "delivery": {"mode": "dashboard_database_only", "job_id": JOB_ID},
             "queued_at": existing.get("queued_at") or now,
             "updated_at": now,
         }
@@ -1385,7 +1354,7 @@ def sent_context_entry_from_db_row(row):
     elif "引用/转推上下文：本次未取到" in content:
         post.setdefault("conversation_type", "quote")
     display_name = item.get("source_label") or post.get("display_name") or handle
-    delivery = decode_json_field(item.get("delivery_json")) or {"mode": "dashboard_archive_only", "job_id": JOB_ID}
+    delivery = decode_json_field(item.get("delivery_json")) or {"mode": "dashboard_database_only", "job_id": JOB_ID}
     key = sent_context_key(handle, post_id)
     return {
         "key": key,
@@ -1405,7 +1374,7 @@ def sent_context_entry_from_db_row(row):
         "chat_label": item.get("chat_label") or "",
         "external_id": post_id,
         "title": item.get("title") or "推特监控",
-        "kind": item.get("kind") or "dashboard_archive",
+        "kind": item.get("kind") or "database_record",
         "delivery": delivery,
         "raw_path": item.get("raw_path") or "",
         "created_at": item.get("created_at"),
@@ -1559,8 +1528,8 @@ def upsert_repaired_context_message(entry, display_name, repaired_post, post_id,
         "content": content,
         "chars": len(content),
         "matched": True,
-        "kind": entry.get("kind") or "dashboard_archive",
-        "delivery": entry.get("delivery") or {"mode": "dashboard_archive_only", "job_id": JOB_ID},
+        "kind": entry.get("kind") or "database_record",
+        "delivery": entry.get("delivery") or {"mode": "dashboard_database_only", "job_id": JOB_ID},
         "metadata": metadata,
         "raw_path": entry.get("raw_path") or "",
         "created_at": entry.get("created_at") or time.time(),
@@ -1695,19 +1664,27 @@ def send_ready_items(base_url, api_key, state, items, latest, deadline, limit=10
         return False
 
     if deadline - time.monotonic() <= 5:
-        state["last_archive_error"] = "skipped_low_time"
+        state["last_database_error"] = "skipped_low_time"
         return False
 
-    archive_path = archive_direct_x_alert(send_items)
-    write_direct_x_alerts_to_db(send_items, raw_path=archive_path)
-    remember_sent_missing_contexts(state, send_items, raw_path=archive_path)
+    try:
+        stored_count = write_direct_x_alerts_to_db(send_items)
+    except Exception as exc:
+        state["last_database_error"] = f"{type(exc).__name__}: {exc}"
+        return False
+    if stored_count != len(send_items):
+        state["last_database_error"] = f"incomplete_write:{stored_count}/{len(send_items)}"
+        return False
+
+    remember_sent_missing_contexts(state, send_items)
     merge_seen_ids(state.setdefault("seen_ids", {}), send_seen_ids)
     merge_latest(state.setdefault("latest", {}), send_latest)
     state.pop("pending_delivery", None)
     state.pop("last_direct_delivery_error", None)
     state.pop("last_archive_error", None)
+    state.pop("last_database_error", None)
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
-    state["last_delivery_mode"] = "dashboard_archive_only"
+    state["last_delivery_mode"] = "dashboard_database_only"
     return True
 
 
@@ -1758,7 +1735,7 @@ def main():
             # or refreshed held queue if that happens.
             save_state(state)
         except Exception as exc:
-            state["last_archive_error"] = f"{type(exc).__name__}: {exc}"
+            state["last_database_error"] = f"{type(exc).__name__}: {exc}"
             state["updated_at"] = datetime.now(timezone.utc).isoformat()
             save_state(state)
             return
@@ -1842,12 +1819,12 @@ def main():
             save_state(state)
             return
     except Exception as exc:
-        state["last_archive_error"] = f"{type(exc).__name__}: {exc}"
+        state["last_database_error"] = f"{type(exc).__name__}: {exc}"
 
     # Do not fall back to stdout for X alerts. Leave seen/latest unmerged so the
-    # next poll can retry local archival.
+    # next poll can retry the database write.
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
-    state["last_delivery_mode"] = "dashboard_archive_failed_silent"
+    state["last_delivery_mode"] = "dashboard_database_failed_retry_pending"
     save_state(state)
     return
 

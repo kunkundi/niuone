@@ -53,10 +53,8 @@ def container_runtime_overrides(root: Path) -> dict[str, str]:
         "DASHBOARD_TRADER_SCRIPT": str(app_dir / "niuniu_practice_trader.py"),
         "DASHBOARD_B1_SCANNER": str(app_dir / "multi_strategy_screen.py"),
         "DASHBOARD_CN_STOCK_TOOLS": str(app_dir / "cn_stock_tools.py"),
-        "DASHBOARD_US_RATING_OUTPUT_DIR": str(dashboard_home / "cron" / "output" / "fd0b807138f4"),
         "DASHBOARD_CRON_JOBS": str(dashboard_home / "cron" / "jobs.json"),
         "DASHBOARD_X_WATCHLIST_STATE": str(dashboard_home / "cron" / "state" / "x_watchlist_latest.json"),
-        "DASHBOARD_X_WATCHLIST_ARCHIVE_DIR": str(dashboard_home / "cron" / "output" / "x_watchlist_direct"),
         "X_WATCHLIST_MONITOR": str(app_dir / "x_watchlist_monitor.py"),
         "X_WATCHLIST_PYTHON": python_bin,
     }

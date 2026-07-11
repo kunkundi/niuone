@@ -23,7 +23,6 @@ DASHBOARD_HOME = get_dashboard_home(PROJECT_ROOT)
 LOG_DIR = Path(os.environ.get("DASHBOARD_LOG_DIR") or str(DASHBOARD_HOME / "logs")).expanduser()
 LOG_PATH = LOG_DIR / "niuone_cron_scheduler.log"
 STATE_PATH = DASHBOARD_HOME / "cron" / "state" / "niuone_cron_scheduler.json"
-OUTPUT_DIR = DASHBOARD_HOME / "cron" / "output"
 CN_TZ = ZoneInfo("Asia/Shanghai")
 STOP = False
 
@@ -36,7 +35,6 @@ class Job:
     title: str
     command: tuple[str, ...]
     timeout_seconds: int = 180
-    archive_stdout: bool = True
 
 
 @dataclass(frozen=True)
@@ -45,18 +43,17 @@ class JobRunResult:
     status: str
     exit_code: int | None = None
     elapsed: float = 0.0
-    archive_path: str = ""
     error: str = ""
 
 
 JOBS = (
-    Job("DASHBOARD_US_MARKET_SUMMARY_CRON", "0 8 * * 1-5", "98f0c8a12d3e", "隔夜美股盘面总结", ("us_market_summary.py", "--archive"), 180, True),
-    Job("DASHBOARD_MARKET_AUCTION_CRON", "25 9 * * 1-5", "8453b3f28cd3", "A股竞价盘前总结", ("a_share_auction_summary.py",), 180, True),
-    Job("DASHBOARD_MARKET_MIDDAY_CRON", "40 11 * * 1-5", "192abba7eeb5", "A股午盘总结", ("a_share_midday_summary.py",), 180, True),
-    Job("DASHBOARD_MARKET_CLOSE_CRON", "10 15 * * 1-5", "67ac98149ead", "A股盘后总结", ("a_share_close_summary.py",), 180, True),
-    Job("DASHBOARD_B3_EXIT_TIME", "30 9 * * 1-5", "f4b8c0ad1a35", "牛牛B3开盘离场检查", ("niuniu_practice_trader.py", "--auto-exits"), 120, True),
-    Job("DASHBOARD_TIME_EXIT_TIME", "45 14 * * 1-5", "fc4f23b79591", "牛牛尾盘离场检查", ("niuniu_practice_trader.py", "--auto-exits"), 120, True),
-    Job("DASHBOARD_US_RATING_CRON", "0 11 * * *", "fd0b807138f4", "每日美股机构买入评级汇报", ("us_rating_report.py", "--archive-only"), 300, False),
+    Job("DASHBOARD_US_MARKET_SUMMARY_CRON", "0 8 * * 1-5", "98f0c8a12d3e", "隔夜美股盘面总结", ("us_market_summary.py", "--store"), 180),
+    Job("DASHBOARD_MARKET_AUCTION_CRON", "25 9 * * 1-5", "8453b3f28cd3", "A股竞价盘前总结", ("a_share_auction_summary.py",), 180),
+    Job("DASHBOARD_MARKET_MIDDAY_CRON", "40 11 * * 1-5", "192abba7eeb5", "A股午盘总结", ("a_share_midday_summary.py",), 180),
+    Job("DASHBOARD_MARKET_CLOSE_CRON", "10 15 * * 1-5", "67ac98149ead", "A股盘后总结", ("a_share_close_summary.py",), 180),
+    Job("DASHBOARD_B3_EXIT_TIME", "30 9 * * 1-5", "f4b8c0ad1a35", "牛牛B3开盘离场检查", ("niuniu_practice_trader.py", "--auto-exits"), 120),
+    Job("DASHBOARD_TIME_EXIT_TIME", "45 14 * * 1-5", "fc4f23b79591", "牛牛尾盘离场检查", ("niuniu_practice_trader.py", "--auto-exits"), 120),
+    Job("DASHBOARD_US_RATING_CRON", "0 11 * * *", "fd0b807138f4", "每日美股机构买入评级汇报", ("us_rating_report.py", "--store-only"), 300),
 )
 
 
@@ -195,34 +192,13 @@ def save_state(state: dict[str, object]) -> None:
     STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def archive_job_output(job: Job, run_time: datetime, status: str, stdout: str, stderr: str, *, attempt: int = 1) -> Path:
-    out_dir = OUTPUT_DIR / job.job_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-    suffix = "" if attempt <= 1 else f"_retry{attempt - 1}"
-    path = out_dir / f"{run_time.strftime('%Y-%m-%d_%H-%M-%S')}{suffix}.md"
-    body = (stdout or "").strip()
-    if stderr.strip():
-        body = f"{body}\n\n```stderr\n{stderr.strip()}\n```".strip()
-    payload = (
-        f"# Cron Job: {job.title}\n\n"
-        f"**Job ID:** {job.job_id}\n"
-        f"**Run Time:** {run_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"**Mode:** niuone scheduler\n"
-        f"**Attempt:** {attempt}\n"
-        f"**Status:** {status}\n\n"
-        "---\n\n"
-        f"{body}\n"
-    )
-    path.write_text(payload, encoding="utf-8")
-    return path
-
-
 def run_job_once(job: Job, run_time: datetime, *, attempt: int = 1, max_attempts: int = 1) -> JobRunResult:
     env = os.environ.copy()
     env.update(parse_env_file())
     env.setdefault("DASHBOARD_HOME", str(DASHBOARD_HOME))
     env.setdefault("DASHBOARD_CONFIG", str(DASHBOARD_HOME / "config.yaml"))
     env.setdefault("DASHBOARD_PUSH_HISTORY_DB", str(DASHBOARD_HOME / "push_history.db"))
+    env["NIUONE_CRON_RUN_KEY"] = f"{job.job_id}:{run_time.strftime('%Y%m%d%H%M')}"
     command = [sys.executable, str(SCRIPT_DIR / job.command[0]), *job.command[1:]]
     start = time.monotonic()
     log(f"start job={job.job_id} title={job.title} attempt={attempt}/{max_attempts} command={command}")
@@ -238,35 +214,29 @@ def run_job_once(job: Job, run_time: datetime, *, attempt: int = 1, max_attempts
         )
         elapsed = time.monotonic() - start
         status = "ok" if proc.returncode == 0 else "script failed"
-        archive_marker = re.search(r"archived:\s*(.+)", proc.stderr or "")
-        if not job.archive_stdout and proc.returncode == 0 and not archive_marker:
-            status = "script failed"
         success = status == "ok"
-        if job.archive_stdout:
-            archive_path = archive_job_output(job, run_time, status, proc.stdout or "", proc.stderr or "", attempt=attempt)
-            log(f"finish job={job.job_id} status={status} exit={proc.returncode} attempt={attempt}/{max_attempts} elapsed={elapsed:.1f}s archive={archive_path}")
-            return JobRunResult(success, status, proc.returncode, elapsed, str(archive_path))
-        else:
-            detail = f" archive={archive_marker.group(1).strip()}" if archive_marker else " missing_archive_marker=true"
-            log(f"finish job={job.job_id} status={status} exit={proc.returncode} attempt={attempt}/{max_attempts} elapsed={elapsed:.1f}s{detail} stderr={(proc.stderr or '').strip()[:500]!r}")
-            archive_path = archive_marker.group(1).strip() if archive_marker else ""
-            return JobRunResult(success, status, proc.returncode, elapsed, archive_path, (proc.stderr or "").strip()[:500])
+        stdout_detail = (proc.stdout or "").strip()[:500]
+        stderr_detail = (proc.stderr or "").strip()[:500]
+        error_detail = (stderr_detail or stdout_detail) if not success else ""
+        log(
+            f"finish job={job.job_id} status={status} exit={proc.returncode} "
+            f"attempt={attempt}/{max_attempts} elapsed={elapsed:.1f}s error={error_detail!r}"
+        )
+        return JobRunResult(
+            success=success,
+            status=status,
+            exit_code=proc.returncode,
+            elapsed=elapsed,
+            error=error_detail,
+        )
     except subprocess.TimeoutExpired as exc:
-        if job.archive_stdout:
-            archive_path = archive_job_output(job, run_time, "script failed", exc.stdout or "", f"timeout after {job.timeout_seconds}s\n{exc.stderr or ''}", attempt=attempt)
-            log(f"timeout job={job.job_id} attempt={attempt}/{max_attempts} archive={archive_path}")
-            return JobRunResult(False, "script failed", None, time.monotonic() - start, str(archive_path), f"timeout after {job.timeout_seconds}s")
-        else:
-            log(f"timeout job={job.job_id} attempt={attempt}/{max_attempts} after {job.timeout_seconds}s")
-            return JobRunResult(False, "script failed", None, time.monotonic() - start, "", f"timeout after {job.timeout_seconds}s")
+        error = f"timeout after {job.timeout_seconds}s"
+        log(f"timeout job={job.job_id} attempt={attempt}/{max_attempts} error={error}")
+        return JobRunResult(False, "script failed", None, time.monotonic() - start, error)
     except Exception as exc:
-        if job.archive_stdout:
-            archive_path = archive_job_output(job, run_time, "script failed", "", f"{type(exc).__name__}: {exc}", attempt=attempt)
-            log(f"exception job={job.job_id} attempt={attempt}/{max_attempts} archive={archive_path} error={type(exc).__name__}: {exc}")
-            return JobRunResult(False, "script failed", None, time.monotonic() - start, str(archive_path), f"{type(exc).__name__}: {exc}")
-        else:
-            log(f"exception job={job.job_id} attempt={attempt}/{max_attempts} error={type(exc).__name__}: {exc}")
-            return JobRunResult(False, "script failed", None, time.monotonic() - start, "", f"{type(exc).__name__}: {exc}")
+        error = f"{type(exc).__name__}: {exc}"
+        log(f"exception job={job.job_id} attempt={attempt}/{max_attempts} error={error}")
+        return JobRunResult(False, "script failed", None, time.monotonic() - start, error)
 
 
 def run_job(job: Job, run_time: datetime) -> JobRunResult:

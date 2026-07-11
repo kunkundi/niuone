@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate US institutional buy-rating daily report via Crossdesk grok-4.20.
+"""Generate and store a US institutional buy-rating daily report.
 
 Usage:
-    us_rating_report.py              # generates, archives, and prints report
-    us_rating_report.py --archive-only
+    us_rating_report.py              # generates, stores, and prints report
+    us_rating_report.py --store-only
     us_rating_report.py --test       # quick smoke test
 """
 
@@ -76,7 +76,6 @@ _SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 JOB_ID = "fd0b807138f4"
 JOB_NAME = "每日美股机构买入评级汇报"
 CONFIG_PATH = Path(os.environ.get("DASHBOARD_CONFIG") or str(DASHBOARD_HOME / "config.yaml")).expanduser()
-OUTPUT_DIR = Path(os.environ.get("DASHBOARD_US_RATING_OUTPUT_DIR") or str(DASHBOARD_HOME / "cron" / "output" / JOB_ID)).expanduser()
 US_RATING_MODEL = os.environ.get("US_RATING_MODEL") or os.environ.get("DASHBOARD_GROK_MODEL") or "grok-4.20-multi-agent-xhigh"
 
 
@@ -190,8 +189,8 @@ def _call_api(base_url, api_key, messages, max_tokens=US_RATING_MAX_TOKENS):
 def build_system_prompt():
     return (
         "[IMPORTANT: You are running as a scheduled cron job. "
-        "DELIVERY: Your final response will be archived into the local dashboard. "
-        "Just produce the report body; the script handles local archive/database storage. "
+        "DELIVERY: Your final response will be stored in the local dashboard database. "
+        "Just produce the report body; the script handles database storage. "
         'SILENT: If there is genuinely nothing new to report, respond with exactly "[SILENT]". '
         "Never combine [SILENT] with content.]"
     )
@@ -295,33 +294,16 @@ def generate_report(test_mode: bool = False) -> str:
     return clean_report_content(_call_api(base_url, api_key, messages, max_tokens))
 
 
-def archive_report(content: str, now: datetime | None = None) -> Path:
-    if now is None:
-        now = datetime.now(timezone.utc)
-    local_dt = now.astimezone(CN_TZ)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = OUTPUT_DIR / f"{local_dt.strftime('%Y-%m-%d_%H-%M-%S')}.md"
-    run_time = local_dt.strftime("%Y-%m-%d %H:%M:%S")
-    payload = (
-        f"# Cron Job: {JOB_NAME}\n\n"
-        f"**Job ID:** {JOB_ID}\n"
-        f"**Run Time:** {run_time}\n"
-        "**Mode:** standalone dashboard script\n\n"
-        "---\n\n"
-        f"{content.strip()}\n"
-    )
-    path.write_text(payload, encoding="utf-8")
-    return path
-
-
-def write_report_to_db(content: str, archive_path: Path | None, now: datetime | None = None) -> int:
+def write_report_to_db(content: str, now: datetime | None = None) -> int:
     if push_history is None:
-        return 0
+        raise RuntimeError("push history database module is unavailable")
     if now is None:
         now = datetime.now(timezone.utc)
     local_dt = now.astimezone(CN_TZ)
-    source_id = f"cron_output_{JOB_ID}_{archive_path.stem}" if archive_path else f"cron_output_{JOB_ID}_{local_dt.strftime('%Y-%m-%d_%H-%M-%S')}"
+    run_key = os.environ.get("NIUONE_CRON_RUN_KEY") or f"{JOB_ID}:{local_dt.strftime('%Y-%m-%d_%H-%M-%S')}"
+    source_id = f"cron_output_{JOB_ID}"
     message = {
+        "id": push_history.stable_id("us_ratings", JOB_ID, run_key),
         "timestamp": now.timestamp(),
         "time_text": local_dt.strftime("%Y-%m-%d %H:%M:%S"),
         "category": "us_ratings",
@@ -331,33 +313,24 @@ def write_report_to_db(content: str, archive_path: Path | None, now: datetime | 
         "platform": "dashboard",
         "platform_label": "Dashboard",
         "chat": "us-ratings",
-        "external_id": source_id,
+        "external_id": run_key,
         "title": "美股机构买入评级",
         "content": content,
         "chars": len(content),
         "matched": True,
         "kind": "cron_output",
-        "delivery": {"mode": "dashboard_archive_only", "job_id": JOB_ID},
-        "metadata": {"job_name": JOB_NAME},
-        "raw_path": str(archive_path or ""),
+        "delivery": {"mode": "dashboard_database_only", "job_id": JOB_ID},
+        "metadata": {"job_name": JOB_NAME, "run_key": run_key},
     }
-    return push_history.upsert_many([message])
-
-
-def persist_report(content: str, *, now: datetime, no_archive: bool, no_db: bool) -> Path | None:
-    archive_path = None
-    if not no_archive:
-        archive_path = archive_report(content, now=now)
-    if not no_db:
-        write_report_to_db(content, archive_path, now=now)
-    return archive_path
+    count = push_history.upsert_many([message])
+    if count != 1:
+        raise RuntimeError(f"US rating database write returned {count}")
+    return count
 
 
 def main():
     test_mode = "--test" in sys.argv
-    archive_only = "--archive-only" in sys.argv
-    no_archive = "--no-archive" in sys.argv
-    no_db = "--no-db" in sys.argv
+    store_only = "--store-only" in sys.argv
 
     try:
         content = generate_report(test_mode=test_mode)
@@ -375,14 +348,15 @@ def main():
         print("ERROR: API returned [SILENT] instead of a report", file=sys.stderr)
         sys.exit(1)
 
-    archive_path = None
     if not test_mode:
         now = datetime.now(timezone.utc)
-        archive_path = persist_report(content, now=now, no_archive=no_archive, no_db=no_db)
+        try:
+            write_report_to_db(content, now=now)
+        except Exception as exc:
+            print(f"ERROR: database write failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            sys.exit(1)
 
-    if archive_only:
-        if archive_path:
-            print(f"archived: {archive_path}", file=sys.stderr)
+    if store_only:
         return
     print(content)
 

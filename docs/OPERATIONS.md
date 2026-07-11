@@ -261,6 +261,8 @@ curl -s "http://127.0.0.1:8787/api/messages?limit=5" | python3 -m json.tool | he
 
 当前消息流以 `push_history.db` 为主要来源。任务脚本需要正常写入该数据库后，页面才会出现对应消息。
 
+盘面监控、X 监控和美股机构评级的新记录只写入该数据库，不再生成 Markdown 文件。升级前已有的 `.md` 历史文件会原样保留，但页面不会读取它们，也不会自动删除。
+
 ### 任务没有自动更新
 
 检查三个方向：
@@ -299,4 +301,4 @@ git status --ignored --short
 2. 临时测试使用独立 `DASHBOARD_HOME=/tmp/...` 和非 8787 端口。
 3. 看板保持公开访问，设置页与管理 API 必须始终通过管理员认证。
 4. 真实数据库、本地凭据、日志、模型配置只留在 `.local-data/`。
-5. 新任务应写入 `push_history.db` 或当前归档目录，避免只生成孤立文件。
+5. 消息类新任务应直接写入 `push_history.db`，不要生成独立 Markdown 历史文件。

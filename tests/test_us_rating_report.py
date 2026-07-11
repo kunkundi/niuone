@@ -126,7 +126,6 @@ prompt = m.build_user_prompt()
 print(json.dumps({{
   'dashboard_home': str(m.DASHBOARD_HOME),
   'config_path': str(m.CONFIG_PATH),
-  'output_dir': str(m.OUTPUT_DIR),
   'mentions_telegram': 'telegram' in prompt.lower(),
 }}, ensure_ascii=False))
 """
@@ -134,10 +133,9 @@ print(json.dumps({{
             data = json.loads(out)
             self.assertEqual(data['dashboard_home'], tmp)
             self.assertEqual(data['config_path'], str(Path(tmp) / 'config.yaml'))
-            self.assertEqual(data['output_dir'], str(Path(tmp) / 'cron' / 'output' / 'fd0b807138f4'))
             self.assertFalse(data['mentions_telegram'])
 
-    def test_archive_and_db_write_create_dashboard_record(self):
+    def test_database_write_creates_one_record_without_markdown(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env['DASHBOARD_HOME'] = tmp
@@ -153,35 +151,50 @@ print(json.dumps({{
   适合关注类型：中线趋势
 """
             code = f"""
-import importlib.util, json, sys
+import importlib.util, json, os, sys
 from datetime import datetime, timezone
+from pathlib import Path
 sys.path.insert(0, {str(SRC)!r})
 spec = importlib.util.spec_from_file_location('us_rating_report_under_test', {str(SRC / 'us_rating_report.py')!r})
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 now = datetime(2026, 6, 23, 3, 0, 0, tzinfo=timezone.utc)
-path = m.archive_report({sample!r}, now=now)
-count = m.write_report_to_db({sample!r}, path, now=now)
+later = datetime(2026, 6, 23, 3, 5, 0, tzinfo=timezone.utc)
+os.environ['NIUONE_CRON_RUN_KEY'] = 'fd0b807138f4:202606231100'
+first_count = m.write_report_to_db({sample!r}, now=now)
+second_count = m.write_report_to_db({sample!r}, now=later)
 import push_history
 data = push_history.query_messages(category='us_ratings', limit=5)
 record = data['records'][0]
 print(json.dumps({{
-  'archive_path': str(path),
-  'db_count': count,
+  'first_count': first_count,
+  'second_count': second_count,
+  'record_count': len(data['records']),
   'record_category': record.get('category'),
   'record_kind': record.get('kind'),
   'record_source_type': record.get('source_type'),
+  'record_raw_path': record.get('raw_path'),
+  'record_external_id': record.get('external_id'),
+  'metadata_run_key': (record.get('metadata') or {{}}).get('run_key'),
+  'delivery_mode': (record.get('delivery') or {{}}).get('mode'),
   'record_contains_sample': 'TEST / Test Corp' in record.get('content', ''),
+  'markdown_count': len(list(Path({tmp!r}).rglob('*.md'))),
 }}, ensure_ascii=False))
 """
             out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
             data = json.loads(out)
-            self.assertEqual(data['archive_path'], str(Path(tmp) / 'cron' / 'output' / 'fd0b807138f4' / '2026-06-23_11-00-00.md'))
-            self.assertEqual(data['db_count'], 1)
+            self.assertEqual(data['first_count'], 1)
+            self.assertEqual(data['second_count'], 1)
+            self.assertEqual(data['record_count'], 1)
             self.assertEqual(data['record_category'], 'us_ratings')
             self.assertEqual(data['record_kind'], 'cron_output')
             self.assertEqual(data['record_source_type'], 'us_ratings')
+            self.assertEqual(data['record_raw_path'], '')
+            self.assertEqual(data['record_external_id'], 'fd0b807138f4:202606231100')
+            self.assertEqual(data['metadata_run_key'], 'fd0b807138f4:202606231100')
+            self.assertEqual(data['delivery_mode'], 'dashboard_database_only')
             self.assertTrue(data['record_contains_sample'])
+            self.assertEqual(data['markdown_count'], 0)
 
     def test_failure_does_not_create_dashboard_record(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -198,7 +211,7 @@ spec.loader.exec_module(m)
 def fail_generate_report(test_mode=False):
     raise RuntimeError('boom')
 m.generate_report = fail_generate_report
-sys.argv = ['us_rating_report.py', '--archive-only']
+sys.argv = ['us_rating_report.py', '--store-only']
 try:
     m.main()
 except SystemExit as exc:
@@ -207,19 +220,58 @@ else:
     code = 0
 import push_history
 data = push_history.query_messages(category='us_ratings', limit=5)
-out_dir = Path({str(Path(tmp) / 'cron' / 'output' / 'fd0b807138f4')!r})
 print(json.dumps({{
   'code': code,
   'record_count': len(data['records']),
-  'archive_count': len(list(out_dir.glob('*.md'))) if out_dir.exists() else 0,
+  'markdown_count': len(list(Path({tmp!r}).rglob('*.md'))),
 }}, ensure_ascii=False))
 """
             proc = subprocess.run([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             data = json.loads(proc.stdout)
             self.assertEqual(data['code'], 1)
             self.assertEqual(data['record_count'], 0)
-            self.assertEqual(data['archive_count'], 0)
+            self.assertEqual(data['markdown_count'], 0)
             self.assertIn('ERROR: RuntimeError: boom', proc.stderr)
+
+    def test_database_failure_exits_nonzero_for_scheduler_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
+            code = f"""
+import importlib.util, json, sys
+from pathlib import Path
+sys.path.insert(0, {str(SRC)!r})
+spec = importlib.util.spec_from_file_location('us_rating_report_under_test', {str(SRC / 'us_rating_report.py')!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.generate_report = lambda test_mode=False: '- TEST / Test Corp: Buy'
+def fail_write(*_args, **_kwargs):
+    raise RuntimeError('database unavailable')
+m.write_report_to_db = fail_write
+sys.argv = ['us_rating_report.py', '--store-only']
+try:
+    m.main()
+except SystemExit as exc:
+    code = int(exc.code or 0)
+else:
+    code = 0
+print(json.dumps({{
+  'code': code,
+  'markdown_count': len(list(Path({tmp!r}).rglob('*.md'))),
+}}, ensure_ascii=False))
+"""
+            proc = subprocess.run(
+                [sys.executable, '-c', textwrap.dedent(code)],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            data = json.loads(proc.stdout)
+            self.assertEqual(data['code'], 1)
+            self.assertEqual(data['markdown_count'], 0)
+            self.assertIn('ERROR: database write failed: RuntimeError: database unavailable', proc.stderr)
 
 
 if __name__ == '__main__':
