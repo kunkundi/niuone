@@ -35,6 +35,8 @@ NiuOne can automatically collect information, make simulated decisions, and arch
 
 The main README does not cover specific research methods or experimental strategies in detail. See the [Strategy Research Notes](docs/strategies/README_EN.md).
 
+When contributing or extending the application, see the [app module architecture](docs/APP_ARCHITECTURE.md) for domain boundaries and compatibility-entrypoint conventions.
+
 ## System Requirements
 
 | Dependency | Requirement | Purpose |
@@ -315,9 +317,14 @@ For platform-specific status, restart, uninstall, and unattended-operation instr
 ├── app/                    # Domain-organized application source
 │   ├── entrypoints/        # Dashboard, scheduler, monitor, and report launchers
 │   ├── compat/             # Legacy bare-module adapters
+│   ├── core/               # Cross-domain paths, caches, and infrastructure
+│   ├── automation/         # Cron rules and scheduled-task orchestration
 │   ├── dashboard/          # Dashboard service and APIs
+│   ├── market_data/        # Market-data access and security-code utilities
+│   ├── messaging/          # Notification channels, dispatch, and trade messages
 │   ├── reports/            # A-share and US-market reports
 │   ├── monitoring/         # X and other monitoring workflows
+│   ├── screening/          # Multi-strategy screening and candidate enrichment
 │   ├── storage/            # Message history and practice-trading storage
 │   ├── trading/            # Practice trading and optimization
 │   └── strategies/         # Strategy registry, scoring, selection, attribution, exits, and prompts
