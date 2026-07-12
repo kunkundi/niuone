@@ -16,8 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 class ContainerDeploymentTests(unittest.TestCase):
     def test_image_packages_native_frontend_assets(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
         self.assertIn("COPY app/ ./app/", dockerfile)
         self.assertIn("COPY frontend/ ./frontend/", dockerfile)
+        self.assertIn("!frontend/", dockerignore)
+        self.assertIn("!frontend/**", dockerignore)
 
     def test_compose_runs_all_long_lived_processes_with_shared_storage(self):
         config = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))

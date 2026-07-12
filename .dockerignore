@@ -4,5 +4,7 @@
 !requirements.txt
 !app/
 !app/**
+!frontend/
+!frontend/**
 !scripts/
 !scripts/docker-entrypoint.sh
