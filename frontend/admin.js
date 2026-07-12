@@ -20,7 +20,7 @@ function settingsGroupSlug() {
 
 function setAdminHeader(title, detail) {
   adminPageTitle.textContent = title;
-  document.title = detail ? title + ' · 牛牛1号' : '牛牛1号 · 设置';
+  document.title = detail ? title + ' · 牛牛1号' : '牛牛1号';
   adminHeaderActions.innerHTML = (detail
     ? "<a class='toplink' href='/admin' data-settings-route>全部设置</a>"
     : '') + "<a class='toplink' href='/'>返回首页</a>";
@@ -52,12 +52,12 @@ function renderSettingsIndex() {
       "<span class='settings-card-copy'>" +
       "<span class='settings-card-title'>" + escapeHtml(group.name) + "</span>" +
       "<span class='settings-card-summary'>" + escapeHtml(group.summary || '维护该分组的业务配置。') + "</span>" +
-      "<span class='settings-card-meta'>" + Number(group.item_count || 0) + " 项设置 · 单独保存</span>" +
+      "<span class='settings-card-meta'>" + Number(group.item_count || 0) + " 项设置</span>" +
       "</span><span class='settings-card-arrow' aria-hidden='true'>›</span></a>";
   }).join('');
   adminApp.innerHTML = "<div class='settings-index'>" +
     "<div class='settings-overview'><div class='settings-overview-copy'>" +
-    "<h2>业务配置</h2><p class='muted'>选择一个分组进入独立页面；页面由原生 JavaScript 即时切换，每个分组分别保存。</p>" +
+    "<h2>业务配置</h2>" +
     "</div><div class='settings-overview-stats'>" +
     "<div class='settings-stat'><span class='settings-stat-value'>" + groups.length + "</span><span class='settings-stat-label'>分组</span></div>" +
     "<div class='settings-stat'><span class='settings-stat-value'>" + (adminConfig.items || []).length + "</span><span class='settings-stat-label'>配置项</span></div>" +
