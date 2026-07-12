@@ -152,7 +152,7 @@ class DashboardAuthTests(unittest.TestCase):
         dashboard_js.do_GET()
         admin_js = FakeHandler(path='/static/admin.js')
         admin_js.do_GET()
-        versioned_dashboard_js = FakeHandler(path='/static/dashboard.js?v=19')
+        versioned_dashboard_js = FakeHandler(path='/static/dashboard.js?v=20')
         versioned_dashboard_js.do_GET()
 
         self.assertEqual(home.wfile.getvalue(), (FRONTEND / 'index.html').read_bytes())
@@ -161,7 +161,7 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(admin_js.wfile.getvalue(), (FRONTEND / 'admin.js').read_bytes())
         self.assertEqual(versioned_dashboard_js.wfile.getvalue(), (FRONTEND / 'dashboard.js').read_bytes())
         self.assertIn('<link rel="stylesheet" href="/static/dashboard.css?v=10">', DASHBOARD_FRONTEND)
-        self.assertIn('<script src="/static/dashboard.js?v=19" defer></script>', DASHBOARD_FRONTEND)
+        self.assertIn('<script src="/static/dashboard.js?v=20" defer></script>', DASHBOARD_FRONTEND)
         self.assertNotIn('document.title', DASHBOARD_FRONTEND)
         self.assertEqual(dashboard_js.header('Content-Type'), 'application/javascript; charset=utf-8')
         self.assertIn('max-age=31536000', dashboard_js.header('Cache-Control'))
@@ -1019,6 +1019,53 @@ console.log(JSON.stringify(result));
                 'storedBySource': True,
                 'storedByJob': True,
                 'ordinaryRecord': False,
+            },
+        )
+
+    def test_market_monitor_classifies_report_type_from_record_identity(self):
+        start = DASHBOARD_FRONTEND.index('function marketReportType')
+        end = DASHBOARD_FRONTEND.index('function marketSectionLines', start)
+        functions = DASHBOARD_FRONTEND[start:end]
+        scenario = r"""
+const result = {
+  close: marketReportType(
+    {title:'A股盘后总结'},
+    'A股盘后总结\n买入指引：次日竞价有溢价再执行',
+  ),
+  midday: marketReportType(
+    {metadata:{job_name:'A股午盘总结'}},
+    '正文也提到开盘竞价',
+  ),
+  auction: marketReportType(
+    {source_id:'cron_output_8453b3f28cd3_2026-07-10'},
+    '普通正文',
+  ),
+  usMarket: marketReportType(
+    {title:'隔夜美股盘面总结'},
+    '买入节奏：只做竞价有溢价的候选',
+  ),
+  closeByJob: marketReportType(
+    {delivery:{job_id:'67ac98149ead'}},
+    '普通正文',
+  ),
+  fallback: marketReportType({}, '没有类型信息的普通盘面记录'),
+};
+console.log(JSON.stringify(result));
+"""
+        output = subprocess.check_output(
+            ['node', '-e', functions + scenario],
+            cwd=ROOT,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(output),
+            {
+                'close': '盘后',
+                'midday': '午盘',
+                'auction': '竞价',
+                'usMarket': '美股',
+                'closeByJob': '盘后',
+                'fallback': '盘面',
             },
         )
         self.assertNotIn("if (activeCategory === 'market_monitor') render();\n    }\n    return;", DASHBOARD_FRONTEND)

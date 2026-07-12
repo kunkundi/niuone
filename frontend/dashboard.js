@@ -3260,11 +3260,23 @@ function marketRecordKey(r) {
 function cleanMarketLine(line) {
   return String(line || '').replace(/\*\*/g, '').replace(/`/g, '').replace(/\s+/g, ' ').trim();
 }
-function marketReportType(content) {
-  const s = String(content || '');
-  if (/竞价/.test(s)) return '竞价';
-  if (/午盘/.test(s)) return '午盘';
-  if (/盘后/.test(s)) return '盘后';
+function marketReportType(record, content = '') {
+  const identity = [
+    record?.title,
+    record?.chat_label,
+    record?.metadata?.job_name,
+    String(content || '').split('\n').slice(0, 3).join(' '),
+  ].map(value => String(value || '').trim()).filter(Boolean).join(' ');
+  const source = [
+    record?.source_id,
+    record?.external_id,
+    record?.delivery?.job_id,
+    record?.metadata?.run_key,
+  ].map(value => String(value || '').trim()).filter(Boolean).join(' ');
+  if (/98f0c8a12d3e/.test(source) || /隔夜美股|美股盘面/.test(identity)) return '美股';
+  if (/192abba7eeb5/.test(source) || /午盘/.test(identity)) return '午盘';
+  if (/67ac98149ead/.test(source) || /盘后|收盘/.test(identity)) return '盘后';
+  if (/8453b3f28cd3/.test(source) || /竞价|盘前/.test(identity)) return '竞价';
   return '盘面';
 }
 function marketSectionLines(lines, headingText, limit = 3) {
@@ -3299,7 +3311,7 @@ function summarizeMarketRecord(r) {
   }
   return {
     title,
-    type: marketReportType(raw),
+    type: marketReportType(r, raw),
     time: timeMatch ? timeMatch[0] : (r.time || ''),
     preview: truncateText((mood || overview || titleLine).replace(/^💬\s*/, ''), 150),
     chips: chips.slice(0, 5)
