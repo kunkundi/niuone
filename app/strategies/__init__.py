@@ -6,12 +6,15 @@ and simulated order execution stay in their respective application modules.
 """
 
 from .registry import (
+    ACTIVE_STRATEGY_ENV,
     CONFIGURABLE_STRATEGY_GROUPS,
     DISPLAY_STRATEGY_ORDER,
     STRATEGY_DEFINITIONS,
     STRATEGY_META,
     STRATEGY_POSITION_LIMIT_PCT,
     STRATEGY_SCORE_PROFILES,
+    STRATEGY_SUITES,
+    active_strategy_suite,
     enabled_strategy_ids,
     known_strategy_ids,
 )
@@ -30,13 +33,16 @@ from .selection import candidate_is_trade_ready, select_display_candidates, sele
 
 __all__ = [
     "CONFIGURABLE_STRATEGY_GROUPS",
+    "ACTIVE_STRATEGY_ENV",
     "DISPLAY_STRATEGY_ORDER",
     "STRATEGY_DEFINITIONS",
     "STRATEGY_META",
     "STRATEGY_POSITION_LIMIT_PCT",
     "STRATEGY_SCORE_PROFILES",
+    "STRATEGY_SUITES",
     "STRATEGY_SCORERS",
     "analyze_enriched_rows",
+    "active_strategy_suite",
     "apply_entry_strategy_mark",
     "apply_exit_strategy_mark",
     "build_strategy_prompt_sections",

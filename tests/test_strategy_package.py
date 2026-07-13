@@ -8,7 +8,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app"
+COMPAT = APP / "compat"
 sys.path.insert(0, str(APP))
+sys.path.insert(0, str(COMPAT))
 
 import multi_strategy_screen as screen  # noqa: E402
 import niuniu_practice_trader as trader  # noqa: E402
@@ -16,9 +18,29 @@ import strategies  # noqa: E402
 import strategy_registry as legacy_registry  # noqa: E402
 from strategies import registry  # noqa: E402
 from strategies.scoring import STRATEGY_SCORERS, analyze_enriched_rows  # noqa: E402
+from strategies.prompts import build_strategy_prompt_sections  # noqa: E402
 
 
 class StrategyPackageTests(unittest.TestCase):
+    def test_strategy_suite_prompts_do_not_include_inactive_suites(self):
+        cases = {
+            "base": ("基础策略：", ("Z哥评分基准", "李大霄")),
+            "zettaranc": ("Z哥评分基准", ("基础策略：", "李大霄")),
+            "li_daxiao_bottom": ("李大霄", ("Z哥评分基准", "基础策略：")),
+        }
+        for suite, (included, excluded) in cases.items():
+            sections = build_strategy_prompt_sections(
+                suite,
+                "",
+                registry.enabled_strategy_ids(strategy_suite_raw=suite),
+                b3_exit_hhmm="09:37",
+                time_exit_hhmm="14:45",
+            )
+            active = sections["active_strategy_section"]
+            self.assertIn(included, active)
+            for text in excluded:
+                self.assertNotIn(text, active)
+
     def test_legacy_registry_is_a_compatibility_view(self):
         self.assertIs(legacy_registry.STRATEGY_DEFINITIONS, registry.STRATEGY_DEFINITIONS)
         self.assertIs(legacy_registry.STRATEGY_META, registry.STRATEGY_META)

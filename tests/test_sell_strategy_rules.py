@@ -1668,6 +1668,7 @@ class SellStrategyRuleTests(unittest.TestCase):
 
     def test_preset_text_strategy_is_in_decision_prompt(self):
         saved_env = {
+            trader.ACTIVE_STRATEGY_ENV: os.environ.get(trader.ACTIVE_STRATEGY_ENV),
             trader.STRATEGY_SOURCE_ENV: os.environ.get(trader.STRATEGY_SOURCE_ENV),
             trader.PERSONA_STRATEGY_ENV: os.environ.get(trader.PERSONA_STRATEGY_ENV),
             trader.PRESET_STRATEGY_TEXT_ENV: os.environ.get(trader.PRESET_STRATEGY_TEXT_ENV),
@@ -1683,7 +1684,7 @@ class SellStrategyRuleTests(unittest.TestCase):
         }
         captured: dict[str, dict] = {}
         try:
-            os.environ[trader.STRATEGY_SOURCE_ENV] = "preset_text"
+            os.environ[trader.ACTIVE_STRATEGY_ENV] = "preset_text"
             os.environ[trader.PERSONA_STRATEGY_ENV] = "li_daxiao_bottom"
             os.environ[trader.PRESET_STRATEGY_TEXT_ENV] = "只做主线强趋势回踩\\n跌破5日线离场"
             os.environ.pop(trader.TRADE_DISCIPLINE_TEXT_ENV, None)
@@ -1732,22 +1733,22 @@ class SellStrategyRuleTests(unittest.TestCase):
         prompt = captured["payload"]["messages"][0]["content"]
         self.assertEqual(result["summary"], "ok")
         self.assertNotIn("temperature", captured["payload"])
-        self.assertIn("当前激活策略来源：预设文字策略", prompt)
+        self.assertIn("当前激活策略：预设文字策略", prompt)
         self.assertIn("系统底线风控", prompt)
         self.assertNotIn("-4%硬止损", prompt)
         self.assertNotIn("止损-4%", prompt)
-        self.assertIn("Z哥买入战法和卖出风控不作为本轮新增仓依据", prompt)
+        self.assertNotIn("Z哥评分基准", prompt)
         self.assertIn("预设文字策略（当前激活）", prompt)
         self.assertIn("用户原文：\n只做主线强趋势回踩\n跌破5日线离场", prompt)
         self.assertIn("先将用户原文分析并优化成清晰的选股条件", prompt)
-        self.assertIn("内置策略偏好本轮不生效", prompt)
-        self.assertIn("基础策略只作为候选池", prompt)
-        self.assertIn("本轮设置页未启用人格策略", prompt)
+        self.assertIn("其他策略不得影响本轮新增仓判断", prompt)
+        self.assertIn("基础扫描结果只作为原始候选池", prompt)
+        self.assertIn("不得引用、混合或补充其他未启用策略", prompt)
         self.assertIn("每条 BUY/SELL 的仓位大小由你决定", prompt)
         self.assertIn("参考价或成交价 × shares ÷ 当前总权益 × 100%", prompt)
         self.assertIn("执行层不会替你补默认仓位", prompt)
         self.assertIn("不会替你补默认仓位或自动缩量", prompt)
-        self.assertIn("仓位弹性由评分、战法确定性、风险标记、盘面级别和账户状态决定", prompt)
+        self.assertIn("首次建仓、加仓、减仓比例由评分、风险标记、盘面级别和账户状态决定", prompt)
         self.assertNotIn("单票仓位 ≤ 总资金15%", prompt)
         self.assertNotIn("总资金15%", prompt)
         self.assertNotIn("单票≤", prompt)

@@ -38,6 +38,7 @@ from dashboard import security as security_impl
 from niuone_paths import apply_container_runtime_overrides, get_dashboard_env_file, get_dashboard_home, get_local_data_dir
 import push_history
 from strategies.registry import (
+    ACTIVE_STRATEGY_ENV,
     PERSONA_STRATEGY_ENV,
     PRESET_STRATEGY_TEXT_ENV,
     PRESET_STRATEGY_TEXT_MAX_CHARS,
@@ -46,6 +47,7 @@ from strategies.registry import (
     STRATEGY_SOURCE_BUILTIN,
     STRATEGY_SOURCE_ENV,
     STRATEGY_SOURCE_OPTIONS,
+    active_strategy_suite,
     decode_preset_strategy_text,
     decode_trade_discipline_text,
     default_trade_discipline_text,
@@ -54,6 +56,8 @@ from strategies.registry import (
     normalize_trade_discipline_text_update,
     normalize_strategy_source_update,
     normalize_strategy_list_update,
+    normalize_strategy_suite_update,
+    strategy_suite_options,
     strategy_settings_options,
 )
 from us_market_summary import fetch_us_market_summary, fetch_us_sector_snapshot, load_cached_summary_for_today
@@ -273,8 +277,7 @@ ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
     {"name": "DASHBOARD_TRADE_CANDIDATE_LIMIT", "label": "买卖决策候选数量", "group": "选股与买卖设置", "kind": "int", "default": "10", "effect": "runtime"},
     {"name": "DASHBOARD_B3_EXIT_TIME", "label": "B3开盘离场检查时间", "group": "选股与买卖设置", "kind": "time", "default": "09:37", "effect": "runtime"},
     {"name": "DASHBOARD_TIME_EXIT_TIME", "label": "尾盘离场检查时间", "group": "选股与买卖设置", "kind": "time", "default": "14:45", "effect": "runtime"},
-    {"name": STRATEGY_SOURCE_ENV, "label": "当前策略来源", "group": "选股策略", "kind": "strategy_source", "default": "builtin", "effect": "runtime"},
-    {"name": PERSONA_STRATEGY_ENV, "label": "内置策略", "group": "选股策略", "kind": "strategy_single", "default": default_enabled_persona_strategies_value(), "effect": "runtime"},
+    {"name": ACTIVE_STRATEGY_ENV, "label": "当前独立策略", "group": "选股策略", "kind": "strategy_suite", "default": default_enabled_persona_strategies_value(), "effect": "runtime"},
     {"name": PRESET_STRATEGY_TEXT_ENV, "label": "预设文字策略", "group": "选股策略", "kind": "preset_strategy_text", "default": "", "effect": "runtime"},
     {"name": "DASHBOARD_B1_SCAN_TIMEOUT_SECONDS", "label": "实战选股扫描超时秒数", "group": "任务调度", "kind": "int", "default": "360", "effect": "restart"},
     {"name": "DASHBOARD_B1_SCHEDULE_CATCHUP_MINUTES", "label": "实战选股漏触发补跑窗口分钟", "group": "任务调度", "kind": "int", "default": "35", "effect": "restart"},
@@ -433,8 +436,7 @@ ADMIN_VISIBLE_ENV_NAMES = [
     "DASHBOARD_TRADE_CANDIDATE_LIMIT",
     "DASHBOARD_B3_EXIT_TIME",
     "DASHBOARD_TIME_EXIT_TIME",
-    STRATEGY_SOURCE_ENV,
-    PERSONA_STRATEGY_ENV,
+    ACTIVE_STRATEGY_ENV,
     PRESET_STRATEGY_TEXT_ENV,
     "DASHBOARD_US_MARKET_SUMMARY_CRON",
     "US_MARKET_SUMMARY_MAX_TOKENS",
@@ -485,6 +487,7 @@ TRADER_RUNTIME_ENV_NAMES = {
     "DASHBOARD_TIME_STOP_EXIT_TIME",
     STRATEGY_SOURCE_ENV,
     PERSONA_STRATEGY_ENV,
+    ACTIVE_STRATEGY_ENV,
     PRESET_STRATEGY_TEXT_ENV,
 }
 ENV_GROUP_ORDER = [
@@ -2244,6 +2247,8 @@ def normalize_env_update(name: str, value: str, kind: str) -> str:
         return normalize_strategy_list_update(value)
     if kind == "strategy_source":
         return normalize_strategy_source_update(value)
+    if kind == "strategy_suite":
+        return normalize_strategy_suite_update(value)
     if kind == "preset_strategy_text":
         return normalize_preset_strategy_text_update(value)
     if kind == "trade_discipline_text":
@@ -2457,7 +2462,7 @@ ADMIN_GROUP_NOTES = {
     "买卖决策模型": "推荐使用 deepseek-v4-pro；也可填写其他兼容 /chat/completions 的模型服务。长度默认：上下文 128000 tokens，最大输出 4096 tokens。",
     "交易通知": "模拟买入或卖出成交落盘后推送。从下拉框按需添加渠道并分块配置；移除渠道并保存后会清除该渠道配置。Webhook、Bot Token 和签名密钥只保存、不回显。",
     "选股与买卖设置": "配置候选池展示与进入买卖决策的数量，并维护北京时间 HH:MM 的选股、决策及离场时间。",
-    "选股策略": "在内置策略和预设文字策略中选择一个激活；内置策略可选基础策略、Z哥或李大霄。",
+    "选股策略": "选择一套独立策略；基础策略、Z哥、李大霄和预设文字策略的候选、买入、卖出、仓位与 Prompt 规则互不混用。",
     "盘面监控生产时间点": "直接填写北京时间 HH:MM；隔夜美股总结默认交易日 08:00 生成，A 股盘面监控在交易时段触发；长度默认：上下文 128000 tokens，最大输出 4096 tokens。",
     "指数行情更新周期": "单位为秒，保存后立即用于后续行情请求。",
 }
@@ -2701,6 +2706,12 @@ def friendly_strategy_source_text(value: str) -> str:
     return labels.get(normalized, normalized)
 
 
+def friendly_strategy_suite_text(value: str) -> str:
+    normalized = normalize_strategy_suite_update(value)
+    labels = {str(item["id"]): str(item["label"]) for item in strategy_suite_options()}
+    return labels.get(normalized, normalized)
+
+
 def x_watchlist_state_accounts(path: Path | None = None) -> list[str]:
     if path is None:
         path = Path(os.environ.get("DASHBOARD_X_WATCHLIST_STATE") or str(CRON_STATE_DIR / "x_watchlist_latest.json")).expanduser()
@@ -2784,6 +2795,8 @@ def normalize_business_updates(updates: dict[str, str]) -> dict[str, str]:
             normalized[name] = normalize_strategy_list_update(normalized[name])
         elif ENV_CONFIG_BY_NAME.get(name, {}).get("kind") == "strategy_source":
             normalized[name] = normalize_strategy_source_update(normalized[name])
+        elif ENV_CONFIG_BY_NAME.get(name, {}).get("kind") == "strategy_suite":
+            normalized[name] = normalize_strategy_suite_update(normalized[name])
         elif ENV_CONFIG_BY_NAME.get(name, {}).get("kind") == "preset_strategy_text":
             normalized[name] = normalize_preset_strategy_text_update(normalized[name])
         elif ENV_CONFIG_BY_NAME.get(name, {}).get("kind") == "trade_discipline_text":
@@ -2827,6 +2840,8 @@ def validate_business_updates(updates: dict[str, str]) -> None:
             normalize_strategy_source_update(value)
         elif name == PERSONA_STRATEGY_ENV:
             normalize_strategy_list_update(value)
+        elif name == ACTIVE_STRATEGY_ENV:
+            normalize_strategy_suite_update(value)
         elif name == PRESET_STRATEGY_TEXT_ENV:
             normalize_preset_strategy_text_update(value)
         elif name == TRADE_DISCIPLINE_TEXT_ENV:
@@ -2913,6 +2928,7 @@ def sync_business_runtime_settings(
     if changed_names & {
         STRATEGY_SOURCE_ENV,
         PERSONA_STRATEGY_ENV,
+        ACTIVE_STRATEGY_ENV,
         PRESET_STRATEGY_TEXT_ENV,
         "DASHBOARD_DISPLAY_CANDIDATE_LIMIT",
         "DASHBOARD_TRADE_CANDIDATE_LIMIT",
@@ -2921,8 +2937,8 @@ def sync_business_runtime_settings(
         with API_RESPONSE_LOCK:
             API_RESPONSE_CACHE.pop(PRACTICE_CANDIDATES_CACHE_KEY, None)
         applied.append("strategy_settings")
-        if PERSONA_STRATEGY_ENV in changed_names:
-            applied.append("persona_strategies")
+        if changed_names & {PERSONA_STRATEGY_ENV, ACTIVE_STRATEGY_ENV}:
+            applied.append("active_strategy")
 
     if changed_names & TRADER_RUNTIME_ENV_NAMES:
         with TRADER_MODULE_LOCK:
@@ -3005,6 +3021,13 @@ def build_admin_config_payload() -> dict[str, Any]:
             name,
             crossdesk_provider=crossdesk_provider,
         )
+        if name == ACTIVE_STRATEGY_ENV and name not in env_values and name not in os.environ:
+            fallback_value = active_strategy_suite(
+                None,
+                env_values.get(STRATEGY_SOURCE_ENV),
+                env_values.get(PERSONA_STRATEGY_ENV),
+            )
+            fallback_source = "legacy strategy settings"
         default_value = schema.get("default", "")
         if name in os.environ:
             effective = os.environ.get(name, "")
@@ -3063,6 +3086,17 @@ def build_admin_config_payload() -> dict[str, Any]:
                 "file_state": friendly_strategy_source_text(state_value),
                 "default": friendly_strategy_source_text(default_value),
                 "strategy_source_options": list(STRATEGY_SOURCE_OPTIONS),
+            })
+        if schema.get("kind") == "strategy_suite" and not secret:
+            edit_source = str(env_values.get(name) or fallback_value or default_value)
+            edit_value = normalize_strategy_suite_update(edit_source)
+            state_value = env_values.get(name) if name in env_values else (fallback_value or default_value)
+            item.update({
+                "effective": friendly_strategy_suite_text(str(effective)),
+                "file_value": edit_value,
+                "file_state": friendly_strategy_suite_text(str(state_value)),
+                "default": friendly_strategy_suite_text(str(default_value)),
+                "strategy_suite_options": strategy_suite_options(),
             })
         if schema.get("kind") == "preset_strategy_text" and not secret:
             state_value = env_values.get(name) if name in env_values else (fallback_value or default_value)
@@ -3128,10 +3162,9 @@ def build_admin_config_payload() -> dict[str, Any]:
         "ui": {
             "us_feature_toggle_name": "DASHBOARD_US_FEATURES_ENABLED",
             "us_feature_gated_names": sorted(US_FEATURE_GATED_NAMES),
-            "strategy_source_name": STRATEGY_SOURCE_ENV,
-            "strategy_builtin_name": PERSONA_STRATEGY_ENV,
+            "strategy_suite_name": ACTIVE_STRATEGY_ENV,
             "strategy_preset_name": PRESET_STRATEGY_TEXT_ENV,
-            "strategy_builtin_value": STRATEGY_SOURCE_BUILTIN,
+            "strategy_preset_value": "preset_text",
         },
         "secret_placeholder": SECRET_PLACEHOLDER,
     }

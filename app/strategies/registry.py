@@ -8,11 +8,13 @@ from typing import Any
 
 PERSONA_STRATEGY_ENV = "DASHBOARD_ENABLED_PERSONA_STRATEGIES"
 STRATEGY_SOURCE_ENV = "DASHBOARD_STRATEGY_SOURCE"
+ACTIVE_STRATEGY_ENV = "DASHBOARD_ACTIVE_STRATEGY"
 PRESET_STRATEGY_TEXT_ENV = "DASHBOARD_PRESET_STRATEGY_TEXT"
 TRADE_DISCIPLINE_TEXT_ENV = "DASHBOARD_TRADE_DISCIPLINE_TEXT"
 STRATEGY_SOURCE_BUILTIN = "builtin"
 STRATEGY_SOURCE_PERSONA = STRATEGY_SOURCE_BUILTIN
 STRATEGY_SOURCE_PRESET_TEXT = "preset_text"
+STRATEGY_SUITE_PRESET_TEXT = STRATEGY_SOURCE_PRESET_TEXT
 PRESET_STRATEGY_TEXT_MAX_CHARS = 8000
 TRADE_DISCIPLINE_TEXT_MAX_CHARS = 12000
 BASIC_STRATEGY_GROUP_ID = "base"
@@ -238,7 +240,7 @@ def strategy_ids_for_persona(persona: str) -> tuple[str, ...]:
     )
 
 
-CONFIGURABLE_STRATEGY_GROUPS: dict[str, dict[str, Any]] = {
+STRATEGY_SUITES: dict[str, dict[str, Any]] = {
     BASIC_STRATEGY_GROUP_ID: {
         "id": BASIC_STRATEGY_GROUP_ID,
         "label": "基础策略",
@@ -262,11 +264,14 @@ CONFIGURABLE_STRATEGY_GROUPS: dict[str, dict[str, Any]] = {
     },
 }
 
+# Backward-compatible export for integrations that still use the old name.
+CONFIGURABLE_STRATEGY_GROUPS = STRATEGY_SUITES
+
 
 def individual_persona_strategy_ids() -> tuple[str, ...]:
     grouped_ids = {
         str(strategy_id)
-        for group in CONFIGURABLE_STRATEGY_GROUPS.values()
+        for group in STRATEGY_SUITES.values()
         for strategy_id in (group.get("strategy_ids") or ())
     }
     return tuple(
@@ -277,7 +282,7 @@ def individual_persona_strategy_ids() -> tuple[str, ...]:
 
 
 def configurable_strategy_option_ids() -> tuple[str, ...]:
-    return tuple(CONFIGURABLE_STRATEGY_GROUPS.keys()) + individual_persona_strategy_ids()
+    return tuple(STRATEGY_SUITES.keys()) + individual_persona_strategy_ids()
 
 
 def default_enabled_persona_strategies_value() -> str:
@@ -285,6 +290,65 @@ def default_enabled_persona_strategies_value() -> str:
     if DEFAULT_BUILTIN_STRATEGY_GROUP_ID in options:
         return DEFAULT_BUILTIN_STRATEGY_GROUP_ID
     return options[0] if options else ""
+
+
+def strategy_suite_options() -> list[dict[str, Any]]:
+    """Return mutually exclusive, independently executable strategy suites."""
+    suites = [
+        {
+            "id": key,
+            "label": value["label"],
+            "desc": value["desc"],
+            "color": value["color"],
+        }
+        for key, value in STRATEGY_SUITES.items()
+    ]
+    suites.append({
+        "id": STRATEGY_SUITE_PRESET_TEXT,
+        "label": "预设文字策略",
+        "desc": "使用用户文字规则独立决定候选、买入、卖出、仓位和时间纪律",
+        "color": "#2dd4bf",
+    })
+    return suites
+
+
+def normalize_strategy_suite_update(value: str | None) -> str:
+    suite = str(value or DEFAULT_BUILTIN_STRATEGY_GROUP_ID).strip()
+    # Accept the former source value as a migration alias. Its concrete suite
+    # is resolved from the legacy group setting by active_strategy_suite().
+    if suite == STRATEGY_SOURCE_BUILTIN:
+        suite = DEFAULT_BUILTIN_STRATEGY_GROUP_ID
+    allowed = {str(item["id"]) for item in strategy_suite_options()}
+    if suite not in allowed:
+        raise ValueError(f"未知独立策略: {suite}")
+    return suite
+
+
+def active_strategy_suite(
+    raw: str | None = None,
+    legacy_source_raw: str | None = None,
+    legacy_group_raw: str | None = None,
+) -> str:
+    """Resolve the active suite, preferring the new single setting.
+
+    Old ``builtin + group`` installations remain valid until the user next
+    saves strategy settings, at which point DASHBOARD_ACTIVE_STRATEGY is used.
+    """
+    if raw is None:
+        raw = os.environ.get(ACTIVE_STRATEGY_ENV)
+    if raw:
+        return normalize_strategy_suite_update(raw)
+    if legacy_source_raw is None:
+        legacy_source_raw = os.environ.get(STRATEGY_SOURCE_ENV)
+    if str(legacy_source_raw or STRATEGY_SOURCE_BUILTIN).strip() == STRATEGY_SOURCE_PRESET_TEXT:
+        return STRATEGY_SUITE_PRESET_TEXT
+    if legacy_group_raw is None:
+        legacy_group_raw = os.environ.get(PERSONA_STRATEGY_ENV)
+    if legacy_group_raw is None:
+        legacy_group_raw = default_enabled_persona_strategies_value()
+    return normalize_strategy_suite_update(
+        normalize_strategy_list_update(legacy_group_raw)
+    )
 
 
 def normalize_strategy_source_update(value: str | None) -> str:
@@ -426,14 +490,18 @@ def enabled_persona_strategy_ids(raw: str | None = None, strategy_source_raw: st
     return set(normalized.split(",")) if normalized else set()
 
 
-def enabled_strategy_ids(enabled_persona_raw: str | None = None, strategy_source_raw: str | None = None) -> set[str]:
+def enabled_strategy_ids(
+    enabled_persona_raw: str | None = None,
+    strategy_source_raw: str | None = None,
+    strategy_suite_raw: str | None = None,
+) -> set[str]:
     enabled: set[str] = set()
-    if preset_text_strategy_active(strategy_source_raw):
-        enabled_options = {BASIC_STRATEGY_GROUP_ID}
-    else:
-        enabled_options = enabled_persona_strategy_ids(enabled_persona_raw, strategy_source_raw)
+    suite = active_strategy_suite(strategy_suite_raw, strategy_source_raw, enabled_persona_raw)
+    # Text strategies intentionally use only the neutral base scanner as their
+    # raw candidate pool; the model-provided rules remain the sole decision policy.
+    enabled_options = {BASIC_STRATEGY_GROUP_ID if suite == STRATEGY_SUITE_PRESET_TEXT else suite}
     for option_id in enabled_options:
-        group = CONFIGURABLE_STRATEGY_GROUPS.get(option_id)
+        group = STRATEGY_SUITES.get(option_id)
         if group:
             enabled.update(str(strategy_id) for strategy_id in group.get("strategy_ids") or ())
         elif option_id in STRATEGY_DEFINITIONS:
@@ -441,13 +509,13 @@ def enabled_strategy_ids(enabled_persona_raw: str | None = None, strategy_source
     return enabled
 
 
-def enabled_strategy_meta(enabled_persona_raw: str | None = None, strategy_source_raw: str | None = None) -> dict[str, dict[str, Any]]:
-    enabled = enabled_strategy_ids(enabled_persona_raw, strategy_source_raw)
+def enabled_strategy_meta(enabled_persona_raw: str | None = None, strategy_source_raw: str | None = None, strategy_suite_raw: str | None = None) -> dict[str, dict[str, Any]]:
+    enabled = enabled_strategy_ids(enabled_persona_raw, strategy_source_raw, strategy_suite_raw)
     return {key: value for key, value in STRATEGY_META.items() if key in enabled}
 
 
-def enabled_strategy_score_profiles(enabled_persona_raw: str | None = None, strategy_source_raw: str | None = None) -> dict[str, dict[str, Any]]:
-    enabled = enabled_strategy_ids(enabled_persona_raw, strategy_source_raw)
+def enabled_strategy_score_profiles(enabled_persona_raw: str | None = None, strategy_source_raw: str | None = None, strategy_suite_raw: str | None = None) -> dict[str, dict[str, Any]]:
+    enabled = enabled_strategy_ids(enabled_persona_raw, strategy_source_raw, strategy_suite_raw)
     return {key: value for key, value in STRATEGY_SCORE_PROFILES.items() if key in enabled}
 
 
@@ -483,7 +551,7 @@ def strategy_settings_options(*, family: str = "persona") -> list[dict[str, Any]
             "desc": value["desc"],
             "color": value["color"],
         }
-        for key, value in CONFIGURABLE_STRATEGY_GROUPS.items()
+        for key, value in STRATEGY_SUITES.items()
     ] if family == "persona" else []
     strategy_ids = individual_persona_strategy_ids() if family == "persona" else strategy_ids_for_family(family)
     strategy_options = [

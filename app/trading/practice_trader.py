@@ -31,6 +31,7 @@ from typing import Any
 from a_share_calendar import is_a_share_trading_day as calendar_is_a_share_trading_day, trading_day_status
 from niuone_paths import get_dashboard_env_file, get_dashboard_home
 from strategies.registry import (
+    ACTIVE_STRATEGY_ENV,
     PRESET_STRATEGY_TEXT_ENV,
     PERSONA_STRATEGY_ENV,
     STRATEGY_SOURCE_ENV,
@@ -39,6 +40,7 @@ from strategies.registry import (
     STRATEGY_DEFINITIONS,
     STRATEGY_POSITION_LIMIT_PCT,
     active_strategy_source,
+    active_strategy_suite,
     classify_strategy_text,
     decode_trade_discipline_text,
     default_trade_discipline_text,
@@ -184,6 +186,7 @@ def load_dashboard_env() -> None:
         "DASHBOARD_MORNING_MAX_OPEN_POSITIONS",
         STRATEGY_SOURCE_ENV,
         PERSONA_STRATEGY_ENV,
+        ACTIVE_STRATEGY_ENV,
         PRESET_STRATEGY_TEXT_ENV,
         TRADE_DISCIPLINE_TEXT_ENV,
         "CROSSDESK_BASE_URL",
@@ -4288,7 +4291,17 @@ def check_candidate_news_precheck(candidates: list[dict[str, Any]]) -> str:
 
 
 def current_strategy_source() -> str:
-    return active_strategy_source(os.environ.get(STRATEGY_SOURCE_ENV))
+    """Compatibility view of the old source dimension."""
+    suite = current_strategy_suite()
+    return STRATEGY_SOURCE_PRESET_TEXT if suite == STRATEGY_SOURCE_PRESET_TEXT else "builtin"
+
+
+def current_strategy_suite() -> str:
+    return active_strategy_suite(
+        os.environ.get(ACTIVE_STRATEGY_ENV),
+        os.environ.get(STRATEGY_SOURCE_ENV),
+        os.environ.get(PERSONA_STRATEGY_ENV),
+    )
 
 
 def current_preset_strategy_text() -> str:
@@ -4302,7 +4315,11 @@ def current_trade_discipline_text(position_limit_desc: str, adaptive: dict[str, 
         # an older dashboard.env cannot reintroduce it through the model prompt.
         custom = custom.replace("、-4%硬止损", "")
         custom = re.sub(r"（止损-?4(?:\.0+)?%，仓位系数", "（仓位系数", custom)
-        enabled = enabled_strategy_ids(os.environ.get(PERSONA_STRATEGY_ENV), os.environ.get(STRATEGY_SOURCE_ENV))
+        enabled = enabled_strategy_ids(
+            os.environ.get(PERSONA_STRATEGY_ENV),
+            os.environ.get(STRATEGY_SOURCE_ENV),
+            os.environ.get(ACTIVE_STRATEGY_ENV),
+        )
         if any(is_zettaranc_strategy(strategy_id) for strategy_id in enabled):
             custom = custom.replace(
                 "- 仓位不按固定百分比硬卡：首次建仓、加仓、减仓比例由你结合评分、战法确定性、风险标记、盘面级别、现有仓位和盈亏状态决定；极端高确定性且风险可解释时，单票重仓甚至满仓也允许，但必须在reason写清楚为什么值得集中。",
@@ -4318,7 +4335,11 @@ def current_trade_discipline_text(position_limit_desc: str, adaptive: dict[str, 
             )
         return custom
     adaptive = adaptive or {}
-    enabled = enabled_strategy_ids(os.environ.get(PERSONA_STRATEGY_ENV), os.environ.get(STRATEGY_SOURCE_ENV))
+    enabled = enabled_strategy_ids(
+        os.environ.get(PERSONA_STRATEGY_ENV),
+        os.environ.get(STRATEGY_SOURCE_ENV),
+        os.environ.get(ACTIVE_STRATEGY_ENV),
+    )
     return default_trade_discipline_text(
         max_open_positions=MAX_OPEN_POSITIONS,
         max_new_buys_per_decision=MAX_NEW_BUYS_PER_DECISION,
@@ -4330,7 +4351,11 @@ def current_trade_discipline_text(position_limit_desc: str, adaptive: dict[str, 
 
 
 def active_strategy_ids_for_decision() -> set[str]:
-    return enabled_strategy_ids(os.environ.get(PERSONA_STRATEGY_ENV), os.environ.get(STRATEGY_SOURCE_ENV))
+    return enabled_strategy_ids(
+        os.environ.get(PERSONA_STRATEGY_ENV),
+        os.environ.get(STRATEGY_SOURCE_ENV),
+        os.environ.get(ACTIVE_STRATEGY_ENV),
+    )
 
 
 def load_decision_model_config() -> tuple[str, str]:
@@ -4379,11 +4404,11 @@ def call_model_decision(
     # 自适应参数（市场情绪驱动）
     adaptive = get_adaptive_params()
     # 多战法上下文：统计战法分布，给每个候选标注最优战法
-    strategy_source = current_strategy_source()
+    strategy_suite = current_strategy_suite()
     preset_strategy_text = current_preset_strategy_text()
     active_strategy_ids = active_strategy_ids_for_decision()
     strategy_prompt_sections = build_strategy_prompt_sections(
-        strategy_source,
+        strategy_suite,
         preset_strategy_text,
         active_strategy_ids,
         b3_exit_hhmm=B3_EXIT_HHMM,
@@ -4391,10 +4416,7 @@ def call_model_decision(
     )
     strategy_source_label = strategy_prompt_sections["strategy_source_label"]
     strategy_labels = strategy_prompt_sections["strategy_labels"]
-    preset_strategy_section = strategy_prompt_sections["preset_strategy_section"]
-    zettaranc_strategy_section = strategy_prompt_sections["zettaranc_strategy_section"]
-    base_strategy_section = strategy_prompt_sections["base_strategy_section"]
-    persona_strategy_section = strategy_prompt_sections["persona_strategy_section"]
+    active_strategy_section = strategy_prompt_sections["active_strategy_section"]
     position_limit_desc = strategy_prompt_sections["position_limit_desc"]
     portfolio_positions = [p for p in (portfolio.get("positions") or []) if isinstance(p, dict)]
     position_by_code = {
@@ -4451,28 +4473,13 @@ def call_model_decision(
 必须遵守：
 {trade_discipline_text}
 
-当前激活策略来源：{strategy_source_label}
+当前激活策略：{strategy_source_label}
 
-【多战法选股原则 — 回测优化版(v4，含Z哥)】
-基于50只主板票×120天历史回测数据优化：
+【当前独立策略规则】
+{active_strategy_section}
 
-硬性准入规则（全部战法通用）：
-- 距BBI > 6.5% → 不买（回测显示追高胜率骤降）
-- 评分 < 8 → 不买（min_score从7提到8后，假信号减少40%+）
-- 止损使用N型上移结构的最近回调前低，不使用买入当日K线最低价，不设固定百分比硬止损
-- 止盈设在 +12%~15%（回测显示突破确认能吃到9.6%平均盈利）
-- 仓位弹性由评分、战法确定性、风险标记、盘面级别和账户状态决定；重仓/满仓必须在reason说明集中理由，持仓数仍受静态上限和盘面动态节奏约束
+隔离要求：本轮新开仓只能依据上述当前策略及其候选；不得引用、混合或补充其他未启用策略。已有持仓继续按各自 strategy_mark 执行原策略退出纪律。
 
-{zettaranc_strategy_section}
-
-{base_strategy_section}
-
-拟人化扩展策略（风格化量化代理，不代表本人观点）：
-{persona_strategy_section}
-
-{preset_strategy_section}
-
-⚠️ 突破确认信号虽然少但质量高，不要因为它频率低就忽略。
 ⚠️ 有风险标记的候选股，请结合其近期消息面（利空/减持/监管）综合判断，不要只看技术面。
 
 当前是否允许交易：{trade_allowed}，原因：{trade_reason}

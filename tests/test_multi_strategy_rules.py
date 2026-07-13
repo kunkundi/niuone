@@ -17,6 +17,7 @@ import multi_strategy_screen as screen  # noqa: E402
 class MultiStrategyRuleTests(unittest.TestCase):
     def setUp(self):
         self._saved_strategy_source = os.environ.get(screen.STRATEGY_SOURCE_ENV)
+        self._saved_active_strategy = os.environ.pop(screen.ACTIVE_STRATEGY_ENV, None)
         os.environ[screen.STRATEGY_SOURCE_ENV] = "builtin"
 
     def tearDown(self):
@@ -24,6 +25,10 @@ class MultiStrategyRuleTests(unittest.TestCase):
             os.environ.pop(screen.STRATEGY_SOURCE_ENV, None)
         else:
             os.environ[screen.STRATEGY_SOURCE_ENV] = self._saved_strategy_source
+        if self._saved_active_strategy is None:
+            os.environ.pop(screen.ACTIVE_STRATEGY_ENV, None)
+        else:
+            os.environ[screen.ACTIVE_STRATEGY_ENV] = self._saved_active_strategy
 
     def test_build_market_snapshot_reuses_full_quote_batch(self):
         snapshot = screen.build_market_snapshot({
@@ -211,10 +216,10 @@ class MultiStrategyRuleTests(unittest.TestCase):
             else:
                 os.environ[screen.PERSONA_STRATEGY_ENV] = old
 
-    def test_active_strategy_scorers_follow_persona_setting(self):
-        old = os.environ.get(screen.PERSONA_STRATEGY_ENV)
+    def test_active_strategy_scorers_follow_suite_setting(self):
+        old = os.environ.get(screen.ACTIVE_STRATEGY_ENV)
         try:
-            os.environ[screen.PERSONA_STRATEGY_ENV] = "buffett_value"
+            os.environ[screen.ACTIVE_STRATEGY_ENV] = "base"
             active = screen.active_strategy_scorers()
             self.assertNotIn("buffett_value", active)
             self.assertNotIn("li_daxiao_bottom", active)
@@ -222,7 +227,7 @@ class MultiStrategyRuleTests(unittest.TestCase):
             self.assertIn("trend_pullback", active)
             self.assertIn("breakout", active)
 
-            os.environ[screen.PERSONA_STRATEGY_ENV] = "zettaranc,li_daxiao_bottom,buffett_value"
+            os.environ[screen.ACTIVE_STRATEGY_ENV] = "zettaranc"
             active = screen.active_strategy_scorers()
             self.assertNotIn("buffett_value", active)
             self.assertNotIn("li_daxiao_bottom", active)
@@ -231,7 +236,7 @@ class MultiStrategyRuleTests(unittest.TestCase):
             self.assertIn("shaofu_b1", active)
             self.assertIn("b3_accelerate", active)
 
-            os.environ[screen.PERSONA_STRATEGY_ENV] = "li_daxiao_bottom,zettaranc"
+            os.environ[screen.ACTIVE_STRATEGY_ENV] = "li_daxiao_bottom"
             active = screen.active_strategy_scorers()
             self.assertIn("li_daxiao_bottom", active)
             self.assertNotIn("shaofu_b1", active)
@@ -239,30 +244,23 @@ class MultiStrategyRuleTests(unittest.TestCase):
             self.assertNotIn("trend_pullback", active)
             self.assertNotIn("breakout", active)
 
-            os.environ[screen.PERSONA_STRATEGY_ENV] = "base"
+            os.environ[screen.ACTIVE_STRATEGY_ENV] = "base"
             active = screen.active_strategy_scorers()
             self.assertIn("trend_pullback", active)
             self.assertIn("breakout", active)
             self.assertNotIn("li_daxiao_bottom", active)
             self.assertNotIn("shaofu_b1", active)
 
-            os.environ[screen.PERSONA_STRATEGY_ENV] = ""
-            active = screen.active_strategy_scorers()
-            self.assertNotIn("buffett_value", active)
-            self.assertNotIn("li_daxiao_bottom", active)
-            self.assertNotIn("shaofu_b1", active)
-            self.assertIn("trend_pullback", active)
         finally:
             if old is None:
-                os.environ.pop(screen.PERSONA_STRATEGY_ENV, None)
+                os.environ.pop(screen.ACTIVE_STRATEGY_ENV, None)
             else:
-                os.environ[screen.PERSONA_STRATEGY_ENV] = old
+                os.environ[screen.ACTIVE_STRATEGY_ENV] = old
 
-    def test_preset_text_source_disables_persona_scorers(self):
-        old = os.environ.get(screen.PERSONA_STRATEGY_ENV)
+    def test_preset_text_suite_uses_only_neutral_base_scorers(self):
+        old = os.environ.get(screen.ACTIVE_STRATEGY_ENV)
         try:
-            os.environ[screen.STRATEGY_SOURCE_ENV] = "preset_text"
-            os.environ[screen.PERSONA_STRATEGY_ENV] = "li_daxiao_bottom"
+            os.environ[screen.ACTIVE_STRATEGY_ENV] = "preset_text"
             active = screen.active_strategy_scorers()
 
             self.assertNotIn("li_daxiao_bottom", active)
@@ -271,9 +269,27 @@ class MultiStrategyRuleTests(unittest.TestCase):
             self.assertIn("breakout", active)
         finally:
             if old is None:
-                os.environ.pop(screen.PERSONA_STRATEGY_ENV, None)
+                os.environ.pop(screen.ACTIVE_STRATEGY_ENV, None)
             else:
-                os.environ[screen.PERSONA_STRATEGY_ENV] = old
+                os.environ[screen.ACTIVE_STRATEGY_ENV] = old
+
+    def test_active_strategy_suites_are_isolated(self):
+        old = os.environ.get(screen.ACTIVE_STRATEGY_ENV)
+        try:
+            expected = {
+                "base": {"breakout", "trend_pullback"},
+                "zettaranc": {"b3_accelerate", "b2_confirm", "shaofu_b1", "super_b1"},
+                "li_daxiao_bottom": {"li_daxiao_bottom"},
+                "preset_text": {"breakout", "trend_pullback"},
+            }
+            for suite, scorer_ids in expected.items():
+                os.environ[screen.ACTIVE_STRATEGY_ENV] = suite
+                self.assertEqual(set(screen.active_strategy_scorers()), scorer_ids)
+        finally:
+            if old is None:
+                os.environ.pop(screen.ACTIVE_STRATEGY_ENV, None)
+            else:
+                os.environ[screen.ACTIVE_STRATEGY_ENV] = old
 
     def test_li_daxiao_profile_applies_hard_blockers(self):
         payload = screen.with_strategy_profile("li_daxiao_bottom", {

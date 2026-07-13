@@ -15,18 +15,13 @@ NiuOne divides the research workflow into four layers:
 
 Strategy outputs are experimental signals and must not be used as the basis for real trades. If a market-data or model source is temporarily unavailable, the system records its status and either continues with the currently available information or skips the affected step.
 
-## 2. Strategy Sources
+## 2. Independent Strategies
 
-The settings page provides two strategy sources, with only one active at a time:
+The settings page directly selects one active strategy suite. Basic Strategies, Z-ge, Li Daxiao, and Preset Text are peer, mutually exclusive suites. Each suite independently owns its candidate scope, scoring, entry, exit, sizing, and model-prompt rules. Inactive suites do not enter the current new-position scan or decision context.
 
-| Source | Description |
-|---|---|
-| Built-in rules | Use rule groups implemented in the project to generate candidates and participate in simulated assessments. |
-| Preset text rules | Convert the user's natural-language requirements into candidate, entry, exit, position-sizing, and timing constraints. |
+Switching suites does not rewrite historical position attribution. Existing positions continue to use the `strategy_mark` captured at entry for their original exit discipline. Preset Text uses the basic scan only as a raw candidate pool and applies the text rules as the independent decision policy. Empty text creates no new simulated positions and only performs risk checks on existing holdings.
 
-When built-in rules are used, Basic Strategies, Z-ge, and Li Daxiao are peer strategy groups, and only one can be enabled at a time. When preset text rules are used, the system first generates a neutral candidate pool and then completes the simulated assessment according to the text rules. If the text rules are empty, the system creates no new simulated positions and performs only risk checks on existing simulated holdings.
-
-## 3. Built-in Strategy Groups
+## 3. Strategy Suites
 
 | Strategy group | Included proxy signals | Research focus |
 |---|---|---|
@@ -88,18 +83,19 @@ Percentage settings are used primarily for model context and research discipline
 
 ## 5. Configuration
 
-Prefer maintaining the strategy source, rule group, text rules, and simulation discipline on the dashboard settings page. The corresponding environment variables include:
+Prefer maintaining the active independent strategy, text rules, and simulation discipline on the dashboard settings page. The corresponding environment variables include:
 
 | Setting | Description |
 |---|---|
-| `DASHBOARD_STRATEGY_SOURCE` | Strategy source: built-in rules or preset text rules |
-| `DASHBOARD_ENABLED_PERSONA_STRATEGIES` | Currently enabled built-in strategy group |
+| `DASHBOARD_ACTIVE_STRATEGY` | Active independent strategy: `base`, `zettaranc`, `li_daxiao_bottom`, or `preset_text` |
 | `DASHBOARD_PRESET_STRATEGY_TEXT` | Custom preset text rules |
 | `DASHBOARD_TRADE_DISCIPLINE_TEXT` | Additional simulation discipline |
 
 Local configuration is stored in `.local-data/dashboard.env` by default. This file may contain model keys and administrative credentials and must not be committed to Git or copied into public contexts.
 
-## 6. Extending Built-in Strategies
+The legacy `DASHBOARD_STRATEGY_SOURCE` and `DASHBOARD_ENABLED_PERSONA_STRATEGIES` settings are read only for seamless migration when `DASHBOARD_ACTIVE_STRATEGY` is absent.
+
+## 6. Extending Independent Strategies
 
 Strategy code is centralized under `app/strategies/`:
 

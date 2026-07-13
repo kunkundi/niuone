@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from .registry import (
+    STRATEGY_SUITES,
     STRATEGY_DEFINITIONS,
     STRATEGY_POSITION_LIMIT_PCT,
     STRATEGY_SOURCE_PRESET_TEXT,
@@ -13,7 +14,7 @@ from .registry import (
 
 def format_preset_strategy_section(source: str, preset_text: str) -> str:
     if source != STRATEGY_SOURCE_PRESET_TEXT:
-        return "预设文字策略：本轮设置页未启用。"
+        return ""
     if not preset_text:
         return (
             "预设文字策略（当前激活）：未填写预设文字。"
@@ -25,13 +26,13 @@ def format_preset_strategy_section(source: str, preset_text: str) -> str:
 
 执行方式：
 1. 先将用户原文分析并优化成清晰的选股条件、买入触发、卖出/止损止盈、仓位和时间纪律。
-2. 将优化后的规则作为本轮主策略，用它筛选候选股并决定买卖；内置策略偏好本轮不生效，基础策略只作为候选池。
+2. 将优化后的规则作为本轮唯一的新开仓策略，用它筛选候选股并决定买卖；其他策略不得影响本轮新增仓判断，基础扫描结果只作为原始候选池。
 3. 若用户规则含糊、互相冲突或突破A股交易/账户风控硬约束，按更保守的解释执行；无法确认则HOLD。
 4. 返回JSON的summary和reason里简短体现预设文字策略的核心规则。"""
 
 
 def build_strategy_prompt_sections(
-    strategy_source: str,
+    strategy_suite: str,
     preset_strategy_text: str,
     active_strategy_ids: set[str],
     *,
@@ -39,8 +40,13 @@ def build_strategy_prompt_sections(
     time_exit_hhmm: str,
 ) -> dict[str, Any]:
     """Build strategy-only decision prompt sections without reading runtime state."""
-    preset_strategy_section = format_preset_strategy_section(strategy_source, preset_strategy_text)
-    strategy_source_label = "预设文字策略" if strategy_source == STRATEGY_SOURCE_PRESET_TEXT else "内置策略"
+    preset_strategy_section = format_preset_strategy_section(strategy_suite, preset_strategy_text)
+    suite = STRATEGY_SUITES.get(strategy_suite) or {}
+    strategy_source_label = (
+        "预设文字策略"
+        if strategy_suite == STRATEGY_SOURCE_PRESET_TEXT
+        else f"{suite.get('label') or strategy_suite}（独立策略）"
+    )
     strategy_labels = strategy_prompt_labels(active_strategy_ids)
     position_limit_desc = "、".join(
         f"{strategy_labels.get(strategy_id, strategy_id).split('（', 1)[0]}≤{limit:g}%"
@@ -77,21 +83,35 @@ Z哥卖出风控（属于Z哥体系）：
 - 仓位硬纪律：Z哥单票不得超过对应战法上限（最高10%），账户总仓位不得超过80%，至少保留20%现金；不得以高确定性为由突破
 - 少妇B1用N型上移结构最近前低；B2用前置B1低点；B3用B3当天低点（缺失时用B2大阳线中位）；超级B1用放量洗盘阴线低点
 - 止盈按卤煮形态执行，不使用固定8%减半或12%清仓；同时保留防卖飞5分评分、S1/S2/S3逃顶、出货五式、BBI/白线两日破位、白线死叉黄线、峰值回撤/ATR吊灯保护
-- B3仅在{b3_exit_hhmm}做开盘离场检查，B2/超级B1仅在{time_exit_hhmm}做尾盘离场检查""" if zettaranc_enabled else "Z哥：本轮设置页未启用，Z哥买入战法和卖出风控不作为本轮新增仓依据。"
+- B3仅在{b3_exit_hhmm}做开盘离场检查，B2/超级B1仅在{time_exit_hhmm}做尾盘离场检查""" if zettaranc_enabled else ""
     base_strategy_enabled = any(
         STRATEGY_DEFINITIONS.get(strategy_id, {}).get("family") == "local"
         for strategy_id in active_strategy_ids
     )
     base_strategy_section = """基础策略：
 1. 突破确认：优先看有效突破和回踩不破，再作为确认仓处理
-2. 趋势回踩：强趋势股回踩BBI/EMA不破，按低吸仓处理""" if base_strategy_enabled else "基础策略：本轮设置页未启用。"
-    if strategy_source == STRATEGY_SOURCE_PRESET_TEXT:
-        persona_strategy_section = "- 本轮设置页未启用人格策略"
+2. 趋势回踩：强趋势股回踩BBI/EMA不破，按低吸仓处理""" if base_strategy_enabled else ""
+    if strategy_suite == STRATEGY_SOURCE_PRESET_TEXT:
+        persona_strategy_section = ""
     else:
-        persona_strategy_section = "\n".join(persona_strategy_lines) or "- 暂无启用的拟人化扩展策略"
+        persona_strategy_section = "\n".join(persona_strategy_lines)
+    active_strategy_section = next(
+        (
+            section
+            for section in (
+                preset_strategy_section,
+                zettaranc_strategy_section,
+                base_strategy_section,
+                persona_strategy_section,
+            )
+            if section
+        ),
+        "当前策略没有可用规则，本轮不得新开仓。",
+    )
 
     return {
         "strategy_source_label": strategy_source_label,
+        "active_strategy_section": active_strategy_section,
         "strategy_labels": strategy_labels,
         "position_limit_desc": position_limit_desc,
         "zettaranc_strategy_section": zettaranc_strategy_section,

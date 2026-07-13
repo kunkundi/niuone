@@ -107,8 +107,9 @@ function renderEnvInput(item) {
       (kind === 'time_list' ? '时间点' : '作者') + "'>+</button></div>" +
       "<div class='config-meta'>" + (kind === 'time_list' ? '北京时间' : 'X/Twitter handle') + "</div>";
   }
-  if (kind === 'strategy_source') {
-    return "<div class='strategy-multi-control'>" + (item.strategy_source_options || []).map(function(option) {
+  if (kind === 'strategy_source' || kind === 'strategy_suite') {
+    var strategyOptions = kind === 'strategy_suite' ? (item.strategy_suite_options || []) : (item.strategy_source_options || []);
+    return "<div class='strategy-multi-control'>" + strategyOptions.map(function(option) {
       var id = escapeHtml(option.id || '');
       return "<label class='strategy-option' style='--strategy-color:" + escapeHtml(option.color || '#94a3b8') + "'>" +
         "<input type='radio' name='" + fieldName + "' value='" + id + "'" + (value === option.id ? ' checked' : '') +
@@ -116,7 +117,7 @@ function renderEnvInput(item) {
         "<span class='strategy-option-main'><span class='strategy-option-title'><span class='strategy-option-dot'></span>" +
         escapeHtml(option.label || option.id) + "</span><span class='strategy-option-desc'>" + escapeHtml(option.desc || '') +
         "</span></span></label>";
-    }).join('') + "</div><div class='config-meta'>内置策略和预设文字二选一激活</div>";
+    }).join('') + "</div><div class='config-meta'>每轮只启用一套完整策略；候选、买入、卖出和仓位规则互不混用</div>";
   }
   if (kind === 'preset_strategy_text' || kind === 'trade_discipline_text') {
     var preset = kind === 'preset_strategy_text';
@@ -212,9 +213,7 @@ function renderSettingsGroup(slug) {
   var toggle = (adminConfig.items || []).find(function(item) { return item.name === toggleName; });
   var usEnabled = !!toggle && isTruthy(toggle.effective || toggle.file_value);
   var gatedNames = new Set((adminConfig.ui && adminConfig.ui.us_feature_gated_names) || []);
-  var strategyBuiltin = adminConfig.ui && adminConfig.ui.strategy_builtin_name;
   var strategyPreset = adminConfig.ui && adminConfig.ui.strategy_preset_name;
-  var strategyBuiltinValue = (adminConfig.ui && adminConfig.ui.strategy_builtin_value) || 'builtin';
   var body;
   var countLabel;
   if (group.name === '交易通知') {
@@ -224,7 +223,6 @@ function renderSettingsGroup(slug) {
     body = "<div class='settings-list'>" + items.map(function(item) {
       var attrs = '';
       if (gatedNames.has(item.name)) attrs += " data-feature-gated='us'" + (usEnabled ? " aria-hidden='false'" : " hidden aria-hidden='true'");
-      if (item.name === strategyBuiltin) attrs += " data-strategy-source-gated='" + escapeHtml(strategyBuiltinValue) + "'";
       if (item.name === strategyPreset) attrs += " data-strategy-source-gated='preset_text'";
       var current = item.current_state ? escapeHtml(item.current_state) : "<span class='config-empty'>未设置</span>";
       var defaultValue = item.default ? escapeHtml(item.default) : "<span class='config-empty'>未设置</span>";
@@ -325,7 +323,7 @@ function syncUsFeatureSettings() {
 }
 function currentStrategySource() {
   var checked = document.querySelector('[data-strategy-source-toggle]:checked');
-  return checked ? checked.value : 'builtin';
+  return checked ? checked.value : 'zettaranc';
 }
 function syncStrategySourceSettings() {
   var source = currentStrategySource();

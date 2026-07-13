@@ -129,7 +129,7 @@ class DashboardAuthTests(unittest.TestCase):
         admin.do_GET()
         self.assertEqual(admin.status, 200)
         admin_body = admin.wfile.getvalue().decode('utf-8')
-        self.assertIn('<script src="/static/admin.js?v=5" defer></script>', admin_body)
+        self.assertIn('<script src="/static/admin.js?v=6" defer></script>', admin_body)
         self.assertNotIn('name="admin_password"', admin_body)
         self.assertNotIn("name='env__DASHBOARD_GROK_API_KEY'", admin_body)
         self.assertIn("fetch('/api/admin/config'", ADMIN_FRONTEND)
@@ -1678,7 +1678,7 @@ process.stdout.write(JSON.stringify({
         unlocked_page = FakeHandler(path='/admin', headers={'Cookie': session_cookie})
         unlocked_page.do_GET()
         self.assertEqual(unlocked_page.status, 200)
-        self.assertIn('<script src="/static/admin.js?v=5" defer></script>', unlocked_page.wfile.getvalue().decode('utf-8'))
+        self.assertIn('<script src="/static/admin.js?v=6" defer></script>', unlocked_page.wfile.getvalue().decode('utf-8'))
 
         unlocked_api = FakeHandler(path='/api/admin/config', headers={'Cookie': session_cookie})
         unlocked_api.do_GET()
@@ -2255,7 +2255,7 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(handler.status, 200)
         self.assertEqual(len(payload['groups']), 10)
         self.assertEqual(item_names, set(dashboard.ADMIN_VISIBLE_ENV_NAMES))
-        self.assertIn('<script src="/static/admin.js?v=5" defer></script>', index_body)
+        self.assertIn('<script src="/static/admin.js?v=6" defer></script>', index_body)
         self.assertNotIn("name='env__", index_body)
         self.assertIn('function renderSettingsIndex()', ADMIN_FRONTEND)
         self.assertIn('function renderSettingsGroup(slug)', ADMIN_FRONTEND)
@@ -2279,7 +2279,7 @@ process.stdout.write(JSON.stringify({
             route = FakeHandler(path=f'/admin/settings/{slug}')
             route.do_GET()
             self.assertEqual(route.status, 200)
-            self.assertIn('<script src="/static/admin.js?v=5" defer></script>', route.wfile.getvalue().decode('utf-8'))
+            self.assertIn('<script src="/static/admin.js?v=6" defer></script>', route.wfile.getvalue().decode('utf-8'))
 
         self.assertEqual(len(groups), 10)
         self.assertEqual(len(slugs), len(set(slugs)))
@@ -2311,7 +2311,7 @@ process.stdout.write(JSON.stringify({
         locked.do_GET()
         locked_body = locked.wfile.getvalue().decode('utf-8')
         self.assertEqual(locked.status, 200)
-        self.assertIn('<script src="/static/admin.js?v=5" defer></script>', locked_body)
+        self.assertIn('<script src="/static/admin.js?v=6" defer></script>', locked_body)
         self.assertNotIn("name='env__DASHBOARD_NOTIFICATION_ENABLED'", locked_body)
 
         cookie = self.admin_cookie()
@@ -2335,7 +2335,7 @@ process.stdout.write(JSON.stringify({
         )
         missing.do_GET()
         self.assertEqual(missing.status, 404)
-        self.assertIn('<script src="/static/admin.js?v=5" defer></script>', missing.wfile.getvalue().decode('utf-8'))
+        self.assertIn('<script src="/static/admin.js?v=6" defer></script>', missing.wfile.getvalue().decode('utf-8'))
         self.assertIn('未找到该设置分组', ADMIN_FRONTEND)
 
     def test_group_save_ignores_fields_from_other_settings_groups(self):
@@ -2584,20 +2584,20 @@ process.stdout.write(JSON.stringify({
     def test_admin_config_decodes_preset_strategy_text(self):
         original_env_values = {
             name: dashboard.os.environ.get(name)
-            for name in [dashboard.STRATEGY_SOURCE_ENV, dashboard.PRESET_STRATEGY_TEXT_ENV, dashboard.TRADE_DISCIPLINE_TEXT_ENV]
+            for name in [dashboard.ACTIVE_STRATEGY_ENV, dashboard.STRATEGY_SOURCE_ENV, dashboard.PRESET_STRATEGY_TEXT_ENV, dashboard.TRADE_DISCIPLINE_TEXT_ENV]
         }
         try:
             for name in original_env_values:
                 dashboard.os.environ.pop(name, None)
             dashboard.DASHBOARD_ENV_FILE.write_text(
-                "DASHBOARD_STRATEGY_SOURCE=preset_text\n"
+                "DASHBOARD_ACTIVE_STRATEGY=preset_text\n"
                 "DASHBOARD_PRESET_STRATEGY_TEXT='强趋势回踩\\n跌破5日线离场'\n"
                 "DASHBOARD_TRADE_DISCIPLINE_TEXT='纪律一\\n纪律二'\n",
                 encoding='utf-8',
             )
 
             payload = dashboard.build_admin_config_payload()
-            source_item = next(item for item in payload['items'] if item['name'] == dashboard.STRATEGY_SOURCE_ENV)
+            source_item = next(item for item in payload['items'] if item['name'] == dashboard.ACTIVE_STRATEGY_ENV)
             text_item = next(item for item in payload['items'] if item['name'] == dashboard.PRESET_STRATEGY_TEXT_ENV)
             discipline_item = next(item for item in payload['items'] if item['name'] == dashboard.TRADE_DISCIPLINE_TEXT_ENV)
         finally:
@@ -2607,7 +2607,7 @@ process.stdout.write(JSON.stringify({
                 else:
                     dashboard.os.environ[name] = value
 
-        self.assertEqual(source_item['effective'], '预设文字')
+        self.assertEqual(source_item['effective'], '预设文字策略')
         self.assertEqual(source_item['file_value'], 'preset_text')
         self.assertEqual(text_item['file_value'], '强趋势回踩\n跌破5日线离场')
         self.assertEqual(text_item['effective'], '强趋势回踩\n跌破5日线离场')
@@ -2863,8 +2863,7 @@ process.stdout.write(JSON.stringify({
                 'env__DASHBOARD_MARKET_AUCTION_CRON': '09:26',
                 'env__DASHBOARD_US_RATING_CRON': '10:30',
                 'env__X_WATCHLIST_ACCOUNTS': ['', '@Foo', 'bar', 'foo'],
-                'env__DASHBOARD_STRATEGY_SOURCE': 'preset_text',
-                'env__DASHBOARD_ENABLED_PERSONA_STRATEGIES': ['', 'li_daxiao_bottom'],
+                'env__DASHBOARD_ACTIVE_STRATEGY': 'preset_text',
                 'env__DASHBOARD_PRESET_STRATEGY_TEXT': '只做主线强趋势回踩\n跌破5日线离场',
                 'env__DASHBOARD_TRADE_DISCIPLINE_TEXT': '纪律一\n纪律二',
                 'env__DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED': '1',
@@ -2919,7 +2918,7 @@ process.stdout.write(JSON.stringify({
         self.assertTrue(response['runtime']['ok'])
         self.assertIn('b1_schedule_times', response['runtime']['applied'])
         self.assertIn('indices_ttl', response['runtime']['applied'])
-        self.assertIn('persona_strategies', response['runtime']['applied'])
+        self.assertIn('active_strategy', response['runtime']['applied'])
         self.assertIn('strategy_settings', response['runtime']['applied'])
         self.assertIn('trader_runtime', response['runtime']['applied'])
         self.assertEqual(parsed['DASHBOARD_US_FEATURES_ENABLED'], '1')
@@ -2936,8 +2935,7 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(parsed['DASHBOARD_MARKET_AUCTION_CRON'], '26 9 * * 1-5')
         self.assertEqual(parsed['DASHBOARD_US_RATING_CRON'], '30 10 * * *')
         self.assertEqual(parsed['X_WATCHLIST_ACCOUNTS'], 'foo,bar')
-        self.assertEqual(parsed['DASHBOARD_STRATEGY_SOURCE'], 'preset_text')
-        self.assertEqual(parsed['DASHBOARD_ENABLED_PERSONA_STRATEGIES'], 'li_daxiao_bottom')
+        self.assertEqual(parsed['DASHBOARD_ACTIVE_STRATEGY'], 'preset_text')
         self.assertEqual(parsed['DASHBOARD_PRESET_STRATEGY_TEXT'], '只做主线强趋势回踩\\n跌破5日线离场')
         self.assertEqual(parsed['DASHBOARD_TRADE_DISCIPLINE_TEXT'], '纪律一\\n纪律二')
         self.assertEqual(parsed['DASHBOARD_TELEGRAM_CHAT_ID'], telegram_chat_id)
