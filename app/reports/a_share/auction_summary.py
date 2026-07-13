@@ -288,6 +288,22 @@ def fetch_auction_snapshot() -> tuple[list[dict[str, Any]], str | None]:
             for page in sorted(page_items):
                 all_items.extend(page_items[page])
         rows = extract_auction_snapshot_rows(all_items)
+        # Eastmoney occasionally closes the connection without returning even
+        # page 1 around 09:25.  An empty snapshot must not silently become a
+        # "successful" report with every auction section missing.  Tencent's
+        # quote service is independent and exposes the same open/previous-close
+        # plus cumulative amount fields, so use it as the live fallback.
+        materially_incomplete = not rows or (total >= 1000 and len(all_items) < total * 0.9)
+        if materially_incomplete:
+            fallback_rows, fallback_err = fetch_tencent_auction_snapshot()
+            if fallback_rows:
+                reason = "；".join(page_errors[:2]) if page_errors else f"只取到 {len(all_items)}/{total} 只"
+                note = f"东方财富竞价快照不完整（{reason}），已切换腾讯备用行情"
+                if fallback_err:
+                    note += f"；{fallback_err}"
+                return fallback_rows, note
+            if fallback_err:
+                page_errors.append(f"腾讯备用行情 {fallback_err}")
         if not rows:
             if page_errors:
                 return [], "竞价快照：" + "；".join(page_errors[:2])
@@ -304,8 +320,112 @@ def fetch_auction_snapshot() -> tuple[list[dict[str, Any]], str | None]:
         return [], f"竞价快照：{type(e).__name__}: {e}"
 
 
-def extract_auction_snapshot_rows(diff: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def fetch_tencent_auction_snapshot() -> tuple[list[dict[str, Any]], str | None]:
+    """Fetch a full A-share opening snapshot from Tencent as a live fallback."""
+    deadline = time.monotonic() + safe_int(os.getenv("A_SHARE_AUCTION_FALLBACK_DEADLINE", "25"), 25)
+    workers = max(1, min(12, safe_int(os.getenv("A_SHARE_AUCTION_FALLBACK_WORKERS", "10"), 10)))
+    chunk_size = max(50, min(300, safe_int(os.getenv("A_SHARE_AUCTION_FALLBACK_CHUNK", "200"), 200)))
+    symbols = (
+        [f"sz{i:06d}" for i in range(1, 4000)]
+        + [f"sz{i:06d}" for i in range(300001, 302000)]
+        + [f"sh{i:06d}" for i in range(600000, 606000)]
+        + [f"sh{i:06d}" for i in range(688000, 690000)]
+    )
+    chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
+
+    industry_map: dict[str, str] = {}
+    cache_path = DASHBOARD_HOME / "cron" / "output" / "stock_industry_cache.json"
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        if isinstance(cached, dict):
+            industry_map = {normalize_code(k): str(v) for k, v in cached.items() if v}
+    except Exception:
+        pass
+
+    def fetch_chunk(chunk: list[str]) -> list[dict[str, Any]]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 1:
+            return []
+        url = "https://qt.gtimg.cn/q=" + ",".join(chunk)
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://stock.qq.com/"})
+        with urlopen(req, timeout=min(6, max(1, remaining))) as resp:
+            body = resp.read().decode("gb18030", errors="ignore")
+        out: list[dict[str, Any]] = []
+        for raw in body.split(";"):
+            match = re.search(r'="(.*)"', raw, re.S)
+            if not match:
+                continue
+            parts = match.group(1).split("~")
+            if len(parts) < 38:
+                continue
+            code, name = normalize_code(parts[2]), parts[1].strip()
+            if not is_normal_a_share(code, name):
+                continue
+            latest, prev_close, open_price = safe_float(parts[3]), safe_float(parts[4]), safe_float(parts[5])
+            if open_price <= 0 or prev_close <= 0:
+                continue
+            amount = 0.0
+            trade = parts[35].split("/")
+            if len(trade) >= 3:
+                amount = safe_float(trade[2])
+            estimated_volume_lot = amount / max(latest, open_price, 0.01) / 100
+            pct = (open_price / prev_close - 1) * 100
+            out.append({
+                "code": code,
+                "name": name,
+                "industry": industry_map.get(code) or simple_industry_guess(name),
+                "open_price": open_price,
+                "latest_price": latest,
+                "prev_close": prev_close,
+                "auction_pct": pct,
+                "change_pct": safe_float(parts[32]),
+                "amount": amount,
+                # Tencent mixes shares and lots across boards in field 6.
+                # Derive a comparable lot estimate from turnover instead.
+                "volume_lot": estimated_volume_lot,
+                "vol_ratio": 0.0,
+                "high": safe_float(parts[33]),
+                "low": safe_float(parts[34]),
+                "_quote_time": parts[30] if re.fullmatch(r"\d{14}", parts[30]) else "",
+            })
+        return out
+
     rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(fetch_chunk, chunk) for chunk in chunks]
+        try:
+            for future in as_completed(futures, timeout=max(1, deadline - time.monotonic())):
+                try:
+                    rows.extend(future.result())
+                except Exception as exc:
+                    errors.append(f"{type(exc).__name__}: {exc}")
+        except FuturesTimeoutError:
+            errors.append("抓取超时")
+    deduped = {row["code"]: row for row in rows}
+    result = list(deduped.values())
+    result.sort(key=lambda row: row["code"])
+    if len(result) < 4000:
+        detail = f"仅取到 {len(result)} 只"
+        if errors:
+            detail += f"；{errors[0]}"
+        return [], detail
+    notes: list[str] = []
+    if errors:
+        notes.append(f"部分请求失败 {len(errors)} 组")
+    quote_times = [str(row.get("_quote_time") or "") for row in result]
+    latest_quote = max((value for value in quote_times if value), default="")
+    if latest_quote:
+        quote_dt = dt.datetime.strptime(latest_quote, "%Y%m%d%H%M%S")
+        if quote_dt.time() >= dt.time(9, 27):
+            notes.append(f"补全快照截至 {quote_dt:%H:%M:%S}，成交额/量含开盘后连续竞价")
+    for row in result:
+        row.pop("_quote_time", None)
+    return result, ("；".join(notes) if notes else None)
+
+
+def extract_auction_snapshot_rows(diff: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows_by_code: dict[str, dict[str, Any]] = {}
     for item in diff or []:
         code = normalize_code(item.get("f12"))
         name = str(item.get("f14") or "").strip()
@@ -318,7 +438,7 @@ def extract_auction_snapshot_rows(diff: list[dict[str, Any]]) -> list[dict[str, 
         prev_close = safe_float(item.get("f18"))
         auction_pct = ((open_price / prev_close - 1) * 100) if open_price > 0 and prev_close > 0 else safe_float(item.get("f3"))
         industry = normalize_industry_name(str(item.get("f100") or "")) or simple_industry_guess(name)
-        rows.append({
+        rows_by_code[code] = {
             "code": code,
             "name": name,
             "industry": industry if industry.lower() != "nan" else simple_industry_guess(name),
@@ -332,8 +452,8 @@ def extract_auction_snapshot_rows(diff: list[dict[str, Any]]) -> list[dict[str, 
             "vol_ratio": safe_float(item.get("f10")),
             "high": safe_float(item.get("f15")),
             "low": safe_float(item.get("f16")),
-        })
-    return rows
+        }
+    return list(rows_by_code.values())
 
 
 def opening_strength_label(pct: float) -> str:
@@ -391,9 +511,13 @@ def top_industry_auction_stats(rows: list[dict[str, Any]], limit: int = 6) -> li
         count = max(int(st["count"]), 1)
         avg_pct = st["pct_sum"] / count
         leaders = sorted(st["leaders"], key=lambda x: (x[0], x[1]), reverse=True)[:3]
-        score = avg_pct * 2.5 + (st["amount"] / 1e8) * 0.08 + (st["high_open"] - st["low_open"]) / count * 1.5
+        # Liquidity is only a confidence modifier here.  A linear amount term
+        # made very liquid but broadly falling industries look "strongest".
+        score = avg_pct * 2.5 + math.log1p(st["amount"] / 1e8) * 0.2 + (st["high_open"] - st["low_open"]) / count * 1.5
         stats.append({**st, "avg_pct": avg_pct, "leaders": leaders, "score": score})
-    return sorted(stats, key=lambda x: (x["score"], x["amount"]), reverse=True)[:limit]
+    broad_stats = [item for item in stats if item["count"] >= 3]
+    ranked = broad_stats or stats
+    return sorted(ranked, key=lambda x: (x["score"], x["amount"]), reverse=True)[:limit]
 
 
 def extract_limit_pool_rows(pool, industry_map: dict[str, str], *, default_pct: float = 10.0) -> list[dict[str, Any]]:
@@ -621,6 +745,7 @@ def build_report() -> str:
         return ""
 
     snapshot_rows, snapshot_err = fetch_auction_snapshot()
+    post_open_fill = NOW.time() >= dt.time(9, 27)
     zt, zt_err = fetch_zt_pool()
     dtpool, dt_err = fetch_dt_pool()
     industry_map = {
@@ -632,6 +757,8 @@ def build_report() -> str:
     issues = []
     if snapshot_err:
         issues.append(snapshot_err)
+    if snapshot_rows and post_open_fill:
+        issues.append(f"本次为 {NOW:%H:%M} 开盘后补全：开盘价强弱可复核，成交额/量含连续竞价，不等同于纯9:25撮合值")
     if zt_err:
         issues.append(f"涨停池：{zt_err}")
     if dt_err:
@@ -665,21 +792,23 @@ def build_report() -> str:
         mood = "竞价偏弱，风险端强于进攻端。"
     elif zt_count >= 30 and dt_count <= 5 and strong_open >= max(weak_open, 5):
         mood = "竞价进攻较强，涨停扩散且强高开家数占优。"
+    elif weak_open > max(strong_open * 1.5, 5) or low_open > high_open * 1.5:
+        mood = "竞价偏弱，低开家数占优，先控风险。"
     elif zt_count >= 10 or high_open > low_open * 1.2:
         mood = "竞价有一定进攻，但仍要看开盘承接。"
-    elif low_open > high_open * 1.2:
-        mood = "竞价偏弱，低开家数占优，先控风险。"
     else:
         mood = "竞价中性偏谨慎，结构性机会为主。"
 
     lines = []
-    lines.append("牛牛大王，9:25竞价总结来了：")
+    lines.append("牛牛大王，今日竞价总结补全来了：" if post_open_fill else "牛牛大王，9:25竞价总结来了：")
     lines.append("")
     lines.append(f"📊 **竞价情绪** · {time_s}")
     lines.append(f"涨停池 `{zt_count}` 只 · 跌停池 `{dt_count}` 只")
     if snapshot_rows:
         lines.append(f"样本 `{snapshot_summary['total']}` 只 | 高开 `{high_open}` · 平开 `{snapshot_summary['flat_open']}` · 低开 `{low_open}`")
-        lines.append(f"强高开 `{strong_open}` · 深低开 `{weak_open}` | 竞价额 `{fmt_amt_yuan(snapshot_summary['total_amount'])}` · 竞价量 `{fmt_volume_lot(snapshot_summary['total_volume_lot'])}`")
+        amount_label = "补全时点成交额" if post_open_fill else "竞价额"
+        volume_label = "补全时点成交量" if post_open_fill else "竞价量"
+        lines.append(f"强高开 `{strong_open}` · 深低开 `{weak_open}` | {amount_label} `{fmt_amt_yuan(snapshot_summary['total_amount'])}` · {volume_label} `{fmt_volume_lot(snapshot_summary['total_volume_lot'])}`")
     lines.append(f"💬 {mood}")
     lines.append("")
 
@@ -697,7 +826,8 @@ def build_report() -> str:
     if industry_top:
         for r in industry_top[:5]:
             leader_txt = "、".join(f"{name} {fmt_pct(pct)}" for pct, _, name, _ in r.get("leaders", [])[:2] if name) or "-"
-            lines.append(f"`{r['industry']}` 均涨 {fmt_pct(r['avg_pct'])} | 高开 {r['high_open']}/{r['count']} | 竞价额 {fmt_amt_yuan(r['amount'])} | {leader_txt}")
+            amount_label = "补全时点成交额" if post_open_fill else "竞价额"
+            lines.append(f"`{r['industry']}` 均涨 {fmt_pct(r['avg_pct'])} | 高开 {r['high_open']}/{r['count']} | {amount_label} {fmt_amt_yuan(r['amount'])} | {leader_txt}")
     else:
         lines.append("数据暂不可用")
     lines.append("")
@@ -705,7 +835,8 @@ def build_report() -> str:
     lines.append("💰 **竞价成交活跃**")
     if amount_top:
         for r in amount_top[:6]:
-            lines.append(f"`{r['code']} {r['name']}` {fmt_pct(r['auction_pct'])} | 开{fmt_price(r['open_price'])} | 竞价额 {fmt_amt_yuan(r['amount'])} · 量 {fmt_volume_lot(r['volume_lot'])}")
+            amount_label = "补全时点成交额" if post_open_fill else "竞价额"
+            lines.append(f"`{r['code']} {r['name']}` {fmt_pct(r['auction_pct'])} | 开{fmt_price(r['open_price'])} | {amount_label} {fmt_amt_yuan(r['amount'])} · 量 {fmt_volume_lot(r['volume_lot'])}")
     else:
         lines.append("数据暂不可用")
     lines.append("")
@@ -768,7 +899,10 @@ def build_report() -> str:
     if dt_count > zt_count:
         lines.append("· 跌停/风险票不低，情绪非无脑强")
     lines.append("· 高开过度、封单虚胖、开盘撤单和竞价额断档都要等二次确认")
-    lines.append("· 竞价成交额/成交量是 9:25 撮合快照，连续竞价承接以 9:30 后为准")
+    if post_open_fill:
+        lines.append("· 本次补全的开盘价为真实开盘价；成交额/量含连续竞价，只用于辅助排序，不作为纯竞价额解读")
+    else:
+        lines.append("· 竞价成交额/成交量是 9:25 撮合快照，连续竞价承接以 9:30 后为准")
     lines.append("· 板块联动 + BBI右侧优先，不追单纯J值低")
     if issues:
         lines.append("")

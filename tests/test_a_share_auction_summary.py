@@ -41,6 +41,44 @@ class AShareAuctionSummaryTests(unittest.TestCase):
         self.assertEqual(rows[0]["volume_lot"], 12345)
         self.assertEqual(rows[0]["industry"], "半导体")
 
+    def test_extract_auction_snapshot_deduplicates_overlapping_market_rows(self):
+        mod = load_module()
+
+        rows = mod.extract_auction_snapshot_rows([
+            {"f12": "000980", "f14": "众泰汽车", "f17": 1.60, "f18": 1.78, "f5": 100, "f6": 1000},
+            {"f12": "000980", "f14": "众泰汽车", "f17": 1.60, "f18": 1.78, "f5": 120, "f6": 1200},
+        ])
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["amount"], 1200)
+
+    def test_fetch_auction_snapshot_falls_back_when_first_page_disconnects(self):
+        mod = load_module()
+        original_urlopen = mod.urlopen
+        original_fallback = mod.fetch_tencent_auction_snapshot
+        fallback_rows = [{"code": "600001", "name": "备用行情", "auction_pct": 1.0, "amount": 1.0}]
+        try:
+            mod.urlopen = lambda *args, **kwargs: (_ for _ in ()).throw(mod.RemoteDisconnected("closed"))
+            mod.fetch_tencent_auction_snapshot = lambda: (fallback_rows, None)
+            rows, err = mod.fetch_auction_snapshot()
+        finally:
+            mod.urlopen = original_urlopen
+            mod.fetch_tencent_auction_snapshot = original_fallback
+
+        self.assertEqual(rows, fallback_rows)
+        self.assertIn("已切换腾讯备用行情", err)
+
+    def test_industry_strength_does_not_let_turnover_override_negative_open(self):
+        mod = load_module()
+        rows = [
+            {"industry": "高成交下跌", "auction_pct": -2.0, "amount": 50_000_000_000, "volume_lot": 1, "name": "甲", "code": "600001"},
+            {"industry": "低成交上涨", "auction_pct": 2.0, "amount": 100_000_000, "volume_lot": 1, "name": "乙", "code": "600002"},
+        ]
+
+        stats = mod.top_industry_auction_stats(rows)
+
+        self.assertEqual(stats[0]["industry"], "低成交上涨")
+
     def test_build_report_uses_auction_sections_not_fund_flow(self):
         mod = load_module()
         mod.NOW = datetime(2026, 7, 2, 9, 25, tzinfo=mod.CN_TZ)
