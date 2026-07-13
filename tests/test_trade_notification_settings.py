@@ -139,7 +139,10 @@ class TradeNotificationSettingsTests(unittest.TestCase):
         self.assertIn("clearRemovedNotificationChannelFields(form);", page)
         self.assertIn("enabledInput.disabled = !active", page)
         self.assertIn("fields.disabled = !active", page)
-        self.assertIn("button.textContent = active ? '启用' : '关闭';", page)
+        self.assertIn("role='switch'", page)
+        self.assertIn("button.setAttribute('aria-checked', active ? 'true' : 'false');", page)
+        self.assertIn("state.textContent = active ? '已启用' : '已关闭';", page)
+        self.assertIn("测试通知不受渠道开关影响", page)
         self.assertIn("setNotificationChannelRemoved(notificationCard, true);", page)
         self.assertIn("resetEnvSaveIfDirty(notificationAddButton.closest('form'))", page)
 

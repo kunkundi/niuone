@@ -187,15 +187,19 @@ function renderNotificationSettings(items) {
       "<input type='hidden' name='notification_remove__" + escapeHtml(channel.id) + "' value='0' data-notification-channel-removed>" +
       "<div class='notification-channel-card-head'><div><div class='notification-channel-name' id='notification-channel-name-" + escapeHtml(channel.id) + "'>" +
       escapeHtml(channel.label) + "</div><div class='notification-channel-desc'>" + escapeHtml(channel.description || '') +
-      "</div></div><div class='notification-channel-head-actions'><button type='button' class='notification-channel-activation" + (active ? ' is-active' : '') +
-      "' data-notification-channel-activation aria-pressed='" + (active ? 'true' : 'false') + "'>" + (active ? '启用' : '关闭') +
-      "</button><button type='button' class='notification-channel-remove' data-notification-channel-remove='" + escapeHtml(channel.id) + "'>移除</button></div></div>" +
+      "</div></div><div class='notification-channel-head-actions'><div class='notification-channel-control'>" +
+      "<button type='button' class='notification-channel-activation" + (active ? ' is-active' : '') + "' data-notification-channel-activation role='switch'" +
+      " aria-checked='" + (active ? 'true' : 'false') + "' aria-label='" + escapeHtml(channel.label) + "渠道通知'>" +
+      "<span class='notification-channel-switch-track' aria-hidden='true'><span class='notification-channel-switch-thumb'></span></span>" +
+      "<span class='notification-channel-activation-state' data-notification-channel-activation-state>" + (active ? '已启用' : '已关闭') + "</span></button></div>" +
+      "<button type='button' class='notification-channel-remove' data-notification-channel-remove='" + escapeHtml(channel.id) + "'>移除</button></div></div>" +
       "<fieldset class='notification-channel-fields' data-notification-channel-fields" + (configured ? '' : ' disabled') +
       " aria-labelledby='notification-channel-name-" + escapeHtml(channel.id) + "'>" + fields + "</fieldset>" +
       "<div class='notification-channel-actions'><button type='button' class='notification-channel-test' data-notification-channel-test='" +
       escapeHtml(channel.id) + "' aria-describedby='notification-test-status-" + escapeHtml(channel.id) + "'>发送测试通知</button>" +
+      "<div class='notification-channel-test-copy'><span class='notification-channel-test-note'>测试通知不受渠道开关影响</span>" +
       "<span class='notification-channel-test-status' id='notification-test-status-" + escapeHtml(channel.id) +
-      "' data-notification-channel-test-status role='status' aria-live='polite'></span></div></article>";
+      "' data-notification-channel-test-status role='status' aria-live='polite'></span></div></div></article>";
   }).join('');
   return "<div class='notification-settings' data-notification-channels><div class='notification-block'>" +
     "<div class='notification-block-head'><div><div class='notification-block-title'>基础设置</div>" +
@@ -356,13 +360,14 @@ function setNotificationChannelActivation(card, active) {
   if (!card) return;
   var enabledInput = card.querySelector('[data-notification-channel-enabled]');
   var button = card.querySelector('[data-notification-channel-activation]');
+  var state = card.querySelector('[data-notification-channel-activation-state]');
   if (enabledInput) enabledInput.value = active ? '1' : '0';
   card.setAttribute('data-notification-channel-active', active ? 'true' : 'false');
   if (button) {
     button.classList.toggle('is-active', active);
-    button.setAttribute('aria-pressed', active ? 'true' : 'false');
-    button.textContent = active ? '启用' : '关闭';
+    button.setAttribute('aria-checked', active ? 'true' : 'false');
   }
+  if (state) state.textContent = active ? '已启用' : '已关闭';
 }
 function setNotificationChannelRemoved(card, removed) {
   if (!card) return;

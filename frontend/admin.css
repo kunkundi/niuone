@@ -90,16 +90,23 @@ select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,#9
 .notification-channel-name{font-size:15px;font-weight:900;color:#ecfeff}
 .notification-channel-desc{margin-top:3px;color:#8fa1b6;font-size:12px;line-height:1.4}
 .notification-channel-head-actions{display:flex;align-items:center;justify-content:flex-end;gap:7px;flex-wrap:wrap}
-.notification-channel-activation{padding:6px 9px;border:1px solid rgba(148,163,184,.24);background:rgba(51,65,85,.32);color:#cbd5e1;font-size:12px;white-space:nowrap}
-.notification-channel-activation:hover{border-color:rgba(148,163,184,.48);background:rgba(51,65,85,.52)}
-.notification-channel-activation.is-active{border-color:rgba(52,211,153,.38);background:rgba(6,78,59,.34);color:#bbf7d0}
-.notification-channel-activation.is-active:hover{border-color:rgba(52,211,153,.62);background:rgba(6,78,59,.50)}
+.notification-channel-control{display:flex;align-items:center;gap:7px;padding:4px 7px;border:1px solid rgba(148,163,184,.18);border-radius:8px;background:rgba(2,6,12,.24)}
+.notification-channel-activation{display:flex;align-items:center;gap:6px;padding:2px;border:0;background:transparent;color:#cbd5e1;font-size:12px;white-space:nowrap}
+.notification-channel-activation:hover{background:transparent;color:#e2e8f0}
+.notification-channel-switch-track{position:relative;width:30px;height:17px;border-radius:999px;background:#475569;box-shadow:0 0 0 1px rgba(148,163,184,.20) inset;transition:background .15s ease}
+.notification-channel-switch-thumb{position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#e2e8f0;box-shadow:0 1px 4px rgba(0,0,0,.38);transition:transform .15s ease}
+.notification-channel-activation.is-active{color:#bbf7d0}
+.notification-channel-activation.is-active .notification-channel-switch-track{background:#10b981;box-shadow:0 0 0 1px rgba(110,231,183,.28) inset,0 0 10px rgba(16,185,129,.18)}
+.notification-channel-activation.is-active .notification-channel-switch-thumb{transform:translateX(13px);background:#f0fdf4}
+.notification-channel-activation-state{min-width:39px;text-align:left;font-weight:800}
 .notification-channel-remove{padding:6px 9px;border:1px solid rgba(251,113,133,.24);background:rgba(127,29,29,.18);color:#fecdd3;font-size:12px;white-space:nowrap}
 .notification-channel-remove:hover{border-color:rgba(251,113,133,.48);background:rgba(127,29,29,.32)}
 .notification-channel-fields{display:grid;gap:12px;margin:0;padding:14px;border:0;min-width:0}
 .notification-field{padding-bottom:12px;border-bottom:1px solid rgba(148,163,184,.10)}
 .notification-field:last-child{padding-bottom:0;border-bottom:0}
 .notification-channel-actions{display:flex;align-items:center;gap:10px;min-height:58px;padding:10px 14px 13px;border-top:1px solid rgba(148,163,184,.11);background:rgba(2,6,12,.20)}
+.notification-channel-test-copy{display:grid;gap:3px;min-width:0}
+.notification-channel-test-note{color:#7f8ea3;font-size:11px;line-height:1.35}
 .notification-channel-test{flex:0 0 auto;padding:8px 11px;border:1px solid rgba(96,165,250,.30);background:rgba(30,64,175,.18);color:#dbeafe;font-size:12px;white-space:nowrap}
 .notification-channel-test:hover:not(:disabled){border-color:rgba(96,165,250,.58);background:rgba(30,64,175,.32)}
 .notification-channel-test:disabled{cursor:wait;opacity:.72}
