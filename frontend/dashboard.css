@@ -50,6 +50,27 @@
     .practice-market-evaluation { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px; padding:8px 10px; border:1px solid rgba(96,165,250,.2); border-radius:9px; background:rgba(30,64,175,.09); color:#aebdd1; font-size:12px; line-height:1.45; }
     .practice-market-evaluation-label { color:#bfdbfe; font-weight:850; }
     .practice-market-evaluation time { margin-left:auto; color:#718096; }
+    .practice-market-summary-action { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px; color:#7f8da3; font-size:12px; }
+    .practice-market-summary-btn { border:1px solid rgba(167,139,250,.38); border-radius:9px; background:rgba(124,92,255,.14); color:#ddd6fe; padding:7px 12px; font-size:12px; font-weight:850; cursor:pointer; transition:.16s ease; }
+    .practice-market-summary-btn:hover:not(:disabled) { border-color:rgba(196,181,253,.68); background:rgba(124,92,255,.24); transform:translateY(-1px); }
+    .practice-market-summary-btn:disabled { cursor:not-allowed; opacity:.68; }
+    .practice-market-summary-card { margin-top:9px; padding:0; overflow:hidden; border:1px solid rgba(167,139,250,.24); border-radius:12px; background:linear-gradient(135deg, rgba(76,29,149,.13), rgba(15,23,42,.62)); color:#cbd5e1; font-size:13px; line-height:1.65; }
+    .practice-market-summary-card.stale { border-style:dashed; }
+    .practice-market-summary-head { width:100%; display:flex; align-items:center; gap:10px; margin:0; padding:10px 13px; border:0; border-radius:0; background:transparent; color:inherit; text-align:left; cursor:pointer; }
+    .practice-market-summary-head:hover { background:rgba(124,92,255,.09); }
+    .practice-market-summary-title { color:#e9d5ff; font-size:13px; font-weight:900; }
+    .practice-market-summary-compact-meta { margin-left:auto; color:#718096; font-size:11px; white-space:nowrap; }
+    .practice-market-summary-chevron { color:#a78bfa; font-size:20px; line-height:1; transition:transform .16s ease; }
+    .practice-market-summary-card.open .practice-market-summary-chevron { transform:rotate(90deg); }
+    .practice-market-summary-body { padding:0 14px 12px; border-top:1px solid rgba(167,139,250,.12); }
+    .practice-market-summary-card p { margin:8px 0 0; color:#dbe5f2; white-space:pre-line; }
+    .practice-market-summary-section { margin-top:9px; }
+    .practice-market-summary-section b { color:#c4b5fd; font-size:12px; }
+    .practice-market-summary-section.risk b { color:#fca5a5; }
+    .practice-market-summary-section ul { margin:4px 0 0; padding-left:18px; }
+    .practice-market-summary-section li + li { margin-top:2px; }
+    .practice-market-summary-meta { margin-top:9px; color:#718096; font-size:11px; }
+    .practice-market-summary-error { margin-top:7px; color:#f87171; font-size:12px; }
     .practice-manual-cycle-error { margin-top:8px; color:#f87171; font-size:12px; }
     .sector-columns { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:16px; align-items:start; }
     .sector-column { min-width:0; }

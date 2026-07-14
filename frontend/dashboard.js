@@ -78,6 +78,9 @@ let practiceFullSnapshotStatus = 'idle';
 let practiceFullRequest = null;
 let practiceManualCycleData = {running:false, stage:'idle', stage_label:'', error:''};
 let practiceManualCyclePollTimer = null;
+let practiceMarketSummaryData = {loading:true, available:false, scan_count:0};
+let practiceMarketSummaryGenerating = false;
+let practiceMarketSummaryExpanded = false;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const actionFetch = (url, options = {}) => fetch(url, {
@@ -997,6 +1000,7 @@ async function loadPracticePage() {
   // candidate scan, while the full snapshot hydrates richer historical data.
   const candidatesPromise = fetchJson('/api/practice_candidates');
   const manualCyclePromise = fetchJson('/api/niuniu_practice/manual-cycle', {cache: 'no-store'});
+  const marketSummaryPromise = fetchJson('/api/niuniu_practice/market-summary', {cache: 'no-store'});
   const fastPracticePromise = fetchJson(
     '/api/niuniu_practice?fast=1&calendar_schema=1',
     {cache: 'no-cache'},
@@ -1020,6 +1024,16 @@ async function loadPracticePage() {
     saveViewState();
   };
   const tasks = [
+    marketSummaryPromise.then(payload => {
+      if (seq !== practiceLoadSeq) return;
+      practiceMarketSummaryData = {...(payload || {}), loading:false};
+      renderPracticeUpdate();
+    }).catch(error => {
+      if (seq !== practiceLoadSeq) return;
+      console.error('practice market summary status error', error);
+      practiceMarketSummaryData = {...practiceMarketSummaryData, loading:false, error:String(error)};
+      renderPracticeUpdate();
+    }),
     manualCyclePromise.then(payload => {
       if (seq !== practiceLoadSeq) return;
       practiceManualCycleData = payload || practiceManualCycleData;
@@ -2340,6 +2354,51 @@ function shiftPracticeCalendarMonth(delta) {
   practiceCalendarSelectedDate = '';
   renderPracticeCalendarModal();
 }
+function renderPracticeMarketSummary() {
+  const d = practiceMarketSummaryData || {};
+  const generating = !!practiceMarketSummaryGenerating;
+  const scanCount = Math.max(0, Number(d.scan_count) || 0);
+  const usSummaryCount = Math.max(0, Number(d.us_summary_count) || 0);
+  const sourceCountText = `A股 ${scanCount} 次${usSummaryCount ? ` · 前日美股 ${usSummaryCount} 份` : ''}`;
+  const buttonText = generating ? '正在汇总今日盘面…' : '生成今日盘面总结';
+  const statusText = d.loading
+    ? '正在读取今日盘面扫描'
+    : (scanCount ? `复盘资料：${sourceCountText}` : '今日暂无A股盘面扫描');
+  const action = `<div class="practice-market-summary-action">
+    <button type="button" class="practice-market-summary-btn" onclick="triggerPracticeMarketSummary()" ${generating ? 'disabled aria-busy="true"' : ''}>${generating ? '⏳ ' : '✨ '}${esc(buttonText)}</button>
+    <span>${esc(statusText)}${d.stale ? ' · 有新增扫描，建议重新生成' : ''}</span>
+  </div>`;
+  const error = d.error ? `<div class="practice-market-summary-error">${esc(d.error)}</div>` : '';
+  if (!d.available || !d.summary) return `${action}${error}`;
+  const trendLines = Array.isArray(d.trend_lines) ? d.trend_lines.filter(Boolean).slice(0, 5) : [];
+  const structureLines = Array.isArray(d.structure_lines) ? d.structure_lines.filter(Boolean).slice(0, 5) : [];
+  const risks = Array.isArray(d.risk_lines) ? d.risk_lines.filter(Boolean).slice(0, 4) : [];
+  const renderList = (title, items, cls='') => items.length
+    ? `<div class="practice-market-summary-section ${cls}"><b>${esc(title)}</b><ul>${items.map(item => `<li>${esc(item)}</li>`).join('')}</ul></div>`
+    : '';
+  const sourceMode = d.model_used ? '模型综合' : '本地规则汇总';
+  const expanded = !!practiceMarketSummaryExpanded;
+  return `${action}${error}<section class="practice-market-summary-card ${expanded ? 'open' : 'collapsed'} ${d.stale ? 'stale' : ''}">
+    <button type="button" class="practice-market-summary-head" onclick="togglePracticeMarketSummary()" aria-expanded="${expanded ? 'true' : 'false'}">
+      <span class="practice-market-summary-title">今日盘面总结 · ${esc(d.tone_label || '中性')}</span>
+      <span class="practice-market-summary-compact-meta">${esc(sourceCountText)} · ${esc((d.generated_at || '').slice(5, 16))}</span>
+      <span class="practice-market-summary-chevron" aria-hidden="true">›</span>
+    </button>
+    <div class="practice-market-summary-body"${expanded ? '' : ' hidden'}>
+      <p>${esc(d.summary)}</p>
+      ${renderList('走势脉络', trendLines)}
+      ${renderList('市场结构', structureLines)}
+      ${renderList('风险变化', risks, 'risk')}
+      <div class="practice-market-summary-meta">汇总 ${esc(sourceCountText)} · ${esc(sourceMode)}${d.stale ? ' · 当前结果未包含最新资料' : ''}</div>
+    </div>
+  </section>`;
+}
+
+function togglePracticeMarketSummary() {
+  practiceMarketSummaryExpanded = !practiceMarketSummaryExpanded;
+  if (activeCategory === 'practice') renderPracticePage();
+}
+
 function renderPracticePanel() {
   const p = niuniuPracticeData || {};
   const positions = p.positions || [];
@@ -2538,6 +2597,7 @@ function renderPracticePanel() {
       <button type="button" class="practice-manual-cycle-btn" onclick="triggerPracticeManualCycle()" ${manualRunning ? 'disabled aria-busy="true"' : ''}>${manualRunning ? '⏳ ' : '▶ '}${esc(manualButtonText)}</button>
     </div>
     ${marketEvaluation}
+    ${renderPracticeMarketSummary()}
     ${manualCycle.error ? `<div class="practice-manual-cycle-error">本轮执行失败：${esc(manualCycle.error)}</div>` : ''}
     ${p.trading_paused ? `<div style=\"background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.35);border-radius:12px;padding:10px 14px;margin:10px 0;display:flex;justify-content:space-between;align-items:center\">
       <span style=\"color:#fbbf24;font-size:13px\">⏸️ 交易已暂停：${esc(p.pause_reason||'风控触发')}（${esc((p.pause_since||'').slice(11,16))}起）</span>
@@ -2869,6 +2929,24 @@ async function triggerPracticeManualCycle() {
   } catch (error) {
     practiceManualCycleData = {...practiceManualCycleData, running:false, stage:'error', stage_label:'启动失败', error:String(error)};
     renderPracticePage();
+  }
+}
+async function triggerPracticeMarketSummary() {
+  if (practiceMarketSummaryGenerating) return;
+  practiceMarketSummaryGenerating = true;
+  practiceMarketSummaryData = {...practiceMarketSummaryData, error:''};
+  renderPracticePage();
+  try {
+    const response = await actionFetch('/api/niuniu_practice/market-summary');
+    const payload = await response.json();
+    if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+    practiceMarketSummaryData = {...payload, loading:false, stale:false};
+    practiceMarketSummaryExpanded = false;
+  } catch (error) {
+    practiceMarketSummaryData = {...practiceMarketSummaryData, loading:false, error:String(error).replace(/^Error:\s*/, '')};
+  } finally {
+    practiceMarketSummaryGenerating = false;
+    if (activeCategory === 'practice') renderPracticePage();
   }
 }
 function renderPracticePage() {

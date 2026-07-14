@@ -34,6 +34,7 @@ import urllib.request
 
 from a_share_calendar import is_a_share_trading_day as calendar_is_a_share_trading_day, trading_day_status
 from dashboard import practice_payload as practice_payload_impl
+from dashboard import practice_market_summary as practice_market_summary_impl
 from dashboard import security as security_impl
 from niuone_paths import apply_container_runtime_overrides, get_dashboard_env_file, get_dashboard_home, get_local_data_dir
 import push_history
@@ -230,6 +231,8 @@ PRACTICE_CANDIDATES_CACHE_KEY = "practice_candidates"
 PRACTICE_CANDIDATES_API_PATHS = frozenset({"/api/practice_candidates", "/api/b1_screen"})
 PRACTICE_CANDIDATES_REFRESH_API_PATHS = frozenset({"/api/practice_candidates/refresh", "/api/b1_screen/trigger"})
 PRACTICE_MANUAL_CYCLE_API_PATH = "/api/niuniu_practice/manual-cycle"
+PRACTICE_MARKET_SUMMARY_API_PATH = "/api/niuniu_practice/market-summary"
+PRACTICE_MARKET_SUMMARY_FILE = CRON_OUTPUT_DIR / "practice_market_summary_latest.json"
 API_TTLS = {
     "messages": 10,
     "practice_candidates": int(
@@ -1907,6 +1910,27 @@ def merge_records_from_db(limit: int | None = None, category: str | None = None,
             "storage": "sqlite", "db_path": str(push_history.DB_PATH),
             "count": len(records), "total": data["total"], "platforms": data["platforms"],
             "chats": data["chats"], "categories": categories, "records": records}
+
+
+def _practice_market_summary_records() -> list[dict[str, Any]]:
+    data = push_history.query_messages(category="market_monitor", limit=100)
+    return [record for record in (data.get("records") or []) if isinstance(record, dict)]
+
+
+def get_practice_market_summary_status() -> dict[str, Any]:
+    return practice_market_summary_impl.summary_status(
+        _practice_market_summary_records(),
+        PRACTICE_MARKET_SUMMARY_FILE,
+        current_cn_datetime(),
+    )
+
+
+def generate_practice_market_summary() -> dict[str, Any]:
+    return practice_market_summary_impl.generate_and_store_summary(
+        _practice_market_summary_records(),
+        PRACTICE_MARKET_SUMMARY_FILE,
+        current_cn_datetime(),
+    )
 
 
 def _store_api_cache_payload(cache_key: str, payload: bytes, generation: int) -> bool:
@@ -3710,7 +3734,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             return
-        if parsed.path in PRACTICE_CANDIDATES_REFRESH_API_PATHS | {PRACTICE_MANUAL_CYCLE_API_PATH, "/api/niuniu_practice/resume", "/api/self_optimize/apply"}:
+        if parsed.path in PRACTICE_CANDIDATES_REFRESH_API_PATHS | {PRACTICE_MANUAL_CYCLE_API_PATH, PRACTICE_MARKET_SUMMARY_API_PATH, "/api/niuniu_practice/resume", "/api/self_optimize/apply"}:
             self.send_response(405)
             self.send_header("Allow", "POST")
             self.send_header("Cache-Control", "no-store")
@@ -3821,6 +3845,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == PRACTICE_MANUAL_CYCLE_API_PATH:
             self.send_json_uncached(practice_manual_cycle_status())
+            return
+        if parsed.path == PRACTICE_MARKET_SUMMARY_API_PATH:
+            self.send_json_uncached(get_practice_market_summary_status())
             return
         if parsed.path == "/api/niuniu_practice":
             params = parse_qs(parsed.query)
@@ -3968,6 +3995,19 @@ class Handler(BaseHTTPRequestHandler):
             if not self.enforce_rate_limit("admin", self.client_ip(), RATE_LIMIT_ADMIN):
                 return
             self.send_json_uncached(start_practice_manual_cycle())
+            return
+        if parsed.path == PRACTICE_MARKET_SUMMARY_API_PATH:
+            if not self.require_admin():
+                return
+            if not self.require_action_request():
+                return
+            if not self.enforce_rate_limit("admin", self.client_ip(), RATE_LIMIT_ADMIN):
+                return
+            result = generate_practice_market_summary()
+            if result.get("ok"):
+                self.send_json_uncached(result)
+            else:
+                self.send_json_error(409, str(result.get("error") or "盘面总结生成失败"))
             return
         if parsed.path in PRACTICE_CANDIDATES_REFRESH_API_PATHS or legacy_force_path:
             params = parse_qs(parsed.query)

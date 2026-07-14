@@ -161,8 +161,8 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(dashboard_js.wfile.getvalue(), (FRONTEND / 'dashboard.js').read_bytes())
         self.assertEqual(admin_js.wfile.getvalue(), (FRONTEND / 'admin.js').read_bytes())
         self.assertEqual(versioned_dashboard_js.wfile.getvalue(), (FRONTEND / 'dashboard.js').read_bytes())
-        self.assertIn('<link rel="stylesheet" href="/static/dashboard.css?v=12">', DASHBOARD_FRONTEND)
-        self.assertIn('<script src="/static/dashboard.js?v=23" defer></script>', DASHBOARD_FRONTEND)
+        self.assertIn('<link rel="stylesheet" href="/static/dashboard.css?v=14">', DASHBOARD_FRONTEND)
+        self.assertIn('<script src="/static/dashboard.js?v=27" defer></script>', DASHBOARD_FRONTEND)
         self.assertNotIn('document.title', DASHBOARD_FRONTEND)
         self.assertIn("document.title = '牛牛1号';", ADMIN_FRONTEND)
         self.assertNotIn("title + ' · 牛牛1号'", ADMIN_FRONTEND)
@@ -1474,6 +1474,10 @@ console.log(JSON.stringify(result));
         self.assertIn("fetch('/api/niuniu_practice/manual-cycle', {cache:'no-store'})", DASHBOARD_FRONTEND)
         self.assertIn('手动触发选股及买卖策略', DASHBOARD_FRONTEND)
         self.assertIn('盘面评价 · ${esc(marketContext.tone_label', DASHBOARD_FRONTEND)
+        self.assertIn('let practiceMarketSummaryExpanded = false;', DASHBOARD_FRONTEND)
+        self.assertIn('class="practice-market-summary-card ${expanded ? \'open\' : \'collapsed\'}', DASHBOARD_FRONTEND)
+        self.assertIn('class="practice-market-summary-body"${expanded ? \'\' : \' hidden\'}', DASHBOARD_FRONTEND)
+        self.assertIn('function togglePracticeMarketSummary()', DASHBOARD_FRONTEND)
         self.assertIn("disabled aria-busy=\"true\"", DASHBOARD_FRONTEND)
 
     def test_index_snapshot_merge_handles_business_errors_and_stale_full_responses(self):
@@ -2158,6 +2162,52 @@ process.stdout.write(JSON.stringify({
                 'DASHBOARD_TELEGRAM_CHAT_ID': '-1001234567890',
             },
         )])
+
+    def test_practice_market_summary_status_is_public_and_generation_requires_admin_action(self):
+        original_status = dashboard.get_practice_market_summary_status
+        original_generate = dashboard.generate_practice_market_summary
+        original_admin_limit = dashboard.RATE_LIMIT_ADMIN
+        calls = []
+        try:
+            dashboard.RATE_LIMIT_ADMIN = 100
+            dashboard.get_practice_market_summary_status = lambda: {
+                'ok': True, 'available': False, 'scan_count': 2,
+            }
+            dashboard.generate_practice_market_summary = lambda: calls.append(True) or {
+                'ok': True, 'available': True, 'scan_count': 2, 'summary': '今日汇总',
+            }
+
+            status_handler = FakeHandler(path=dashboard.PRACTICE_MARKET_SUMMARY_API_PATH)
+            status_handler.do_GET()
+            self.assertEqual(status_handler.status, 200)
+            self.assertEqual(json.loads(status_handler.wfile.getvalue().decode('utf-8'))['scan_count'], 2)
+
+            unauthorized = FakeHandler(
+                path=dashboard.PRACTICE_MARKET_SUMMARY_API_PATH,
+                method='POST',
+                headers={'Content-Length': '0', dashboard.ACTION_HEADER_NAME: '1'},
+            )
+            unauthorized.do_POST()
+            self.assertEqual(unauthorized.status, 403)
+            self.assertEqual(calls, [])
+
+            generated = FakeHandler(
+                path=dashboard.PRACTICE_MARKET_SUMMARY_API_PATH,
+                method='POST',
+                headers={
+                    'Content-Length': '0',
+                    'Cookie': self.admin_cookie(),
+                    dashboard.ACTION_HEADER_NAME: '1',
+                },
+            )
+            generated.do_POST()
+            self.assertEqual(generated.status, 200)
+            self.assertEqual(json.loads(generated.wfile.getvalue().decode('utf-8'))['summary'], '今日汇总')
+            self.assertEqual(calls, [True])
+        finally:
+            dashboard.get_practice_market_summary_status = original_status
+            dashboard.generate_practice_market_summary = original_generate
+            dashboard.RATE_LIMIT_ADMIN = original_admin_limit
 
     def test_notification_test_api_has_dedicated_rate_limit_and_body_limit(self):
         original_sender = dashboard.send_notification_test
