@@ -82,6 +82,14 @@ function renderEnvInput(item) {
       "<option value='1'" + (current === '1' ? ' selected' : '') + ">启用</option>" +
       "<option value='0'" + (current === '0' ? ' selected' : '') + ">停用</option></select>";
   }
+  if (kind === 'api_mode') {
+    var apiMode = ['auto', 'responses', 'chat'].indexOf(value) >= 0 ? value : 'auto';
+    return "<select name='" + fieldName + "' aria-label='" + label + "'>" +
+      "<option value='auto'" + (apiMode === 'auto' ? ' selected' : '') + ">自动</option>" +
+      "<option value='responses'" + (apiMode === 'responses' ? ' selected' : '') + ">Responses API（搜索工具）</option>" +
+      "<option value='chat'" + (apiMode === 'chat' ? ' selected' : '') + ">Chat Completions（兼容模式）</option></select>" +
+      "<div class='config-meta'>自动模式下，Grok 4.5 使用 Responses API，其他模型保持 Chat Completions</div>";
+  }
   if (kind === 'cron_time' || kind === 'time') {
     var dayLabel = kind === 'cron_time' && item.day_label ? ' · ' + escapeHtml(item.day_label) : '';
     return "<input type='time' name='" + fieldName + "' aria-label='" + label + "' value='" + escapedValue + "'>" +

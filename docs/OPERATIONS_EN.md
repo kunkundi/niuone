@@ -78,7 +78,7 @@ Core configuration items:
 | Scenario | Configuration items |
 |---|---|
 | Master switch for NiuNiu U.S. Stocks | `DASHBOARD_US_FEATURES_ENABLED` |
-| Grok API | `DASHBOARD_GROK_BASE_URL`, `DASHBOARD_GROK_API_KEY`, `DASHBOARD_GROK_MODEL`, `DASHBOARD_GROK_CONTEXT_LENGTH` |
+| Grok API | `DASHBOARD_GROK_BASE_URL`, `DASHBOARD_GROK_API_KEY`, `DASHBOARD_GROK_MODEL`, `DASHBOARD_GROK_API_MODE`, `DASHBOARD_GROK_CONTEXT_LENGTH` |
 | Separate override for A-share market model summaries | `A_SHARE_MODEL_SUMMARY_BASE_URL`, `A_SHARE_MODEL_SUMMARY_API_KEY`, `A_SHARE_MODEL_SUMMARY_MODEL`, `A_SHARE_MODEL_SUMMARY_MAX_TOKENS` |
 | News pre-check API | `DASHBOARD_NEWS_BASE_URL`, `DASHBOARD_NEWS_API_KEY`, `DASHBOARD_NEWS_MODEL`, `DASHBOARD_NEWS_MAX_TOKENS`, `DASHBOARD_NEWS_CONCURRENCY` |
 | Trading-decision API | `DASHBOARD_DECISION_BASE_URL`, `DASHBOARD_DECISION_API_KEY`, `DASHBOARD_DECISION_MODEL` |
@@ -89,6 +89,7 @@ Core configuration items:
 | Separate override for the X watchlist | `X_WATCHLIST_BASE_URL`, `X_WATCHLIST_API_KEY`, `X_WATCHLIST_MODEL`, `X_WATCHLIST_MAX_TOKENS` |
 
 After administrator authentication, preferably use the settings button on the page to open the settings page and manage these values. Tweet monitoring and U.S. ratings settings are controlled by the “Enable NiuNiu U.S. Stocks” switch. When disabled, the settings page hides these items, and the background X monitoring and U.S. ratings scheduled tasks are skipped. You can also edit `.local-data/dashboard.env` directly; after saving, restart the affected components as appropriate, or wait for the next task cycle to pick up the changes.
+`DASHBOARD_GROK_API_MODE` accepts `auto`, `responses`, or `chat`. The default `auto` mode uses the Responses API with `web_search`/`x_search` tools for Grok 4.5 and keeps Chat Completions for other models; compatible gateways can force either mode. `X_WATCHLIST_REQUEST_TIMEOUT_SECONDS` controls the per-account X request timeout and defaults to `45` seconds.
 `*_CONTEXT_LENGTH` represents only the model context window and defaults to `128000`; `*_MAX_TOKENS` controls only `max_tokens` in the request body, defaults to `4096`, and can be overridden per scenario.
 The news pre-check examines at most five candidate stocks concurrently by default. If the upstream service returns rate limits or 403/429 responses, reduce `DASHBOARD_NEWS_CONCURRENCY` to `2` or `1`.
 

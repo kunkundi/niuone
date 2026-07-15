@@ -15,6 +15,23 @@ ENTRYPOINTS = SRC / 'entrypoints'
 
 
 class XWatchlistMonitorTests(unittest.TestCase):
+    def test_x_watchlist_request_timeout_can_be_overridden(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
+            env['X_WATCHLIST_REQUEST_TIMEOUT_SECONDS'] = '50'
+            code = f"""
+import importlib.util, json, sys
+sys.path[:0] = [{str(COMPAT)!r}, {str(SRC)!r}]
+spec = importlib.util.spec_from_file_location('x_watchlist_monitor_under_test', {str(COMPAT / 'x_watchlist_monitor.py')!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print(json.dumps({{'timeout': m.REQUEST_TIMEOUT_SECONDS}}))
+"""
+            out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
+            self.assertEqual(json.loads(out)['timeout'], 50)
+
     def test_context_length_does_not_set_x_watchlist_max_tokens(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
@@ -29,7 +46,7 @@ spec = importlib.util.spec_from_file_location('x_watchlist_monitor_under_test', 
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 captured = {{}}
-def fake_openai_chat_json(base_url, api_key, prompt, max_tokens, timeout=m.REQUEST_TIMEOUT_SECONDS):
+def fake_openai_chat_json(base_url, api_key, prompt, max_tokens, timeout=m.REQUEST_TIMEOUT_SECONDS, x_handles=None):
     captured['max_tokens'] = max_tokens
     return {{'accounts': []}}
 m.openai_chat_json = fake_openai_chat_json
@@ -61,7 +78,7 @@ spec = importlib.util.spec_from_file_location('x_watchlist_monitor_under_test', 
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 captured = {{}}
-def fake_openai_chat_json(base_url, api_key, prompt, max_tokens, timeout=m.REQUEST_TIMEOUT_SECONDS):
+def fake_openai_chat_json(base_url, api_key, prompt, max_tokens, timeout=m.REQUEST_TIMEOUT_SECONDS, x_handles=None):
     captured['max_tokens'] = max_tokens
     return {{'accounts': []}}
 m.openai_chat_json = fake_openai_chat_json
@@ -112,6 +129,81 @@ print(json.dumps(captured, ensure_ascii=False))
             self.assertNotIn('temperature', payload)
             self.assertEqual(captured['headers']['User-agent'], 'NiuOne/1.0')
             self.assertEqual(captured['headers']['Accept'], 'application/json')
+
+    def test_grok_45_uses_responses_x_search_tool(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
+            env['DASHBOARD_GROK_MODEL'] = 'grok-4.5'
+            env['DASHBOARD_GROK_API_MODE'] = 'auto'
+            code = f"""
+import importlib.util, json, sys
+sys.path[:0] = [{str(COMPAT)!r}, {str(SRC)!r}]
+spec = importlib.util.spec_from_file_location('x_watchlist_monitor_under_test', {str(COMPAT / 'x_watchlist_monitor.py')!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+captured = {{}}
+class Resp:
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        return False
+    def read(self):
+        return b'{{"output":[{{"content":[{{"type":"output_text","text":"{{\\\\\\"accounts\\\\\\":[]}}"}}]}}]}}'
+def fake_urlopen(req, timeout=0):
+    captured['url'] = req.full_url
+    captured['payload'] = json.loads(req.data.decode('utf-8'))
+    return Resp()
+m.urllib.request.urlopen = fake_urlopen
+result = m.openai_chat_json('https://x.example/v1', 'secret', 'return JSON', 321, timeout=3, x_handles=['@Foo'])
+print(json.dumps({{'captured': captured, 'result': result}}, ensure_ascii=False))
+"""
+            out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
+            data = json.loads(out)
+            payload = data['captured']['payload']
+            self.assertEqual(data['captured']['url'], 'https://x.example/v1/responses')
+            self.assertEqual(payload['max_output_tokens'], 321)
+            self.assertEqual(payload['tools'], [{'type': 'x_search', 'allowed_x_handles': ['foo']}])
+            self.assertEqual(payload['reasoning'], {'effort': 'low'})
+            self.assertEqual(data['result'], {'accounts': []})
+
+    def test_api_mode_can_force_responses_for_gateway_model_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
+            env['DASHBOARD_GROK_MODEL'] = 'gateway-grok-latest'
+            env['DASHBOARD_GROK_API_MODE'] = 'responses'
+            code = f"""
+import importlib.util, json, sys
+sys.path[:0] = [{str(COMPAT)!r}, {str(SRC)!r}]
+spec = importlib.util.spec_from_file_location('x_watchlist_monitor_under_test', {str(COMPAT / 'x_watchlist_monitor.py')!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+captured = {{}}
+class Resp:
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        return False
+    def read(self):
+        return b'{{"output":[{{"content":[{{"type":"output_text","text":"{{\\\\\\\"accounts\\\\\\\":[]}}"}}]}}]}}'
+def fake_urlopen(req, timeout=0):
+    captured['url'] = req.full_url
+    captured['payload'] = json.loads(req.data.decode('utf-8'))
+    return Resp()
+m.urllib.request.urlopen = fake_urlopen
+result = m.openai_chat_json('https://x.example/v1', 'secret', 'return JSON', 222, timeout=3, x_handles=['@Foo'])
+print(json.dumps({{'captured': captured, 'result': result}}, ensure_ascii=False))
+"""
+            out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
+            data = json.loads(out)
+            payload = data['captured']['payload']
+            self.assertEqual(data['captured']['url'], 'https://x.example/v1/responses')
+            self.assertEqual(payload['max_output_tokens'], 222)
+            self.assertEqual(payload['tools'], [{'type': 'x_search', 'allowed_x_handles': ['foo']}])
+            self.assertEqual(data['result'], {'accounts': []})
 
     def test_paths_are_dashboard_home_scoped_and_telegram_helpers_absent(self):
         with tempfile.TemporaryDirectory() as tmp:
