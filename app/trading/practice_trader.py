@@ -1589,7 +1589,7 @@ def record_equity(state: dict[str, Any]) -> None:
             try:
                 last_dt = datetime.datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
                 now_dt = datetime.datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
-                if (now_dt - last_dt).total_seconds() >= 120:
+                if (now_dt - last_dt).total_seconds() >= EQUITY_HEARTBEAT_MIN_SECONDS:
                     should_save = True
                 elif "15:00:" in now and "15:00:" not in last_time_str:
                     should_save = True
@@ -1636,14 +1636,32 @@ def rebuild_intraday_equity_curve(
     This keeps dashboard refreshes accurate without executing trades. It is most
     useful after data repair, where sparse heartbeat points can otherwise make
     the intraday curve look flat or jumpy.
+
+    On a day with trades, the current cash and positions cannot reconstruct the
+    part of the session before the latest execution.  In that case, preserve all
+    recorded points and fill missing minute marks strictly after the latest
+    trade.  Existing recorded minutes always win over reconstructed data.  This
+    safely repairs sparse post-trade curves after a restart without rewriting
+    trade history.
     """
     now = now or datetime.now()
     today = today or now.strftime("%Y-%m-%d")
     if not is_a_share_trading_day(now):
         prune_non_trading_day_equity_points(state)
         return False
-    if any(str(t.get("time", "")).startswith(today) for t in state.get("trade_log", []) if isinstance(t, dict)):
-        return False
+    today_trades = [
+        trade
+        for trade in state.get("trade_log", [])
+        if isinstance(trade, dict) and str(trade.get("time", "")).startswith(today)
+    ]
+    latest_trade_dt = None
+    if today_trades:
+        trade_times = [parse_ts(trade.get("time", "")) for trade in today_trades]
+        # An unparseable execution timestamp makes append-only reconstruction
+        # unsafe, so retain the previous conservative behaviour.
+        if any(trade_time is None for trade_time in trade_times):
+            return False
+        latest_trade_dt = max(trade_time for trade_time in trade_times if trade_time is not None)
     session_cutoff = current_session_minute(now) if today == now.strftime("%Y-%m-%d") else 240
     cash = float(state.get("cash") or 0)
     initial_cash = float(state.get("initial_cash") or INITIAL_CASH)
@@ -1699,24 +1717,51 @@ def rebuild_intraday_equity_curve(
                 "pnl_pct": round((equity / initial_cash - 1) * 100, 2) if initial_cash > 0 else 0.0,
             })
 
-    if len(rebuilt) < 2:
+    if not rebuilt:
         return False
 
     for code, price in last_price_by_code.items():
         if code in positions:
             positions[code]["last_price"] = round(price, 3)
 
-    history = [h for h in state.get("equity_history", []) if not str(h.get("time", "")).startswith(today)]
-    history.extend(rebuilt)
+    if latest_trade_dt is not None:
+        history = list(state.get("equity_history", []))
+        existing_today_minutes = {
+            parsed.strftime("%Y-%m-%d %H:%M")
+            for item in history
+            if str(item.get("time", "")).startswith(today)
+            for parsed in [parse_ts(item.get("time", ""))]
+            if parsed is not None
+        }
+        appended = [
+            point
+            for point in rebuilt
+            if (parse_ts(point.get("time", "")) or datetime.min) > latest_trade_dt
+            and str(point.get("time", ""))[:16] not in existing_today_minutes
+        ]
+        if not appended:
+            return False
+        history.extend(appended)
+        history.sort(key=lambda item: str(item.get("time", "")))
+        final_point = max(
+            (item for item in history if str(item.get("time", "")).startswith(today)),
+            key=lambda item: str(item.get("time", "")),
+        )
+    else:
+        if len(rebuilt) < 2:
+            return False
+        history = [h for h in state.get("equity_history", []) if not str(h.get("time", "")).startswith(today)]
+        history.extend(rebuilt)
+        final_point = rebuilt[-1]
     state["equity_history"] = history[-2000:]
 
     daily_history = [h for h in state.get("daily_equity_history", []) if not str(h.get("time", "")).startswith(today)]
-    daily_history.append(rebuilt[-1])
+    daily_history.append(final_point)
     state["daily_equity_history"] = daily_history[-EQUITY_HISTORY_LIMIT:]
 
     try:
         from niuniu_db import record_daily_equity as _record_db
-        _record_db(rebuilt[-1])
+        _record_db(final_point)
     except Exception:
         pass
     return True

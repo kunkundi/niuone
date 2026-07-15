@@ -2398,6 +2398,115 @@ class SellStrategyRuleTests(unittest.TestCase):
         self.assertFalse(rebuilt)
         self.assertEqual(len(state["equity_history"]), 1)
 
+    def test_intraday_curve_rebuild_appends_closing_point_after_latest_trade(self):
+        existing_point = {
+            "time": "2026-06-24 14:57:00",
+            "equity": 100100.0,
+            "cash": 90000.0,
+            "market_value": 10100.0,
+            "pnl_pct": 0.1,
+        }
+        state = {
+            "cash": 90000.0,
+            "initial_cash": 100000.0,
+            "positions": {
+                "600000": {
+                    "code": "600000",
+                    "qty": 1000,
+                    "avg_cost": 10.0,
+                    "last_price": 10.1,
+                    "intraday": {"points": [
+                        {"time": "14:57", "minute": 237, "price": 10.1},
+                        {"time": "15:00", "minute": 240, "price": 10.3},
+                    ]},
+                }
+            },
+            "trade_log": [{"time": "2026-06-24 14:02:18", "action": "BUY", "code": "600000"}],
+            "equity_history": [existing_point],
+            "daily_equity_history": [existing_point],
+        }
+
+        rebuilt = trader.rebuild_intraday_equity_curve(
+            state,
+            today="2026-06-24",
+            now=datetime(2026, 6, 24, 15, 1, 0),
+        )
+
+        self.assertTrue(rebuilt)
+        self.assertEqual(
+            [point["time"] for point in state["equity_history"]],
+            ["2026-06-24 14:57:00", "2026-06-24 15:00:00"],
+        )
+        self.assertIs(state["equity_history"][0], existing_point)
+        self.assertEqual(state["equity_history"][-1]["equity"], 100300.0)
+        self.assertEqual(state["daily_equity_history"][-1]["time"], "2026-06-24 15:00:00")
+
+        self.assertFalse(trader.rebuild_intraday_equity_curve(
+            state,
+            today="2026-06-24",
+            now=datetime(2026, 6, 24, 15, 1, 0),
+        ))
+        self.assertEqual(len(state["equity_history"]), 2)
+
+    def test_intraday_curve_rebuild_fills_post_trade_gaps_without_replacing_recorded_minutes(self):
+        recorded_1457 = {
+            "time": "2026-06-24 14:57:18",
+            "equity": 100110.0,
+            "cash": 90000.0,
+            "market_value": 10110.0,
+            "pnl_pct": 0.11,
+        }
+        recorded_close = {
+            "time": "2026-06-24 15:00:00",
+            "equity": 100300.0,
+            "cash": 90000.0,
+            "market_value": 10300.0,
+            "pnl_pct": 0.3,
+        }
+        state = {
+            "cash": 90000.0,
+            "initial_cash": 100000.0,
+            "positions": {
+                "600000": {
+                    "code": "600000",
+                    "qty": 1000,
+                    "avg_cost": 10.0,
+                    "last_price": 10.3,
+                    "intraday": {"points": [
+                        {"time": "14:56", "minute": 236, "price": 10.0},
+                        {"time": "14:57", "minute": 237, "price": 10.1},
+                        {"time": "14:58", "minute": 238, "price": 10.2},
+                        {"time": "14:59", "minute": 239, "price": 10.25},
+                        {"time": "15:00", "minute": 240, "price": 10.3},
+                    ]},
+                }
+            },
+            "trade_log": [{"time": "2026-06-24 14:02:18", "action": "BUY", "code": "600000"}],
+            "equity_history": [recorded_1457, recorded_close],
+            "daily_equity_history": [recorded_close],
+        }
+
+        rebuilt = trader.rebuild_intraday_equity_curve(
+            state,
+            today="2026-06-24",
+            now=datetime(2026, 6, 24, 15, 1, 0),
+        )
+
+        self.assertTrue(rebuilt)
+        self.assertEqual(
+            [point["time"] for point in state["equity_history"]],
+            [
+                "2026-06-24 14:56:00",
+                "2026-06-24 14:57:18",
+                "2026-06-24 14:58:00",
+                "2026-06-24 14:59:00",
+                "2026-06-24 15:00:00",
+            ],
+        )
+        self.assertIs(state["equity_history"][1], recorded_1457)
+        self.assertIs(state["equity_history"][-1], recorded_close)
+        self.assertIs(state["daily_equity_history"][-1], recorded_close)
+
     def test_intraday_curve_rebuild_clamps_today_points_to_current_clock(self):
         state = {
             "cash": 90000.0,
