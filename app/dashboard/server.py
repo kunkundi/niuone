@@ -167,6 +167,7 @@ B1_SCHEDULE_THREAD: threading.Thread | None = None
 PENDING_DECISION_THREAD: threading.Thread | None = None
 PENDING_DECISION_POLL_SECONDS = float(os.environ.get("DASHBOARD_PENDING_DECISION_POLL_SECONDS", "5") or "5")
 B1_CANDIDATE_REFRESH_LOCK = threading.Lock()
+B1_FULL_SCAN_LOCK = threading.Lock()
 B1_CANDIDATE_REFRESH_MIN_SECONDS = float(os.environ.get("DASHBOARD_B1_CANDIDATE_REFRESH_MIN_SECONDS", "0") or "0")
 B1_CANDIDATE_REFRESH_LAST_TS = 0.0
 MULTI_STRATEGY_CACHE_FILE = CRON_OUTPUT_DIR / "multi_strategy_latest.json"
@@ -181,6 +182,10 @@ TRADER_MODULE_LOCK = threading.Lock()
 PRACTICE_DECISION_KEYS: set[str] = set()
 PRACTICE_MANUAL_CYCLE_LOCK = threading.Lock()
 PRACTICE_MANUAL_CYCLE_STATE_LOCK = threading.RLock()
+PRACTICE_MANUAL_SCAN_REUSE_SECONDS = max(
+    0,
+    int(os.environ.get("DASHBOARD_MANUAL_SCAN_REUSE_SECONDS", "0") or "0"),
+)
 PRACTICE_MANUAL_CYCLE_STATE: dict[str, Any] = {
     "running": False,
     "stage": "idle",
@@ -305,6 +310,8 @@ ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
     {"name": ACTIVE_STRATEGY_ENV, "label": "当前独立策略", "group": "选股与交易策略", "kind": "strategy_suite", "default": default_enabled_persona_strategies_value(), "effect": "runtime"},
     {"name": PRESET_STRATEGY_TEXT_ENV, "label": "预设文字策略", "group": "选股与交易策略", "kind": "preset_strategy_text", "default": "", "effect": "runtime"},
     {"name": "DASHBOARD_B1_SCAN_TIMEOUT_SECONDS", "label": "实战选股扫描超时秒数", "group": "任务调度", "kind": "int", "default": "360", "effect": "restart"},
+    {"name": "DASHBOARD_B1_SCAN_WORKERS", "label": "实战选股并发数", "group": "任务调度", "kind": "int", "default": "6", "effect": "restart"},
+    {"name": "DASHBOARD_MANUAL_SCAN_REUSE_SECONDS", "label": "手动选股复用候选秒数", "group": "任务调度", "kind": "int", "default": "0", "effect": "restart"},
     {"name": "DASHBOARD_B1_SCHEDULE_CATCHUP_MINUTES", "label": "实战选股漏触发补跑窗口分钟", "group": "任务调度", "kind": "int", "default": "35", "effect": "restart"},
     {"name": "DASHBOARD_B1_SCHEDULE_STALE_SECONDS", "label": "实战选股运行中陈旧秒数", "group": "任务调度", "kind": "int", "default": "900", "effect": "restart"},
     {"name": "DASHBOARD_CRON_MAX_ATTEMPTS", "label": "Cron 失败最大运行次数", "group": "任务调度", "kind": "int", "default": "2", "effect": "next_run"},
@@ -1218,7 +1225,7 @@ def b1_cache_has_newer_generation(base_payload: dict[str, Any]) -> bool:
     try:
         if not B1_CACHE_FILE.exists():
             return False
-        latest = json.loads(B1_CACHE_FILE.read_text())
+        latest = json.loads(B1_CACHE_FILE.read_text(encoding="utf-8"))
     except Exception:
         return False
     latest_generated = str(latest.get("generated_at") or "")[:19]
@@ -1243,7 +1250,7 @@ def refresh_b1_candidate_cache_from_current_pool() -> dict[str, Any]:
         if not B1_CACHE_FILE.exists():
             return {"skipped": True, "reason": "missing_cache"}
         try:
-            parsed = json.loads(B1_CACHE_FILE.read_text())
+            parsed = json.loads(B1_CACHE_FILE.read_text(encoding="utf-8"))
         except Exception as exc:
             return {"skipped": True, "reason": f"bad_cache:{type(exc).__name__}"}
         items = parsed.get("items") or parsed.get("candidates") or []
@@ -1256,8 +1263,11 @@ def refresh_b1_candidate_cache_from_current_pool() -> dict[str, Any]:
             parsed["candidates"] = []
             parsed["count"] = 0
             parsed["refreshed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            B1_CACHE_FILE.write_text(json.dumps(parsed, ensure_ascii=False))
-            MULTI_STRATEGY_CACHE_FILE.write_text(json.dumps(parsed, ensure_ascii=False, indent=2))
+            B1_CACHE_FILE.write_text(json.dumps(parsed, ensure_ascii=False), encoding="utf-8")
+            MULTI_STRATEGY_CACHE_FILE.write_text(
+                json.dumps(parsed, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
             B1_CANDIDATE_REFRESH_LAST_TS = time.time()
             return {"updated": 0, "count": 0}
 
@@ -1395,8 +1405,8 @@ def refresh_b1_candidate_cache_from_current_pool() -> dict[str, Any]:
             "refreshed_at": refreshed_at,
         }
         json_text = json.dumps(output, ensure_ascii=False, indent=2)
-        B1_CACHE_FILE.write_text(json_text + "\n")
-        MULTI_STRATEGY_CACHE_FILE.write_text(json_text + "\n")
+        B1_CACHE_FILE.write_text(json_text + "\n", encoding="utf-8")
+        MULTI_STRATEGY_CACHE_FILE.write_text(json_text + "\n", encoding="utf-8")
         with API_RESPONSE_LOCK:
             API_RESPONSE_CACHE.pop(PRACTICE_CANDIDATES_CACHE_KEY, None)
         B1_CANDIDATE_REFRESH_LAST_TS = time.time()
@@ -1531,7 +1541,7 @@ def load_practice_candidates_cache() -> dict[str, Any]:
         return {"error": "; ".join(errors), "items": [], "count": 0, "generated_at": ""}
     return {"items": [], "count": 0, "generated_at": ""}
 
-def trigger_b1_scan(
+def _trigger_b1_scan_unlocked(
     force: bool = False,
     decision_mode: str = "async",
     *,
@@ -1564,7 +1574,7 @@ def trigger_b1_scan(
                      "running": False, "error": "", "cooldown_remaining_seconds": 0,
                      **schedule_meta}
             with B1_CANDIDATE_REFRESH_LOCK:
-                B1_CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False))
+                B1_CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
             if decision_mode == "sync":
                 cache["decision_result"] = run_practice_decision_logged(cache, record_start=True)
             elif decision_mode == "async":
@@ -1575,6 +1585,33 @@ def trigger_b1_scan(
         return {"error": f"扫描超时（{B1_SCAN_TIMEOUT_SECONDS}s）", "items": [], "count": 0, "generated_at": "", "running": False}
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}", "items": [], "count": 0, "generated_at": "", "running": False}
+
+
+def trigger_b1_scan(
+    force: bool = False,
+    decision_mode: str = "async",
+    *,
+    schedule_slot: str = "",
+    schedule_run_kind: str = "",
+) -> dict[str, Any]:
+    if not B1_FULL_SCAN_LOCK.acquire(blocking=False):
+        return {
+            "error": "已有选股扫描正在运行，请等待当前扫描完成",
+            "items": [],
+            "count": 0,
+            "generated_at": "",
+            "running": True,
+            "busy": True,
+        }
+    try:
+        return _trigger_b1_scan_unlocked(
+            force,
+            decision_mode,
+            schedule_slot=schedule_slot,
+            schedule_run_kind=schedule_run_kind,
+        )
+    finally:
+        B1_FULL_SCAN_LOCK.release()
 
 
 def practice_manual_cycle_status() -> dict[str, Any]:
@@ -1588,10 +1625,33 @@ def _set_practice_manual_cycle_state(**updates: Any) -> dict[str, Any]:
         return dict(PRACTICE_MANUAL_CYCLE_STATE)
 
 
+def recent_practice_candidates_for_manual_cycle() -> dict[str, Any] | None:
+    if PRACTICE_MANUAL_SCAN_REUSE_SECONDS <= 0:
+        return None
+    cache = load_practice_candidates_cache()
+    if cache.get("error"):
+        return None
+    generated_at = str(cache.get("generated_at") or "")[:19]
+    try:
+        generated_dt = datetime.strptime(generated_at, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    age_seconds = (datetime.now() - generated_dt).total_seconds()
+    if age_seconds < -60 or age_seconds > PRACTICE_MANUAL_SCAN_REUSE_SECONDS:
+        return None
+    return {
+        **cache,
+        "manual_scan_reused": True,
+        "manual_scan_age_seconds": round(max(0.0, age_seconds), 1),
+    }
+
+
 def _run_practice_manual_cycle() -> None:
     try:
-        _set_practice_manual_cycle_state(stage="screening", stage_label="正在选股并生成盘面评价")
-        cache = trigger_b1_scan(force=True, decision_mode="none")
+        _set_practice_manual_cycle_state(stage="screening", stage_label="正在检查候选并生成盘面评价")
+        cache = recent_practice_candidates_for_manual_cycle()
+        if cache is None:
+            cache = trigger_b1_scan(force=True, decision_mode="none")
         if cache.get("error"):
             raise RuntimeError(str(cache.get("error")))
 
@@ -1600,6 +1660,7 @@ def _run_practice_manual_cycle() -> None:
             stage_label="正在执行买卖策略",
             candidate_count=int(cache.get("count") or 0),
             generated_at=str(cache.get("generated_at") or ""),
+            manual_scan_reused=bool(cache.get("manual_scan_reused")),
         )
         decision_result = run_practice_decision_logged(cache, record_start=True)
         _set_practice_manual_cycle_state(
@@ -1635,6 +1696,7 @@ def start_practice_manual_cycle() -> dict[str, Any]:
         finished_at="",
         generated_at="",
         candidate_count=0,
+        manual_scan_reused=False,
         decision_result=None,
         error="",
     )
@@ -1650,7 +1712,9 @@ def b1_cache_generated_for_slot(slot_key: str) -> bool:
     try:
         if not B1_CACHE_FILE.exists():
             return False
-        generated_at = (json.loads(B1_CACHE_FILE.read_text()).get("generated_at") or "")[:16]
+        generated_at = (
+            json.loads(B1_CACHE_FILE.read_text(encoding="utf-8")).get("generated_at") or ""
+        )[:16]
         return generated_at == slot_key
     except Exception:
         return False
@@ -1662,7 +1726,7 @@ def _b1_schedule_now_text() -> str:
 
 def _load_b1_schedule_state_unlocked() -> dict[str, Any]:
     try:
-        state = json.loads(B1_SCHEDULE_STATE_FILE.read_text())
+        state = json.loads(B1_SCHEDULE_STATE_FILE.read_text(encoding="utf-8"))
         if not isinstance(state, dict):
             state = {}
     except Exception:
@@ -1676,7 +1740,7 @@ def _load_b1_schedule_state_unlocked() -> dict[str, Any]:
 def _save_b1_schedule_state_unlocked(state: dict[str, Any]) -> None:
     B1_SCHEDULE_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = B1_SCHEDULE_STATE_FILE.with_suffix(B1_SCHEDULE_STATE_FILE.suffix + ".tmp")
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(B1_SCHEDULE_STATE_FILE)
 
 

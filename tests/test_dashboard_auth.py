@@ -764,11 +764,13 @@ class DashboardAuthTests(unittest.TestCase):
 
         original_scan = dashboard.trigger_b1_scan
         original_decision = dashboard.run_practice_decision_logged
+        original_recent_candidates = dashboard.recent_practice_candidates_for_manual_cycle
         original_lock = dashboard.PRACTICE_MANUAL_CYCLE_LOCK
         original_state = dashboard.PRACTICE_MANUAL_CYCLE_STATE
         try:
             dashboard.trigger_b1_scan = fake_scan
             dashboard.run_practice_decision_logged = fake_decision
+            dashboard.recent_practice_candidates_for_manual_cycle = lambda: None
             dashboard.PRACTICE_MANUAL_CYCLE_LOCK = threading.Lock()
             dashboard.PRACTICE_MANUAL_CYCLE_STATE = {'running': False, 'stage': 'idle'}
 
@@ -805,8 +807,104 @@ class DashboardAuthTests(unittest.TestCase):
             allow_decision_finish.set()
             dashboard.trigger_b1_scan = original_scan
             dashboard.run_practice_decision_logged = original_decision
+            dashboard.recent_practice_candidates_for_manual_cycle = original_recent_candidates
             dashboard.PRACTICE_MANUAL_CYCLE_LOCK = original_lock
             dashboard.PRACTICE_MANUAL_CYCLE_STATE = original_state
+
+    def test_full_b1_scan_rejects_overlapping_requests(self):
+        scan_started = threading.Event()
+        allow_scan_finish = threading.Event()
+        results = []
+
+        def fake_scan(force=False, decision_mode='async', **_kwargs):
+            scan_started.set()
+            allow_scan_finish.wait(2)
+            return {'count': 1, 'force': force, 'decision_mode': decision_mode}
+
+        original_scan = dashboard._trigger_b1_scan_unlocked
+        original_lock = dashboard.B1_FULL_SCAN_LOCK
+        worker = None
+        try:
+            dashboard._trigger_b1_scan_unlocked = fake_scan
+            dashboard.B1_FULL_SCAN_LOCK = threading.Lock()
+            worker = threading.Thread(
+                target=lambda: results.append(dashboard.trigger_b1_scan(force=True, decision_mode='none')),
+            )
+            worker.start()
+            self.assertTrue(scan_started.wait(1))
+
+            duplicate = dashboard.trigger_b1_scan(force=True, decision_mode='none')
+            self.assertTrue(duplicate['busy'])
+            self.assertTrue(duplicate['running'])
+            self.assertIn('已有选股扫描正在运行', duplicate['error'])
+
+            allow_scan_finish.set()
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(results, [{'count': 1, 'force': True, 'decision_mode': 'none'}])
+        finally:
+            allow_scan_finish.set()
+            if worker is not None:
+                worker.join(2)
+            dashboard._trigger_b1_scan_unlocked = original_scan
+            dashboard.B1_FULL_SCAN_LOCK = original_lock
+
+    def test_recent_manual_candidates_respect_reuse_window(self):
+        original_seconds = dashboard.PRACTICE_MANUAL_SCAN_REUSE_SECONDS
+        original_loader = dashboard.load_practice_candidates_cache
+        try:
+            dashboard.PRACTICE_MANUAL_SCAN_REUSE_SECONDS = 600
+            generated_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            dashboard.load_practice_candidates_cache = lambda: {
+                'items': [{'code': '000001'}],
+                'count': 1,
+                'generated_at': generated_at,
+            }
+
+            recent = dashboard.recent_practice_candidates_for_manual_cycle()
+            self.assertTrue(recent['manual_scan_reused'])
+            self.assertEqual(recent['count'], 1)
+            self.assertLessEqual(recent['manual_scan_age_seconds'], 1)
+
+            dashboard.load_practice_candidates_cache = lambda: {
+                'items': [{'code': '000001'}],
+                'count': 1,
+                'generated_at': '2020-01-01 00:00:00',
+            }
+            self.assertIsNone(dashboard.recent_practice_candidates_for_manual_cycle())
+        finally:
+            dashboard.PRACTICE_MANUAL_SCAN_REUSE_SECONDS = original_seconds
+            dashboard.load_practice_candidates_cache = original_loader
+
+    def test_b1_slot_cache_is_read_as_utf8(self):
+        class RecordingCachePath:
+            def __init__(self):
+                self.encoding = None
+
+            def exists(self):
+                return True
+
+            def read_text(self, *, encoding=None):
+                self.encoding = encoding
+                return json.dumps({'generated_at': '2026-07-15 14:00:00'}, ensure_ascii=False)
+
+        original_cache_file = dashboard.B1_CACHE_FILE
+        cache_file = RecordingCachePath()
+        try:
+            dashboard.B1_CACHE_FILE = cache_file
+            self.assertTrue(dashboard.b1_cache_generated_for_slot('2026-07-15 14:00'))
+            self.assertEqual(cache_file.encoding, 'utf-8')
+        finally:
+            dashboard.B1_CACHE_FILE = original_cache_file
+
+    def test_b1_scan_reliability_settings_are_exposed(self):
+        workers = dashboard.ENV_CONFIG_BY_NAME['DASHBOARD_B1_SCAN_WORKERS']
+        reuse = dashboard.ENV_CONFIG_BY_NAME['DASHBOARD_MANUAL_SCAN_REUSE_SECONDS']
+
+        self.assertEqual(workers['default'], '6')
+        self.assertEqual(workers['effect'], 'restart')
+        self.assertEqual(reuse['default'], '0')
+        self.assertEqual(reuse['effect'], 'restart')
 
     def test_fast_practice_payload_derives_daily_calendar_points_from_intraday_history(self):
         class TraderStub:

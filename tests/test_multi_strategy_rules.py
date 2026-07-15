@@ -234,6 +234,54 @@ class MultiStrategyRuleTests(unittest.TestCase):
             else:
                 os.environ[trade_name] = saved_trade
 
+    def test_market_enrichment_reuses_market_wide_downloads(self):
+        import pandas as pd
+
+        margin_calls = []
+        block_calls = []
+        margin_frame = pd.DataFrame([
+            {
+                '标的证券代码': '600001',
+                '融资买入额': 4_000_000,
+                '融资偿还额': 1_000_000,
+                '融资余额': 100_000_000,
+            },
+            {
+                '标的证券代码': '600002',
+                '融资买入额': 2_000_000,
+                '融资偿还额': 1_000_000,
+                '融资余额': 100_000_000,
+            },
+        ])
+        block_frame = pd.DataFrame([
+            {'证券代码': '600001', '成交额': 1_000_000, '折溢率': 2.5},
+            {'证券代码': '600002', '成交额': 2_000_000, '折溢率': -1.0},
+        ])
+        fake_akshare = types.SimpleNamespace(
+            stock_margin_detail_sse=lambda date: margin_calls.append(date) or margin_frame,
+            stock_margin_detail_szse=lambda date: margin_calls.append(date) or margin_frame,
+            stock_dzjy_mrmx=lambda **kwargs: block_calls.append(kwargs) or block_frame,
+        )
+        original_akshare = sys.modules.get('akshare')
+        screen._MARGIN_DETAIL_CACHE.clear()
+        screen._BLOCK_TRADE_CACHE.clear()
+        sys.modules['akshare'] = fake_akshare
+        try:
+            self.assertIsNotNone(screen.get_margin_signal('600001'))
+            self.assertIsNotNone(screen.get_margin_signal('600002'))
+            self.assertIsNotNone(screen.get_block_trade_signal('600001'))
+            self.assertIsNotNone(screen.get_block_trade_signal('600002'))
+        finally:
+            screen._MARGIN_DETAIL_CACHE.clear()
+            screen._BLOCK_TRADE_CACHE.clear()
+            if original_akshare is None:
+                sys.modules.pop('akshare', None)
+            else:
+                sys.modules['akshare'] = original_akshare
+
+        self.assertEqual(len(margin_calls), 1)
+        self.assertEqual(len(block_calls), 1)
+
     def test_extract_industry_from_individual_info_rows(self):
         rows = [
             {"item": "股票简称", "value": "测试股份"},

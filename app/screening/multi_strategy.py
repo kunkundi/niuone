@@ -33,6 +33,7 @@
   "total_analyzed": 387
 }
 """
+import concurrent.futures
 import json
 import concurrent.futures
 import os
@@ -133,6 +134,8 @@ DISPLAY_HEAD_LIMIT = 8
 TRADE_CANDIDATE_LIMIT = 8
 _LOCAL_SITE_PACKAGES_READY = False
 _STOCK_INDUSTRY_MEMORY_CACHE: dict[str, str] | None = None
+_MARGIN_DETAIL_CACHE: dict[tuple[str, str], Any] = {}
+_BLOCK_TRADE_CACHE: dict[tuple[str, str], Any] = {}
 
 
 # ========== helpers ==========
@@ -507,21 +510,29 @@ def get_margin_signal(code: str) -> dict | None:
         import akshare as ak
         from datetime import datetime as dt_mod, timedelta
         
-        # 找最近一个可用交易日（融资数据非交易日为空）
+        market = "sse" if code.startswith(('6','9')) else "szse" if code.startswith(('0','2','3')) else ""
+        if not market:
+            return None
+
+        # 找最近一个可用交易日（融资数据非交易日为空）。同一轮扫描复用整张市场表，
+        # 避免为每只候选重复下载相同的上交所/深交所明细。
         today = dt_mod.now()
+        df = None
         for offset in range(5):
             check_date = (today - timedelta(days=offset)).strftime("%Y%m%d")
-            try:
-                if code.startswith(('6','9')):
-                    df = ak.stock_margin_detail_sse(date=check_date)
-                elif code.startswith(('0','2','3')):
-                    df = ak.stock_margin_detail_szse(date=check_date)
-                else:
-                    return None
-                if df is not None and not df.empty:
-                    break
-            except Exception:
-                continue
+            cache_key = (market, check_date)
+            if cache_key not in _MARGIN_DETAIL_CACHE:
+                try:
+                    _MARGIN_DETAIL_CACHE[cache_key] = (
+                        ak.stock_margin_detail_sse(date=check_date)
+                        if market == "sse"
+                        else ak.stock_margin_detail_szse(date=check_date)
+                    )
+                except Exception:
+                    _MARGIN_DETAIL_CACHE[cache_key] = None
+            df = _MARGIN_DETAIL_CACHE[cache_key]
+            if df is not None and not df.empty:
+                break
         else:
             return None
         
@@ -574,7 +585,17 @@ def get_block_trade_signal(code: str, name: str = "") -> dict | None:
         end = dt_mod.now().strftime("%Y%m%d")
         start = (dt_mod.now() - timedelta(days=5)).strftime("%Y%m%d")
         
-        df = ak.stock_dzjy_mrmx(symbol='A股', start_date=start, end_date=end)
+        cache_key = (start, end)
+        if cache_key not in _BLOCK_TRADE_CACHE:
+            try:
+                _BLOCK_TRADE_CACHE[cache_key] = ak.stock_dzjy_mrmx(
+                    symbol='A股',
+                    start_date=start,
+                    end_date=end,
+                )
+            except Exception:
+                _BLOCK_TRADE_CACHE[cache_key] = None
+        df = _BLOCK_TRADE_CACHE[cache_key]
         if df is None or df.empty:
             return None
         
@@ -992,7 +1013,15 @@ def main():
     to_analyze = liquid[:top_n]
     print(f"  High liquidity (成交额>8亿): {len(liquid)}, analyzing top {top_n}", file=sys.stderr)
 
-    print("Step 3: Multi-strategy scoring (registered strategy profiles)...", file=sys.stderr)
+    try:
+        scan_workers = int(dashboard_env_value("DASHBOARD_B1_SCAN_WORKERS") or "6")
+    except (TypeError, ValueError):
+        scan_workers = 6
+    scan_workers = max(1, min(16, scan_workers, len(to_analyze) or 1))
+    print(
+        f"Step 3: Multi-strategy scoring (registered strategy profiles, {scan_workers} workers)...",
+        file=sys.stderr,
+    )
     scorers = active_strategy_scorers()
     sector_tide_enabled = bool(SECTOR_TIDE_STRATEGY_IDS.intersection(scorers))
     sector_tide_context: dict[str, Any] | None = None
@@ -1047,24 +1076,27 @@ def main():
             file=sys.stderr,
         )
 
-    results = []
-    for i, (code, name, q) in enumerate(to_analyze):
+    def analyze_candidate(candidate):
+        code, name, q = candidate
         tencent_key = tencent_keys[code]
-        multi = analyze_all_strategies(
-            code,
-            tencent_key,
-            quote=q,
-            name=name,
-            industry=industry_by_code.get(code, ""),
-            rows=prepared_by_code.get(code),
-            context=sector_tide_context,
-            scorers=scorers,
-        )
+        try:
+            multi = analyze_all_strategies(
+                code,
+                tencent_key,
+                quote=q,
+                name=name,
+                industry=industry_by_code.get(code, ""),
+                rows=prepared_by_code.get(code),
+                context=sector_tide_context,
+                scorers=scorers,
+            )
+        except Exception:
+            return None
         if multi is None:
-            continue
+            return None
         # Backward compat fields
         best = multi["strategies"].get(multi["best_strategy"], {})
-        results.append({
+        return {
             "code": code,
             "name": name,
             **stock_universe_metadata(code, name),
@@ -1133,10 +1165,15 @@ def main():
             "strategies": multi["strategies"],
             "consensus_count": multi.get("consensus_count", 0),
             "consensus_boost": multi.get("consensus_boost", 0),
-        })
-        if (i + 1) % 50 == 0:
-            print(f"  ... {i + 1}/{len(to_analyze)} analyzed", file=sys.stderr)
-        time.sleep(0.02)
+        }
+
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=scan_workers) as pool:
+        for completed, item in enumerate(pool.map(analyze_candidate, to_analyze), 1):
+            if item is not None:
+                results.append(item)
+            if completed % 50 == 0:
+                print(f"  ... {completed}/{len(to_analyze)} analyzed", file=sys.stderr)
 
     # Sort: best_score desc, above_bbi bonus, closer to BBI better
     def sort_key(item):
