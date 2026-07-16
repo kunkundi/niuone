@@ -433,13 +433,14 @@ def hydrate_posts(base_url, api_key, new_items, timeout=DETAIL_REQUEST_TIMEOUT_S
 - 如果推文或引用/回复里有图片/视频/GIF，尽量返回可打开的媒体 URL；不需要识图、OCR 或图片内容描述。
 """
     try:
+        # Context may belong to an unmonitored reply or quote author, so this
+        # lookup must not inherit the initial account-fetch allowlist.
         parsed = openai_chat_json(
             base_url,
             api_key,
             prompt,
             configured_max_tokens(min(12000, 2200 + 1700 * len(new_items))),
             timeout=timeout,
-            x_handles=sorted({handle for _display_name, _post, _post_id, handle in new_items if handle}),
         )
         by_index = {int(post.get("index")): post for post in parsed.get("posts", []) if isinstance(post, dict) and str(post.get("index", "")).isdigit()}
     except Exception:
@@ -673,13 +674,14 @@ tweet_url：{tweet_url}
 - reply_to_chinese_text / quoted_chinese_text 只填中文：外文原帖只给中文翻译，中文原帖只给中文原文；不要中英双语，不要加“翻译：”。
 - 如果原推包含图片/视频/GIF，尽量返回 reply_to_media/quoted_media 的可打开 URL；不需要识图、OCR 或图片内容描述。
 """
+    # The parent or quoted post can belong to a different account. Restricting
+    # X Search to the monitored handle would make that context unreachable.
     parsed = openai_chat_json(
         base_url,
         api_key,
         prompt,
         configured_max_tokens(3000),
         timeout=timeout,
-        x_handles=[handle],
     )
     if not isinstance(parsed, dict):
         return post

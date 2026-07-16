@@ -205,6 +205,49 @@ print(json.dumps({{'captured': captured, 'result': result}}, ensure_ascii=False)
             self.assertEqual(payload['tools'], [{'type': 'x_search', 'allowed_x_handles': ['foo']}])
             self.assertEqual(data['result'], {'accounts': []})
 
+    def test_context_lookup_does_not_restrict_x_search_to_monitored_handles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
+            code = f"""
+import importlib.util, json, sys
+sys.path[:0] = [{str(COMPAT)!r}, {str(SRC)!r}]
+spec = importlib.util.spec_from_file_location('x_watchlist_monitor_under_test', {str(COMPAT / 'x_watchlist_monitor.py')!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+captured_handles = []
+def fake_openai_chat_json(base_url, api_key, prompt, max_tokens, timeout=m.REQUEST_TIMEOUT_SECONDS, x_handles=None):
+    captured_handles.append(x_handles)
+    return {{'posts': []}}
+m.openai_chat_json = fake_openai_chat_json
+post = {{
+    'time': '2026-07-16 10:00:00',
+    'chinese_text': '回复内容',
+    'conversation_type': 'reply',
+}}
+m.hydrate_posts(
+    'https://x.example/v1',
+    'secret',
+    [('监控账号', post, '123456789', 'monitored')],
+    timeout=3,
+)
+m.repair_context_from_x_html = lambda *args, **kwargs: dict(post)
+m.has_recovered_context = lambda _post: False
+m.repair_one_context(
+    'https://x.example/v1',
+    'secret',
+    '监控账号',
+    post,
+    '123456789',
+    'monitored',
+    timeout=3,
+)
+print(json.dumps({{'captured_handles': captured_handles}}, ensure_ascii=False))
+"""
+            out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
+            self.assertEqual(json.loads(out)['captured_handles'], [None, None])
+
     def test_paths_are_dashboard_home_scoped_and_telegram_helpers_absent(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
