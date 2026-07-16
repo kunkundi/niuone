@@ -2359,8 +2359,14 @@ function renderPracticeMarketSummary() {
   const generating = !!practiceMarketSummaryGenerating;
   const scanCount = Math.max(0, Number(d.scan_count) || 0);
   const usSummaryCount = Math.max(0, Number(d.us_summary_count) || 0);
-  const sourceCountText = `A股 ${scanCount} 次${usSummaryCount ? ` · 前日美股 ${usSummaryCount} 份` : ''}`;
-  const buttonText = generating ? '正在汇总今日盘面…' : '生成今日盘面总结';
+  const liveSnapshotCount = Math.max(0, Number(d.live_snapshot_count) || 0);
+  const previousSummaryCount = Math.max(0, Number(d.previous_summary_count) || 0);
+  const sourceParts = [`已有A股总结 ${scanCount} 次`];
+  if (usSummaryCount) sourceParts.push(`前日美股 ${usSummaryCount} 份`);
+  if (previousSummaryCount) sourceParts.push(`上一版 ${previousSummaryCount} 份`);
+  if (liveSnapshotCount) sourceParts.push(`实时快照 ${liveSnapshotCount} 份`);
+  const sourceCountText = sourceParts.join(' · ');
+  const buttonText = generating ? '正在抓取实时盘面并对比…' : '生成今日盘面总结';
   const statusText = d.loading
     ? '正在读取今日盘面扫描'
     : (scanCount ? `复盘资料：${sourceCountText}` : '今日暂无A股盘面扫描');
@@ -2370,6 +2376,7 @@ function renderPracticeMarketSummary() {
   </div>`;
   const error = d.error ? `<div class="practice-market-summary-error">${esc(d.error)}</div>` : '';
   if (!d.available || !d.summary) return `${action}${error}`;
+  const comparisons = Array.isArray(d.comparison_lines) ? d.comparison_lines.filter(Boolean).slice(0, 5) : [];
   const trendLines = Array.isArray(d.trend_lines) ? d.trend_lines.filter(Boolean).slice(0, 5) : [];
   const structureLines = Array.isArray(d.structure_lines) ? d.structure_lines.filter(Boolean).slice(0, 5) : [];
   const risks = Array.isArray(d.risk_lines) ? d.risk_lines.filter(Boolean).slice(0, 4) : [];
@@ -2386,10 +2393,11 @@ function renderPracticeMarketSummary() {
     </button>
     <div class="practice-market-summary-body"${expanded ? '' : ' hidden'}>
       <p>${esc(d.summary)}</p>
+      ${renderList('实时对比结论', comparisons)}
       ${renderList('走势脉络', trendLines)}
       ${renderList('市场结构', structureLines)}
       ${renderList('风险变化', risks, 'risk')}
-      <div class="practice-market-summary-meta">汇总 ${esc(sourceCountText)} · ${esc(sourceMode)}${d.stale ? ' · 当前结果未包含最新资料' : ''}</div>
+      <div class="practice-market-summary-meta">汇总 ${esc(sourceCountText)} · ${esc(sourceMode)}${d.live_snapshot_at ? ` · 实时抓取 ${esc(d.live_snapshot_at.slice(11, 19))}` : ''}${d.stale ? ' · 当前结果未包含最新资料' : ''}</div>
     </div>
   </section>`;
 }
@@ -2413,6 +2421,7 @@ function renderPracticePanel() {
     shaofu_b1: '少妇B1', b2_confirm: 'B2确认',
     b3_accelerate: 'B3中继', super_b1: '超级B1',
     li_daxiao_bottom: '李大霄',
+    tide_leader: '主线领航', tide_rotation: '轮动初升', tide_recovery: '冰点修复',
     mixed: '混合买入', unknown_buy: '未识别买入',
     auto_exit: '系统退出', unknown: '其他'
   };
@@ -2420,6 +2429,7 @@ function renderPracticePanel() {
     stop_loss: '止损', take_profit: '主动止盈', profit_protection: '回撤保护',
     top_escape: '逃顶/出货', technical_break: '技术破位', sell_score: '卖出评分',
     no_progress: '信号未兑现', position_adjust: '仓位调整', model_sell: '模型卖出',
+    sector_retreat: '板块退潮', market_risk: '市场风险',
     other_exit: '其他卖出'
   };
   const dynamicStrategyMeta = (practiceCandidatesData && practiceCandidatesData.strategy_meta) || {};
@@ -2976,8 +2986,17 @@ function renderPracticePage() {
       b2_confirm:     {label:'B2确认',    color:'#22c55e'},
       b3_accelerate:  {label:'B3中继',    color:'#a78bfa'},
       super_b1:       {label:'超级B1',    color:'#fb7185'},
+      tide_leader:    {label:'主线领航',  color:'#06b6d4'},
+      tide_rotation:  {label:'轮动初升',  color:'#14b8a6'},
+      tide_recovery:  {label:'冰点修复',  color:'#22d3ee'},
     };
     const STRATEGY_META = {...fallbackStrategyMeta, ...(d.strategy_meta || {})};
+    const STOCK_BOARD_LABELS = {
+      main_board: '主板',
+      chi_next: '创业板',
+      star_market: '科创板',
+      st: 'ST',
+    };
     const tierCounts = {high:0, mid:0, low:0};
     for (const item of items) {
       const s = item.best_score || item.score || 0;
@@ -3014,6 +3033,8 @@ function renderPracticePage() {
       const hardBlockers = item.hard_blockers || [];
       const hardBlockerFlags = hardBlockers.map(f => `<span style="color:#fbbf24;font-size:11px;margin-left:6px">硬过滤:${esc(f)}</span>`).join('');
       const stratName = item.best_strategy || '';
+      const isSectorTide = ['tide_leader', 'tide_rotation', 'tide_recovery'].includes(stratName);
+      const tideStatusNames = {leading:'领先', improving:'改善', weakening:'转弱', lagging:'落后'};
       const sm = STRATEGY_META[stratName] || {label:stratName||'综合', color:'#94a3b8'};
       let groupBadge = '';
       const finalScore = item.best_score || item.score || 0;
@@ -3021,7 +3042,7 @@ function renderPracticePage() {
       const scoreBasis = item.score_basis || '';
       const tradeDiscipline = [item.position_hint, item.time_stop].filter(Boolean).join(' · ');
       const tradeReady = !!item.actionable && !hardBlockers.length && finalScore >= entryThreshold;
-      const industryLabel = item.industry || item.sector || item.board || '';
+      const industryLabel = item.industry || item.sector || item.board_label || STOCK_BOARD_LABELS[item.board] || '';
       const groupBadgeBase = 'display:inline-flex;align-items:center;flex:0 0 auto;white-space:nowrap;line-height:1;background:rgba(52,211,153,.15);color:#34d399;padding:6px 10px;border-radius:999px;font-size:11px;font-weight:600';
       if (tradeReady) groupBadge = `<span style="${groupBadgeBase}">交易达标</span>`;
       else if (hardBlockers.length) groupBadge = `<span style="${groupBadgeBase};background:rgba(251,191,36,.15);color:#fbbf24">硬过滤</span>`;
@@ -3048,8 +3069,8 @@ function renderPracticePage() {
             <div style="color:#eef2ff;font-size:14px;font-weight:600">${item.best_score||item.score}/${item.score_total||10} · 基准≥${entryThreshold}</div>
           </div>
           <div style="background:rgba(2,6,23,.42);border:1px solid rgba(148,163,184,.10);border-radius:12px;padding:8px 10px;flex:1;min-width:100px">
-            <div style="color:#8da0b8;font-size:11px">BBI / 距BBI</div>
-            <div style="color:#eef2ff;font-size:14px;font-weight:600">${fmtNumber(item.bbi)} / ${esc(distStr)}</div>
+            <div style="color:#8da0b8;font-size:11px">${isSectorTide ? 'EMA20 / 距EMA20' : 'BBI / 距BBI'}</div>
+            <div style="color:#eef2ff;font-size:14px;font-weight:600">${fmtNumber(isSectorTide ? item.ema20 : item.bbi)} / ${esc(distStr)}</div>
           </div>
           <div style="background:rgba(2,6,23,.42);border:1px solid rgba(148,163,184,.10);border-radius:12px;padding:8px 10px;flex:1;min-width:100px">
             <div style="color:#8da0b8;font-size:11px">成交额</div>
@@ -3057,9 +3078,9 @@ function renderPracticePage() {
           </div>
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:6px;color:#94a3b8;font-size:12px">
-          <span>BBI上行 ${bbiUp}</span>
-          <span>站上BBI ${aboveBbi}</span>
-          <span>${esc(jInfo)}</span>
+          ${isSectorTide
+            ? `<span>市场 ${esc(item.market_regime || '--')} ${fmtNumber(item.market_score)}</span><span>行业潮位 ${esc(tideStatusNames[item.sector_status] || item.sector_status || '--')} / ${fmtNumber(item.sector_score)}</span><span>板块内排名 ${fmtNumber(item.stock_sector_rank)}</span><span>结构止损 ${fmtNumber(item.stop_price)} (${fmtNumber(item.stop_distance_pct)}%)</span><span>跳空缓冲 ${fmtNumber(item.gap_buffer_pct)}%</span><span>有效损失 ${fmtNumber(item.effective_loss_distance_pct)}%</span><span>单笔预算 ${fmtNumber(item.per_trade_risk_budget_pct)}%</span><span>动态仓位上限 ${fmtNumber(item.max_position_pct_by_risk)}%</span>`
+            : `<span>BBI上行 ${bbiUp}</span><span>站上BBI ${aboveBbi}</span><span>${esc(jInfo)}</span>`}
           ${scoreBasis ? `<span>${esc(scoreBasis)}</span>` : ''}
           ${tradeDiscipline ? `<span>${esc(tradeDiscipline)}</span>` : ''}
           ${hardBlockerFlags}

@@ -28,7 +28,13 @@ from .exits import evaluate_strategy_time_exit
 from .performance import track_strategy_performance
 from .policy import candidate_buy_blockers, candidate_is_buyable, strategy_position_limit_pct
 from .prompts import build_strategy_prompt_sections, format_preset_strategy_section
-from .scoring import STRATEGY_SCORERS, analyze_enriched_rows, enrich_rows
+from .scoring import (
+    SECTOR_TIDE_STRATEGY_IDS,
+    STRATEGY_SCORERS,
+    analyze_enriched_rows,
+    build_sector_tide_context,
+    enrich_rows,
+)
 from .selection import candidate_is_trade_ready, select_display_candidates, select_trade_candidates
 
 __all__ = [
@@ -41,7 +47,9 @@ __all__ = [
     "STRATEGY_SCORE_PROFILES",
     "STRATEGY_SUITES",
     "STRATEGY_SCORERS",
+    "SECTOR_TIDE_STRATEGY_IDS",
     "analyze_enriched_rows",
+    "build_sector_tide_context",
     "active_strategy_suite",
     "apply_entry_strategy_mark",
     "apply_exit_strategy_mark",

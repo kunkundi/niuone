@@ -11,11 +11,13 @@
   <a href="https://hub.docker.com/r/kunkundi/niuone"><img src="https://img.shields.io/docker/pulls/kunkundi/niuone?label=Docker%20Pulls" alt="Docker Pulls" /></a>
 </p>
 
-NiuOne is an intelligent market research workspace centered on simulated A-share trading, integrating market data aggregation, strategy research, and portfolio tracking. Users can choose a built-in strategy or write their own trading strategies in natural language.
+## Introduction
 
-The system brings together pre-open call auction data, intraday and post-market data, capital and sector flows, overnight U.S. market performance, institutional ratings, and information from sources you follow. This information is used for candidate screening, news pre-checks, and simulated buy and sell decisions. The simulated account continuously records positions, profit and loss, the equity curve, trading logs, and the rationale behind every decision.
+NiuOne is a research and simulated trading system for China's A-share market. LLMs drive market analysis and trading decisions, while the system provides market data aggregation, news retrieval, strategy configuration, and simulated portfolio tracking.
 
-NiuOne can automatically collect information, make simulated decisions, and archive trading records on a schedule. After a simulated trade is executed, it can send alerts through Feishu, DingTalk, WeCom, or Telegram. The simulated trading process follows the trading discipline and risk rules configured by the user. The project can run on a personal computer or server, while configuration and research data remain under the user's control. All trades take place in a simulated account: NiuOne does not connect to a brokerage or use real funds.
+The web dashboard provides a unified view of market data, analysis results, and simulated portfolio status. Scheduled jobs automatically collect pre-open call auction data, intraday and post-market activity, capital flows, sector performance, overnight U.S. market activity, institutional ratings, and content from a Twitter/X watchlist. Guided by user-configured strategy rules, LLMs perform news retrieval, market analysis, and simulated buy and sell decisions. Portfolio state, trade records, and decision rationale are stored locally, while simulated execution alerts can be delivered through Feishu, DingTalk, WeCom, or Telegram.
+
+NiuOne connects information collection, market analysis, trading decisions, and portfolio records into an automated, traceable, and reviewable simulated trading loop. The system can be deployed on a personal computer or server, with configuration and research data managed by the user. All trades are executed in a simulated account; NiuOne does not connect to brokerage trading interfaces or use real funds.
 
 ## Live Demo
 
@@ -26,7 +28,7 @@ NiuOne can automatically collect information, make simulated decisions, and arch
 ## Feature Overview
 
 - **Unified dashboard**: View indices, sectors, market sentiment, capital flows, and historical news in one place.
-- **Information aggregation**: Organize A-share market data, U.S. market summaries, institutional ratings, and custom sources you follow.
+- **Information aggregation**: Organize A-share market data, U.S. market summaries, institutional ratings, and content from a Twitter/X watchlist.
 - **Intelligent summaries**: Connect compatible large-model services to summarize and structure information from multiple sources.
 - **Custom trading strategies**: Choose a built-in strategy or describe your own candidate-selection, buy, sell, position-sizing, and timing rules in natural language.
 - **Simulated trading and portfolio tracking**: Use your own simulated account for candidate screening, buy and sell decisions, position and P&L tracking, and access to the equity curve and trading logs—all without connecting to a brokerage or using real funds.

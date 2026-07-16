@@ -83,6 +83,15 @@ from strategies.policy import (
 )
 from strategies.prompts import build_strategy_prompt_sections, format_preset_strategy_section
 from strategies.scoring.common import find_n_structure_prior_low as _find_n_structure_prior_low
+from strategies.sector_tide_risk import (
+    SECTOR_TIDE_EXECUTION_BUFFER_PCT,
+    effective_loss_distance_pct,
+    position_open_risk_pct,
+    risk_sized_position_cap_pct,
+    sector_tide_risk_budget,
+    stored_position_effective_loss_distance_pct,
+    structural_stop_distance_pct,
+)
 if "_sell_signals" not in globals():
     from trading import sell_signals as _sell_signals
 
@@ -216,6 +225,7 @@ def load_dashboard_env() -> None:
 
 load_dashboard_env()
 STATE_FILE = Path(os.environ.get("DASHBOARD_PORTFOLIO_STATE", DASHBOARD_HOME / "cron" / "output" / "niuniu_practice_portfolio.json")).expanduser()
+MULTI_STRATEGY_CACHE_FILE = DASHBOARD_HOME / "cron" / "output" / "multi_strategy_latest.json"
 CONFIG_PATH = Path(os.environ.get("DASHBOARD_CONFIG", DASHBOARD_HOME / "config.yaml")).expanduser()
 STOCK_TOOLS_SCRIPT = Path(
     os.environ.get("DASHBOARD_CN_STOCK_TOOLS", SCRIPT_DIR / "entrypoints" / "cn_stock_tools.py")
@@ -1363,8 +1373,34 @@ def enrich_portfolio(state: dict[str, Any]) -> dict[str, Any]:
         rows.append(row)
     cash = float(state.get("cash") or 0)
     total_equity = cash + total_mv
+    sector_tide_open_risk_pct = 0.0
     for row in rows:
         row["position_pct"] = position_pct_of_equity(row.get("market_value"), total_equity)
+        source_pos = positions.get(row.get("code")) if isinstance(positions.get(row.get("code")), dict) else {}
+        if is_sector_tide_strategy(position_entry_strategy(source_pos)):
+            effective_distance = stored_position_effective_loss_distance_pct(
+                source_pos,
+                mark_price=_safe_float(row.get("last_price"), 0.0),
+            )
+            if effective_distance <= 0:
+                effective_distance = _safe_float(source_pos.get("effective_loss_distance_pct"), 0.0)
+            open_risk = position_open_risk_pct(row.get("market_value"), total_equity, effective_distance)
+            source_pos["effective_loss_distance_pct"] = round(effective_distance, 3)
+            source_pos["position_open_risk_pct"] = round(open_risk, 4)
+            row.update({
+                "industry": source_pos.get("industry") or source_pos.get("sector") or "",
+                "entry_stop_price": source_pos.get("entry_stop_price"),
+                "gap_buffer_pct": source_pos.get("gap_buffer_pct"),
+                "execution_buffer_pct": source_pos.get("execution_buffer_pct"),
+                "effective_loss_distance_pct": round(effective_distance, 3),
+                "position_open_risk_pct": round(open_risk, 4),
+                "dynamic_position_cap_pct": source_pos.get("dynamic_position_cap_pct"),
+                "risk_budget_regime": source_pos.get("risk_budget_regime"),
+                "per_trade_risk_budget_pct": source_pos.get("per_trade_risk_budget_pct"),
+                "max_open_risk_pct": source_pos.get("max_open_risk_pct"),
+                "max_sector_risk_pct": source_pos.get("max_sector_risk_pct"),
+            })
+            sector_tide_open_risk_pct += open_risk
     source_equity_times: list[str] = []
     for point in state.get("equity_history", []):
         if not isinstance(point, dict):
@@ -1387,6 +1423,7 @@ def enrich_portfolio(state: dict[str, Any]) -> dict[str, Any]:
         "total_equity": round(total_equity, 2),
         "total_pnl": round(total_equity - float(state.get("initial_cash") or INITIAL_CASH), 2),
         "total_pnl_pct": round((total_equity / float(state.get("initial_cash") or INITIAL_CASH) - 1) * 100, 2),
+        "sector_tide_open_risk_pct": round(sector_tide_open_risk_pct, 4),
         "positions": rows,
         "trade_log": list(reversed(state.get("trade_log", [])[-TRADE_LOG_LIMIT:])),
         "decision_log": list(reversed(state.get("decision_log", [])[-50:])),
@@ -1589,7 +1626,7 @@ def record_equity(state: dict[str, Any]) -> None:
             try:
                 last_dt = datetime.datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
                 now_dt = datetime.datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
-                if (now_dt - last_dt).total_seconds() >= 120:
+                if (now_dt - last_dt).total_seconds() >= EQUITY_HEARTBEAT_MIN_SECONDS:
                     should_save = True
                 elif "15:00:" in now and "15:00:" not in last_time_str:
                     should_save = True
@@ -1636,14 +1673,32 @@ def rebuild_intraday_equity_curve(
     This keeps dashboard refreshes accurate without executing trades. It is most
     useful after data repair, where sparse heartbeat points can otherwise make
     the intraday curve look flat or jumpy.
+
+    On a day with trades, the current cash and positions cannot reconstruct the
+    part of the session before the latest execution.  In that case, preserve all
+    recorded points and fill missing minute marks strictly after the latest
+    trade.  Existing recorded minutes always win over reconstructed data.  This
+    safely repairs sparse post-trade curves after a restart without rewriting
+    trade history.
     """
     now = now or datetime.now()
     today = today or now.strftime("%Y-%m-%d")
     if not is_a_share_trading_day(now):
         prune_non_trading_day_equity_points(state)
         return False
-    if any(str(t.get("time", "")).startswith(today) for t in state.get("trade_log", []) if isinstance(t, dict)):
-        return False
+    today_trades = [
+        trade
+        for trade in state.get("trade_log", [])
+        if isinstance(trade, dict) and str(trade.get("time", "")).startswith(today)
+    ]
+    latest_trade_dt = None
+    if today_trades:
+        trade_times = [parse_ts(trade.get("time", "")) for trade in today_trades]
+        # An unparseable execution timestamp makes append-only reconstruction
+        # unsafe, so retain the previous conservative behaviour.
+        if any(trade_time is None for trade_time in trade_times):
+            return False
+        latest_trade_dt = max(trade_time for trade_time in trade_times if trade_time is not None)
     session_cutoff = current_session_minute(now) if today == now.strftime("%Y-%m-%d") else 240
     cash = float(state.get("cash") or 0)
     initial_cash = float(state.get("initial_cash") or INITIAL_CASH)
@@ -1699,24 +1754,51 @@ def rebuild_intraday_equity_curve(
                 "pnl_pct": round((equity / initial_cash - 1) * 100, 2) if initial_cash > 0 else 0.0,
             })
 
-    if len(rebuilt) < 2:
+    if not rebuilt:
         return False
 
     for code, price in last_price_by_code.items():
         if code in positions:
             positions[code]["last_price"] = round(price, 3)
 
-    history = [h for h in state.get("equity_history", []) if not str(h.get("time", "")).startswith(today)]
-    history.extend(rebuilt)
+    if latest_trade_dt is not None:
+        history = list(state.get("equity_history", []))
+        existing_today_minutes = {
+            parsed.strftime("%Y-%m-%d %H:%M")
+            for item in history
+            if str(item.get("time", "")).startswith(today)
+            for parsed in [parse_ts(item.get("time", ""))]
+            if parsed is not None
+        }
+        appended = [
+            point
+            for point in rebuilt
+            if (parse_ts(point.get("time", "")) or datetime.min) > latest_trade_dt
+            and str(point.get("time", ""))[:16] not in existing_today_minutes
+        ]
+        if not appended:
+            return False
+        history.extend(appended)
+        history.sort(key=lambda item: str(item.get("time", "")))
+        final_point = max(
+            (item for item in history if str(item.get("time", "")).startswith(today)),
+            key=lambda item: str(item.get("time", "")),
+        )
+    else:
+        if len(rebuilt) < 2:
+            return False
+        history = [h for h in state.get("equity_history", []) if not str(h.get("time", "")).startswith(today)]
+        history.extend(rebuilt)
+        final_point = rebuilt[-1]
     state["equity_history"] = history[-2000:]
 
     daily_history = [h for h in state.get("daily_equity_history", []) if not str(h.get("time", "")).startswith(today)]
-    daily_history.append(rebuilt[-1])
+    daily_history.append(final_point)
     state["daily_equity_history"] = daily_history[-EQUITY_HISTORY_LIMIT:]
 
     try:
         from niuniu_db import record_daily_equity as _record_db
-        _record_db(rebuilt[-1])
+        _record_db(final_point)
     except Exception:
         pass
     return True
@@ -3349,6 +3431,122 @@ def is_zettaranc_strategy(strategy_id: str) -> bool:
     return STRATEGY_DEFINITIONS.get(str(strategy_id or ""), {}).get("persona") == "zettaranc"
 
 
+def is_sector_tide_strategy(strategy_id: str) -> bool:
+    return STRATEGY_DEFINITIONS.get(str(strategy_id or ""), {}).get("persona") == "sector_tide"
+
+
+def sector_tide_position_open_risk_pct(pos: dict[str, Any], total_equity: float) -> float:
+    """Mark one open Sector Tide position to its current stressed stop risk."""
+    mark_price = _safe_float(pos.get("last_price") or pos.get("close") or pos.get("avg_cost"), 0.0)
+    effective_distance = stored_position_effective_loss_distance_pct(pos, mark_price=mark_price)
+    if effective_distance <= 0:
+        effective_distance = _safe_float(pos.get("effective_loss_distance_pct"), 0.0)
+    return position_open_risk_pct(position_market_value(pos, mark_price), total_equity, effective_distance)
+
+
+def sector_tide_existing_open_risk_pct(
+    positions: dict[str, Any],
+    total_equity: float,
+    *,
+    excluding_code: str = "",
+    industry: str | None = None,
+) -> float:
+    total = 0.0
+    normalized_exclusion = normalize_code(excluding_code)
+    for position_code, pos in positions.items():
+        if not isinstance(pos, dict) or position_qty(pos) <= 0:
+            continue
+        if normalize_code(position_code) == normalized_exclusion:
+            continue
+        if not is_sector_tide_strategy(position_entry_strategy(pos)):
+            continue
+        if industry is not None and str(pos.get("industry") or pos.get("sector") or "").strip() != industry:
+            continue
+        total += sector_tide_position_open_risk_pct(pos, total_equity)
+    return total
+
+
+def sync_sector_tide_position_context(state: dict[str, Any], b1_payload: dict[str, Any] | None) -> int:
+    """Persist the latest market/industry tide on open positions once per scan day."""
+    payload = b1_payload if isinstance(b1_payload, dict) else {}
+    context = payload.get("sector_tide_context") if isinstance(payload.get("sector_tide_context"), dict) else {}
+    market = context.get("market") if isinstance(context.get("market"), dict) else {}
+    sectors = context.get("sectors") if isinstance(context.get("sectors"), dict) else {}
+    stocks = context.get("stocks") if isinstance(context.get("stocks"), dict) else {}
+    if not context or not market:
+        return 0
+
+    candidates: dict[str, dict[str, Any]] = {}
+    for key in ("trade_items", "items", "candidates"):
+        for item in payload.get(key) or []:
+            if isinstance(item, dict):
+                candidate_code = normalize_code(item.get("code") or "")
+                if candidate_code:
+                    candidates[candidate_code] = item
+
+    generated_at = str(payload.get("generated_at") or now_ts())
+    context_date = generated_at[:10] if len(generated_at) >= 10 else today_key()
+    updated = 0
+    for code, pos in (state.get("positions") or {}).items():
+        if not isinstance(pos, dict):
+            continue
+        candidate = candidates.get(normalize_code(code), {})
+        stock = stocks.get(normalize_code(code)) if isinstance(stocks.get(normalize_code(code)), dict) else {}
+        industry = str(
+            candidate.get("industry")
+            or candidate.get("sector")
+            or pos.get("industry")
+            or pos.get("sector")
+            or stock.get("industry")
+            or ""
+        ).strip()
+        if industry:
+            pos["industry"] = industry
+            pos["sector"] = industry
+        if not is_sector_tide_strategy(position_entry_strategy(pos)):
+            continue
+        sector = sectors.get(industry) if isinstance(sectors.get(industry), dict) else {}
+        if not industry or not sector:
+            continue
+
+        score = _safe_float(sector.get("score"), -1.0)
+        if score >= 0:
+            if score < 55:
+                if pos.get("sector_weak_last_date") != context_date:
+                    pos["sector_weak_count"] = int(pos.get("sector_weak_count") or 0) + 1
+                    pos["sector_weak_last_date"] = context_date
+            else:
+                pos["sector_weak_count"] = 0
+                pos.pop("sector_weak_last_date", None)
+        pos["sector_score"] = sector.get("score")
+        pos["sector_status"] = sector.get("status")
+        pos["sector_rank_acceleration"] = sector.get("rank_acceleration")
+        pos["sector_breadth20"] = sector.get("breadth20")
+        pos["market_regime"] = market.get("state")
+        current_budget = sector_tide_risk_budget(str(market.get("state") or ""))
+        pos["risk_budget_regime"] = market.get("state")
+        pos["per_trade_risk_budget_pct"] = current_budget["per_trade_risk_pct"]
+        pos["max_open_risk_pct"] = current_budget["max_open_risk_pct"]
+        pos["max_sector_risk_pct"] = current_budget["max_sector_risk_pct"]
+        pos["max_total_position_pct"] = current_budget["max_total_position_pct"]
+        pos["max_sector_position_pct"] = current_budget["max_sector_position_pct"]
+        pos["market_tide_score"] = market.get("score")
+        pos["market_hard_stop"] = bool(market.get("hard_stop"))
+        pos["market_allows_buys"] = bool(market.get("allow_new_buys"))
+        pos["stock_sector_rank"] = candidate.get("stock_sector_rank", stock.get("sector_relative_rank"))
+        pos["sector_context_at"] = generated_at
+        updated += 1
+    return updated
+
+
+def load_latest_sector_tide_payload() -> dict[str, Any]:
+    try:
+        payload = json.loads(MULTI_STRATEGY_CACHE_FILE.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
 def position_entry_strategy(pos: dict[str, Any]) -> str:
     mark = pos.get("strategy_mark") if isinstance(pos.get("strategy_mark"), dict) else {}
     return str(
@@ -3430,6 +3628,7 @@ def evaluate_sell_signal(
     today = today or today_key()
     entry_strategy = position_entry_strategy(pos)
     zettaranc_position = is_zettaranc_strategy(entry_strategy)
+    sector_tide_position = is_sector_tide_strategy(entry_strategy)
     realtime_price = float(pos.get("last_price") or pos.get("close") or pos.get("avg_cost") or 0)
     price = float(
         (pos.get("confirmed_close") if zettaranc_position else pos.get("close"))
@@ -3498,9 +3697,66 @@ def evaluate_sell_signal(
             "b3_kline_low": "B3当日低点",
             "b2_midpoint": "B2大阳线中位",
             "super_b1_washout_low": "超级B1洗盘阴线低点",
+            "tide_structure_low": "板块潮汐结构低点",
         }
-        stop_label = stop_labels.get(str(pos.get("shaofu_stop_source") or ""), "入场止损")
-        return _sell_signal(f"收盘价破{stop_label} (收盘{price:.2f} < 止损{shaofu_stop:.2f})", "shaofu_entry_stop")
+        stop_source = str(pos.get("shaofu_stop_source") or pos.get("entry_stop_source") or "")
+        stop_label = stop_labels.get(stop_source, "入场止损")
+        stop_signal = "tide_structure_stop" if sector_tide_position else "shaofu_entry_stop"
+        return _sell_signal(f"收盘价破{stop_label} (收盘{price:.2f} < 止损{shaofu_stop:.2f})", stop_signal)
+
+    if sector_tide_position:
+        sector_score = _safe_float(pos.get("sector_score"), 100.0)
+        sector_status = str(pos.get("sector_status") or "")
+        if pos.get("market_hard_stop") and (sector_score < 55 or sector_status in {"weakening", "lagging"}):
+            return _sell_signal(
+                f"市场复合风险硬停止且行业转弱 ({pos.get('industry') or '-'}分数{sector_score:.1f}，潮位{sector_status or '-'})",
+                "tide_market_hard_stop",
+            )
+        if int(pos.get("sector_weak_count") or 0) >= 2:
+            return _sell_signal(
+                f"行业退潮连续两日 ({pos.get('industry') or '-'}分数{sector_score:.1f}<55)",
+                "tide_sector_weak",
+            )
+
+        strategy_time_exit = evaluate_strategy_time_exit(
+            entry_strategy=entry_strategy,
+            hold_days=hold_days,
+            max_pnl_pct=max_pnl_pct,
+            pnl_pct=pnl_pct,
+            time_exit_allowed=time_exit_allowed,
+            b3_exit_allowed=False,
+            b3_exit_hhmm=B3_EXIT_HHMM,
+            time_exit_hhmm=TIME_EXIT_HHMM,
+            no_progress_hold_days=NO_PROGRESS_HOLD_DAYS,
+            no_progress_max_pnl_pct=NO_PROGRESS_MAX_PNL_PCT,
+        )
+        if strategy_time_exit:
+            return strategy_time_exit
+
+        entry_stop = _safe_float(pos.get("entry_stop_price"), 0.0)
+        initial_risk = avg_cost - entry_stop if 0 < entry_stop < avg_cost else 0.0
+        two_r_price = avg_cost + 2 * initial_risk if initial_risk > 0 else 0.0
+        if two_r_price > 0:
+            pos["two_r_price"] = round(two_r_price, 3)
+            if price >= two_r_price and not pos.get("partial_tp_done"):
+                return _sell_signal(
+                    f"板块潮汐达到2R先减半 (现价{price:.2f} ≥ 2R目标{two_r_price:.2f})",
+                    "tide_2r_partial",
+                    TAKE_PROFIT_PARTIAL_RATIO,
+                )
+
+        atr20 = _safe_float(pos.get("atr20") or pos.get("entry_atr20"), 0.0)
+        if atr20 > 0 and (pos.get("partial_tp_done") or (two_r_price > 0 and highest_price >= two_r_price)):
+            tide_trailing_stop = highest_price - 2.0 * atr20
+            pos["tide_trailing_stop"] = round(tide_trailing_stop, 3)
+            if tide_trailing_stop > avg_cost and price <= tide_trailing_stop:
+                return _sell_signal(
+                    f"板块潮汐2ATR跟踪退出 (现价{price:.2f} ≤ 跟踪线{tide_trailing_stop:.2f})",
+                    "tide_atr_trail",
+                )
+        if hold_days >= MAX_HOLD_DAYS:
+            return _sell_signal(f"持仓到期 ({hold_days}d ≥ {MAX_HOLD_DAYS}d)", "max_hold_days")
+        return None
 
     chuhuo = pos.get("chuhuo_wushi") or {}
     if chuhuo.get("is_selling"):
@@ -3645,6 +3901,7 @@ def _refresh_position_bbi(state: dict[str, Any], dt: datetime | None = None) -> 
             raw_rows = [r for r in (data.get("rows") or []) if isinstance(r, dict) and r.get("close")]
             entry_strategy = position_entry_strategy(pos)
             zettaranc_position = is_zettaranc_strategy(entry_strategy)
+            sector_tide_position = is_sector_tide_strategy(entry_strategy)
             rows = raw_rows
             as_of = dt or datetime.now()
             if zettaranc_position:
@@ -3678,7 +3935,7 @@ def _refresh_position_bbi(state: dict[str, Any], dt: datetime | None = None) -> 
                     }
                     current_source = str(pos.get("shaofu_stop_source") or "")
                     should_refresh_z_stop = zettaranc_position and current_source not in desired_stop_sources.get(entry_strategy, set())
-                    should_refresh_legacy_stop = not zettaranc_position and (
+                    should_refresh_legacy_stop = not zettaranc_position and not sector_tide_position and (
                         not pos.get("shaofu_stop_price") or current_source in {"fallback_pct", "entry_kline_low"}
                     )
                     if should_refresh_z_stop or should_refresh_legacy_stop:
@@ -3936,6 +4193,7 @@ def run_auto_exits_once(dt: datetime | None = None) -> dict[str, Any]:
     """Run the side-effectful automatic exit script once for scheduled checks."""
     dt = dt or datetime.now()
     state = load_state()
+    sync_sector_tide_position_context(state, load_latest_sector_tide_payload())
     refresh_realtime_prices(state)
     refresh_position_intraday(state)
     _refresh_position_bbi(state, dt)
@@ -4245,6 +4503,16 @@ def compact_portfolio_for_decision(portfolio: dict[str, Any]) -> dict[str, Any]:
             "day_low_pct": pos.get("day_low_pct"),
             "market_value": pos.get("market_value"),
             "position_pct": pos.get("position_pct"),
+            "industry": pos.get("industry") or "",
+            "entry_stop_price": pos.get("entry_stop_price"),
+            "gap_buffer_pct": pos.get("gap_buffer_pct"),
+            "effective_loss_distance_pct": pos.get("effective_loss_distance_pct"),
+            "position_open_risk_pct": pos.get("position_open_risk_pct"),
+            "dynamic_position_cap_pct": pos.get("dynamic_position_cap_pct"),
+            "risk_budget_regime": pos.get("risk_budget_regime"),
+            "per_trade_risk_budget_pct": pos.get("per_trade_risk_budget_pct"),
+            "max_open_risk_pct": pos.get("max_open_risk_pct"),
+            "max_sector_risk_pct": pos.get("max_sector_risk_pct"),
             "pnl": pos.get("pnl"),
             "pnl_pct": pos.get("pnl_pct"),
             "buy_strategy": pos.get("buy_strategy"),
@@ -4278,6 +4546,7 @@ def compact_portfolio_for_decision(portfolio: dict[str, Any]) -> dict[str, Any]:
         "total_equity": portfolio.get("total_equity"),
         "total_pnl": portfolio.get("total_pnl"),
         "total_pnl_pct": portfolio.get("total_pnl_pct"),
+        "sector_tide_open_risk_pct": portfolio.get("sector_tide_open_risk_pct"),
         "positions": compact_positions,
         "recent_trades": (portfolio.get("trade_log") or [])[:8],
         "last_b1_generated_at": portfolio.get("last_b1_generated_at"),
@@ -4432,6 +4701,14 @@ def current_trade_discipline_text(position_limit_desc: str, adaptive: dict[str, 
                 "- 系统底线风控：买入K线/前低止损、持仓超25日退出；",
                 "- 系统底线风控：Z哥按入场战法使用专属结构止损、持仓超25日退出；",
             )
+        if any(is_sector_tide_strategy(strategy_id) for strategy_id in enabled):
+            custom += (
+                "\n- 板块潮汐执行层动态风险预算：防守/复合风险禁止新仓；进攻/轮动/修复的单笔权益风险分别≤0.30%/0.20%/0.10%，"
+                "策略内组合风险≤1.50%/0.80%/0.30%，总仓≤45%/30%/15%，行业风险≤0.60%/0.40%/0.20%，行业敞口≤12%/10%/6%；"
+                "单票8%/6%/4%仅为绝对上限，同一行业最多2只。"
+                "\n- 有效损失距离=结构止损距离+max(近60日向下跳空P95,0.5ATR占比)+0.20%费用滑点。"
+                "\n- 板块潮汐退出：行业分数<55连续两次、潮位硬停止、策略时间窗不延续、2R减半和2ATR跟踪。"
+            )
         return custom
     adaptive = adaptive or {}
     enabled = enabled_strategy_ids(
@@ -4446,6 +4723,7 @@ def current_trade_discipline_text(position_limit_desc: str, adaptive: dict[str, 
         adaptive_label=str(adaptive.get("label") or "中性"),
         adaptive_position_mult=float(adaptive.get("position_mult", 1.0)),
         zettaranc_enabled=any(is_zettaranc_strategy(strategy_id) for strategy_id in enabled),
+        sector_tide_enabled=any(is_sector_tide_strategy(strategy_id) for strategy_id in enabled),
     )
 
 
@@ -4528,6 +4806,18 @@ def call_model_decision(
     for c in compact_candidates:
         strat = c.get("best_strategy", "")
         strat_label = strategy_labels.get(strat, strat)
+        tide_detail = ""
+        if is_sector_tide_strategy(strat):
+            tide_detail = (
+                f"市场:{c.get('market_regime','-')}/{c.get('market_score','-')} "
+                f"行业:{c.get('industry') or c.get('sector') or '-'} "
+                f"潮位:{c.get('sector_status','-')}/{c.get('sector_score','-')} "
+                f"行业排名:{c.get('stock_sector_rank','-')} "
+                f"止损:{c.get('stop_price','-')}({c.get('stop_distance_pct','-')}%) "
+                f"有效损失:{c.get('effective_loss_distance_pct','-')}% "
+                f"单笔预算:{c.get('per_trade_risk_budget_pct','-')}% "
+                f"动态仓位上限:{c.get('max_position_pct_by_risk','-')}% "
+            )
         cand_lines.append(
             f"  {c.get('code')} {c.get('name')} 现价{c.get('price')} "
             f"涨跌{c.get('change_pct')}% "
@@ -4538,7 +4828,8 @@ def call_model_decision(
             f"仓位纪律:{c.get('position_hint','-')} "
             f"时间纪律:{c.get('time_stop','-')} "
             f"共识:{c.get('consensus_count',1)}/多战法 "
-            f"距BBI:{c.get('distance_pct')}% "
+            f"{'距EMA20' if is_sector_tide_strategy(strat) else '距BBI'}:{c.get('distance_pct')}% "
+            f"{tide_detail}"
             f"硬过滤:{','.join(c.get('hard_blockers',[]) or ['无'])} "
             f"风险:{','.join(c.get('risk_flags',[]) or ['无'])}"
         )
@@ -4551,11 +4842,18 @@ def call_model_decision(
             continue
         strat = c.get("best_strategy", "")
         strat_label = strategy_labels.get(strat, strat)
+        tide_detail = ""
+        if is_sector_tide_strategy(strat):
+            tide_detail = (
+                f" 行业:{c.get('industry') or c.get('sector') or '-'}"
+                f" 潮位:{c.get('sector_status','-')}/{c.get('sector_score','-')}"
+            )
         held_candidate_lines.append(
             f"  {code} {c.get('name') or pos.get('name')} 当前仓位{pos.get('position_pct')}% "
             f"盈亏{pos.get('pnl_pct')}% 今日{pos.get('today_pnl_pct')}% "
             f"候选战法:{strat_label} 评分:{c.get('best_score')}/{c.get('score_total',10)} "
-            f"基准:{c.get('entry_threshold','-')} 距BBI:{c.get('distance_pct')}% "
+            f"基准:{c.get('entry_threshold','-')} "
+            f"{'距EMA20' if is_sector_tide_strategy(strat) else '距BBI'}:{c.get('distance_pct')}%{tide_detail} "
             f"风险:{','.join(c.get('risk_flags',[]) or ['无'])}"
         )
     held_candidates_section = "\n".join(held_candidate_lines) if held_candidate_lines else "（无当前持仓进入本轮候选池）"
@@ -4675,6 +4973,11 @@ def _candidate_digest_for_codes(candidates: list[dict[str, Any]], codes: set[str
             "position_hint": c.get("position_hint"),
             "time_stop": c.get("time_stop"),
             "distance_pct": c.get("distance_pct"),
+            "effective_loss_distance_pct": c.get("effective_loss_distance_pct"),
+            "per_trade_risk_budget_pct": c.get("per_trade_risk_budget_pct"),
+            "max_position_pct_by_risk": c.get("max_position_pct_by_risk"),
+            "max_open_risk_pct": c.get("max_open_risk_pct"),
+            "max_sector_risk_pct": c.get("max_sector_risk_pct"),
             "risk_flags": c.get("risk_flags") or [],
             "hard_blockers": c.get("hard_blockers") or [],
             "consensus_count": c.get("consensus_count"),
@@ -4885,6 +5188,14 @@ def execute_actions(
             buy_strategy = classify_buy_strategy(reason, candidate)
             existing_pos = positions.get(code)
             old_qty = position_qty(existing_pos or {})
+            existing_entry_strategy = position_entry_strategy(existing_pos or {}) if old_qty > 0 else ""
+            if old_qty > 0 and is_sector_tide_strategy(buy_strategy) and existing_entry_strategy != buy_strategy:
+                add_execution_block(
+                    decision,
+                    code,
+                    f"板块潮汐不得把{buy_strategy_label(buy_strategy)}加到原{buy_strategy_label(existing_entry_strategy)}持仓形成混合策略",
+                )
+                continue
             if old_qty <= 0 and open_position_count(positions) >= effective_max_open_positions:
                 add_execution_block(
                     decision,
@@ -4906,6 +5217,14 @@ def execute_actions(
             position_after_trade_value = current_position_value + requested_gross
             position_after_trade_pct = position_pct_of_equity(position_after_trade_value, total_equity)
             total_position_after_trade_pct = position_pct_of_equity(current_market_value + requested_gross, total_equity)
+            tide_total_limit_pct: float | None = None
+            tide_effective_stop_price = 0.0
+            tide_gap_buffer_pct = 0.0
+            tide_execution_buffer_pct = SECTOR_TIDE_EXECUTION_BUFFER_PCT
+            tide_effective_loss_distance_pct = 0.0
+            tide_position_open_risk_pct = 0.0
+            tide_dynamic_position_cap_pct = 0.0
+            tide_risk_budget: dict[str, float] = {}
             if is_zettaranc_strategy(buy_strategy):
                 single_limit_pct = strategy_position_limit_pct(buy_strategy)
                 market_total_limit_pct = float(market_strategy_ctx.get("max_total_position_pct", MAX_TOTAL_POSITION_PCT))
@@ -4928,6 +5247,148 @@ def execute_actions(
                         f"Z哥买入后总仓位{total_position_after_trade_pct:.2f}%超过{total_limit_pct:g}%硬上限（至少保留{100-total_limit_pct:g}%现金）",
                     )
                     continue
+            elif is_sector_tide_strategy(buy_strategy):
+                regime = str(candidate.get("market_regime") or "")
+                if candidate.get("market_hard_stop") or not candidate.get("market_allows_buys", False):
+                    add_execution_block(decision, code, "板块潮汐市场风控禁止新开仓")
+                    continue
+                if regime not in {"offensive", "rotation", "recovery"}:
+                    add_execution_block(decision, code, f"板块潮汐市场状态{regime or '缺失'}不可买入")
+                    continue
+                if buy_strategy == "tide_recovery" and old_qty > 0:
+                    today_lots = int(((existing_pos or {}).get("buy_date_lots") or {}).get(today_key(), 0) or 0)
+                    if today_lots > 0:
+                        add_execution_block(decision, code, "冰点修复观察仓当日禁止加仓，须次日确认")
+                        continue
+
+                tide_risk_budget = sector_tide_risk_budget(regime)
+                single_limit_pct = strategy_position_limit_pct(buy_strategy)
+                market_total_limit_pct = float(market_strategy_ctx.get("max_total_position_pct", MAX_TOTAL_POSITION_PCT))
+                reserve_pct = max(
+                    MIN_CASH_RESERVE_PCT,
+                    float(market_strategy_ctx.get("min_cash_reserve_pct", MIN_CASH_RESERVE_PCT)),
+                )
+                tide_total_limit_pct = min(
+                    tide_risk_budget["max_total_position_pct"],
+                    market_total_limit_pct,
+                    100.0 - reserve_pct,
+                )
+                exact_position_after_pct = position_after_trade_value / total_equity * 100 if total_equity > 0 else 100.0
+                exact_total_after_pct = (current_market_value + requested_gross) / total_equity * 100 if total_equity > 0 else 100.0
+                if exact_total_after_pct > tide_total_limit_pct + 1e-9:
+                    add_execution_block(
+                        decision,
+                        code,
+                        f"板块潮汐{regime}状态买入后总仓位{exact_total_after_pct:.2f}%超过{tide_total_limit_pct:g}%硬上限",
+                    )
+                    continue
+
+                industry = str(candidate.get("industry") or candidate.get("sector") or "").strip()
+                if not industry:
+                    add_execution_block(decision, code, "板块潮汐候选缺少行业归属")
+                    continue
+                same_industry_positions = [
+                    pos_item
+                    for pos_code, pos_item in positions.items()
+                    if pos_code != code
+                    and isinstance(pos_item, dict)
+                    and position_qty(pos_item) > 0
+                    and str(pos_item.get("industry") or pos_item.get("sector") or "").strip() == industry
+                ]
+                if old_qty <= 0 and len(same_industry_positions) >= 2:
+                    add_execution_block(decision, code, f"{industry}行业已有2只持仓，达到板块潮汐上限")
+                    continue
+                industry_value_after = position_after_trade_value + sum(
+                    position_market_value(pos_item) for pos_item in same_industry_positions
+                )
+                industry_pct_after = industry_value_after / total_equity * 100 if total_equity > 0 else 100.0
+                sector_position_limit_pct = tide_risk_budget["max_sector_position_pct"]
+                if industry_pct_after > sector_position_limit_pct + 1e-9:
+                    add_execution_block(
+                        decision,
+                        code,
+                        f"{industry}行业买入后敞口{industry_pct_after:.2f}%超过{regime}状态动态上限{sector_position_limit_pct:g}%",
+                    )
+                    continue
+
+                candidate_stop_price = _safe_float(candidate.get("stop_price"), 0.0)
+                existing_stop_price = _safe_float((existing_pos or {}).get("entry_stop_price"), 0.0) if old_qty > 0 else 0.0
+                tide_effective_stop_price = max(candidate_stop_price, existing_stop_price)
+                actual_stop_distance_pct = structural_stop_distance_pct(float(price), tide_effective_stop_price)
+                if actual_stop_distance_pct <= 0 or actual_stop_distance_pct > 6:
+                    add_execution_block(decision, code, "板块潮汐缺少有效结构止损，或止损距离超过6%")
+                    continue
+                tide_gap_buffer_pct = max(
+                    _safe_float(candidate.get("gap_buffer_pct"), 0.0),
+                    _safe_float((existing_pos or {}).get("gap_buffer_pct"), 0.0),
+                )
+                if tide_gap_buffer_pct <= 0:
+                    add_execution_block(decision, code, "板块潮汐缺少历史跳空/ATR缓冲，动态风险预算无法计算")
+                    continue
+                tide_execution_buffer_pct = max(
+                    SECTOR_TIDE_EXECUTION_BUFFER_PCT,
+                    _safe_float(candidate.get("execution_buffer_pct"), SECTOR_TIDE_EXECUTION_BUFFER_PCT),
+                    _safe_float((existing_pos or {}).get("execution_buffer_pct"), 0.0),
+                )
+                tide_effective_loss_distance_pct = effective_loss_distance_pct(
+                    float(price),
+                    tide_effective_stop_price,
+                    gap_buffer_pct=tide_gap_buffer_pct,
+                    execution_buffer_pct=tide_execution_buffer_pct,
+                )
+                tide_dynamic_position_cap_pct = risk_sized_position_cap_pct(
+                    per_trade_risk_pct=tide_risk_budget["per_trade_risk_pct"],
+                    effective_loss_distance_pct_value=tide_effective_loss_distance_pct,
+                    absolute_cap_pct=single_limit_pct,
+                )
+                if exact_position_after_pct > tide_dynamic_position_cap_pct + 1e-9:
+                    add_execution_block(
+                        decision,
+                        code,
+                        f"板块潮汐{buy_strategy_label(buy_strategy)}买入后仓位{exact_position_after_pct:.2f}%超过风险预算动态上限"
+                        f"{tide_dynamic_position_cap_pct:.2f}%（绝对上限{single_limit_pct:g}%）",
+                    )
+                    continue
+                tide_position_open_risk_pct = position_open_risk_pct(
+                    position_after_trade_value,
+                    total_equity,
+                    tide_effective_loss_distance_pct,
+                )
+                if tide_position_open_risk_pct > tide_risk_budget["per_trade_risk_pct"] + 1e-9:
+                    add_execution_block(
+                        decision,
+                        code,
+                        f"买入后有效损失风险{tide_position_open_risk_pct:.3f}%超过{regime}状态单笔预算"
+                        f"{tide_risk_budget['per_trade_risk_pct']:.2f}%",
+                    )
+                    continue
+                open_risk_after = sector_tide_existing_open_risk_pct(
+                    positions,
+                    total_equity,
+                    excluding_code=code,
+                ) + tide_position_open_risk_pct
+                if open_risk_after > tide_risk_budget["max_open_risk_pct"] + 1e-9:
+                    add_execution_block(
+                        decision,
+                        code,
+                        f"板块潮汐买入后策略内未实现止损风险{open_risk_after:.3f}%超过{regime}状态组合预算"
+                        f"{tide_risk_budget['max_open_risk_pct']:.2f}%",
+                    )
+                    continue
+                sector_risk_after = sector_tide_existing_open_risk_pct(
+                    positions,
+                    total_equity,
+                    excluding_code=code,
+                    industry=industry,
+                ) + tide_position_open_risk_pct
+                if sector_risk_after > tide_risk_budget["max_sector_risk_pct"] + 1e-9:
+                    add_execution_block(
+                        decision,
+                        code,
+                        f"{industry}行业买入后未实现止损风险{sector_risk_after:.3f}%超过{regime}状态行业预算"
+                        f"{tide_risk_budget['max_sector_risk_pct']:.2f}%",
+                    )
+                    continue
             qty = shares
             gross = qty * float(price)
             fees = calc_trade_fees(gross, "BUY")
@@ -4935,19 +5396,23 @@ def execute_actions(
             if total_cost > cash:
                 add_execution_block(decision, code, f"模型买入仓位{shares}股现金不足，本轮不自动缩小")
                 continue
-            if is_zettaranc_strategy(buy_strategy):
+            if is_zettaranc_strategy(buy_strategy) or is_sector_tide_strategy(buy_strategy):
                 equity_after_fees = max(0.0, total_equity - float(fees["total_fee"]))
                 cash_after_trade = cash - total_cost
                 cash_after_trade_pct = position_pct_of_equity(cash_after_trade, equity_after_fees)
-                required_cash_pct = max(
-                    MIN_CASH_RESERVE_PCT,
-                    float(market_strategy_ctx.get("min_cash_reserve_pct", MIN_CASH_RESERVE_PCT)),
+                required_cash_pct = (
+                    100.0 - float(tide_total_limit_pct)
+                    if is_sector_tide_strategy(buy_strategy) and tide_total_limit_pct is not None
+                    else max(
+                        MIN_CASH_RESERVE_PCT,
+                        float(market_strategy_ctx.get("min_cash_reserve_pct", MIN_CASH_RESERVE_PCT)),
+                    )
                 )
-                if cash_after_trade_pct + 1e-9 < required_cash_pct:
+                if float(cash_after_trade_pct or 0) + 1e-9 < required_cash_pct:
                     add_execution_block(
                         decision,
                         code,
-                        f"Z哥买入后现金{cash_after_trade_pct:.2f}%低于{required_cash_pct:g}%硬下限（含交易费用）",
+                        f"{buy_strategy_label(buy_strategy)}买入后现金{float(cash_after_trade_pct or 0):.2f}%低于{required_cash_pct:g}%硬下限（含交易费用）",
                     )
                     continue
             pos = positions.setdefault(code, {"code": code, "name": name, "qty": 0, "avg_cost": 0.0, "buy_date_lots": {}, "last_price": price})
@@ -4959,6 +5424,34 @@ def execute_actions(
             pos["avg_cost"] = round((old_cost + total_cost) / new_qty, 4)
             pos["name"] = name
             pos["last_price"] = price
+            if is_sector_tide_strategy(buy_strategy):
+                pos["industry"] = str(candidate.get("industry") or candidate.get("sector") or "").strip()
+                pos["sector"] = pos["industry"]
+                pos["entry_stop_price"] = round(tide_effective_stop_price, 3)
+                pos["entry_stop_source"] = str(candidate.get("stop_source") or "tide_structure_low")
+                pos["entry_stop_distance_pct"] = round(
+                    structural_stop_distance_pct(float(price), pos["entry_stop_price"]),
+                    3,
+                )
+                pos["entry_atr20"] = round(_safe_float(candidate.get("atr20")), 3)
+                pos["gap_buffer_pct"] = round(tide_gap_buffer_pct, 3)
+                pos["execution_buffer_pct"] = round(tide_execution_buffer_pct, 3)
+                pos["effective_loss_distance_pct"] = round(tide_effective_loss_distance_pct, 3)
+                pos["position_open_risk_pct"] = round(tide_position_open_risk_pct, 4)
+                pos["dynamic_position_cap_pct"] = round(tide_dynamic_position_cap_pct, 3)
+                pos["absolute_position_cap_pct"] = round(strategy_position_limit_pct(buy_strategy), 3)
+                pos["risk_budget_regime"] = str(candidate.get("market_regime") or "")
+                pos["per_trade_risk_budget_pct"] = tide_risk_budget.get("per_trade_risk_pct")
+                pos["max_open_risk_pct"] = tide_risk_budget.get("max_open_risk_pct")
+                pos["max_sector_risk_pct"] = tide_risk_budget.get("max_sector_risk_pct")
+                pos["max_total_position_pct"] = tide_risk_budget.get("max_total_position_pct")
+                pos["max_sector_position_pct"] = tide_risk_budget.get("max_sector_position_pct")
+                pos["entry_market_regime"] = str(candidate.get("market_regime") or "")
+                pos["market_regime"] = str(candidate.get("market_regime") or "")
+                pos["sector_score"] = candidate.get("sector_score")
+                pos["sector_status"] = candidate.get("sector_status")
+                pos["stock_sector_rank"] = candidate.get("stock_sector_rank")
+                pos["sector_weak_count"] = 0
             if old_qty <= 0 or not pos.get("buy_strategy"):
                 pos["buy_strategy"] = buy_strategy
                 pos["entry_reason"] = reason
@@ -4986,6 +5479,10 @@ def execute_actions(
             action["order_position_pct"] = order_position_pct
             action["position_after_trade_pct"] = position_after_trade_pct
             action["total_position_after_trade_pct"] = total_position_after_trade_pct
+            if is_sector_tide_strategy(buy_strategy):
+                action["effective_loss_distance_pct"] = round(tide_effective_loss_distance_pct, 3)
+                action["position_open_risk_pct"] = round(tide_position_open_risk_pct, 4)
+                action["dynamic_position_cap_pct"] = round(tide_dynamic_position_cap_pct, 3)
             pos["highest_price"] = round(max(float(pos.get("highest_price") or price), float(price)), 3)
             current_pnl_pct = ((float(price) / float(pos["avg_cost"]) - 1) * 100) if pos.get("avg_cost") else 0.0
             prior_max_pnl = float(pos.get("max_pnl_pct") or current_pnl_pct)
@@ -5328,6 +5825,7 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
     schedule_triggered_at = b1_payload.get("schedule_triggered_at") or ""
     if not force and state.get("last_b1_generated_at") == generated_at:
         return {"skipped": True, "reason": "already_decided_for_this_b1", "state": enrich_portfolio(state)}
+    sync_sector_tide_position_context(state, b1_payload)
     market_strategy_ctx = market_strategy_context_for_b1(b1_payload)
     compact_market_ctx = compact_market_strategy_context(market_strategy_ctx)
     state["market_decision_context"] = compact_market_ctx
@@ -5528,9 +6026,12 @@ def build_trade_rule_note() -> str:
         f"买入硬约束：最多{MAX_OPEN_POSITIONS}只持仓、单轮最多{MAX_NEW_BUYS_PER_DECISION}笔新仓、"
         f"午盘前默认最多{MORNING_MAX_OPEN_POSITIONS}只；Z哥单票按战法硬限制且最高{MAX_SINGLE_POSITION_PCT:g}%，"
         f"总仓位最高{MAX_TOTAL_POSITION_PCT:g}%并至少保留{MIN_CASH_RESERVE_PCT:g}%现金；其他人格仓位由模型结合盘面与风险决定。"
+        f"板块潮汐另行按市场状态硬执行单笔/组合/行业动态风险预算、总仓45%/30%/15%、行业敞口12%/10%/6%；"
+        f"单票8%/6%/4%仅为绝对天花板。"
         f"系统底线风控：峰值回撤/ATR吊灯保护、持仓超25日退出；"
         f"Z哥卖出风控：防卖飞5分评分、B3次日不涨离场({B3_EXIT_HHMM}开盘检查)、B2两日不延续离场、超级B1未兑现离场({TIME_EXIT_HHMM}尾盘检查)、"
         f"卤煮半仓、S1/S2/S3逃顶、出货五式、BBI/白线两日破位、白线死叉黄线。"
+        f"板块潮汐按行业连续两日退潮、市场硬停止、时间窗、2R减半和2ATR跟踪退出。"
         f"买入按万一免五计费。"
     )
 
@@ -5538,6 +6039,7 @@ def build_trade_rule_note() -> str:
 def get_dashboard_payload() -> dict[str, Any]:
     state = load_state()
     now = datetime.now()
+    sync_sector_tide_position_context(state, load_latest_sector_tide_payload())
     prune_future_intraday_equity_points(state, now=now)
     # 看板读取必须是无交易副作用的：只刷新行情/指标和权益曲线。
     # 自动止盈止损只能由明确的交易调度流程触发，避免页面刷新造成非预定成交。

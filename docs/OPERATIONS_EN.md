@@ -84,7 +84,7 @@ Core configuration items:
 | Trading-decision API | `DASHBOARD_DECISION_BASE_URL`, `DASHBOARD_DECISION_API_KEY`, `DASHBOARD_DECISION_MODEL` |
 | Trading-decision intelligence bundle | `DASHBOARD_DECISION_INTELLIGENCE_ENABLED`, `DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS`, `DASHBOARD_DECISION_INTELLIGENCE_MAX_ITEMS` |
 | Trading discipline for trading decisions | `DASHBOARD_TRADE_DISCIPLINE_TEXT`; when empty, the built-in default discipline is used; when populated, its content is inserted into the “Mandatory Rules” section of the model prompt |
-| Simulated-account cadence and position-sizing references | `DASHBOARD_MAX_OPEN_POSITIONS`, `DASHBOARD_MAX_NEW_BUYS_PER_DECISION`, `DASHBOARD_MAX_SINGLE_POSITION_PCT`, `DASHBOARD_MAX_TOTAL_POSITION_PCT`, `DASHBOARD_MIN_CASH_RESERVE_PCT`; percentage values are model references only, not hard execution-layer restrictions |
+| Simulated-account cadence and position-sizing references | `DASHBOARD_MAX_OPEN_POSITIONS`, `DASHBOARD_MAX_NEW_BUYS_PER_DECISION`, `DASHBOARD_MAX_SINGLE_POSITION_PCT`, `DASHBOARD_MAX_TOTAL_POSITION_PCT`, `DASHBOARD_MIN_CASH_RESERVE_PCT`; these are model references by default, while suites with registered hard limits, including Z-ge and Sector Tide, enforce the stricter global or suite limit in the simulation layer |
 | Separate override for U.S. stock ratings | `US_RATING_BASE_URL`, `US_RATING_API_KEY`, `US_RATING_MODEL`, `US_RATING_MAX_TOKENS` |
 | Separate override for the X watchlist | `X_WATCHLIST_BASE_URL`, `X_WATCHLIST_API_KEY`, `X_WATCHLIST_MODEL`, `X_WATCHLIST_MAX_TOKENS` |
 
@@ -96,6 +96,36 @@ The news pre-check examines at most five candidate stocks concurrently by defaul
 The trading-decision intelligence bundle is enabled by default. Each model decision after a stock-selection scan on the Practice page reads market monitoring, overnight U.S. market data, index quotes, sector performance, industry fund flows, trending stocks, candidate news, and an account-position summary, then writes the compressed `decision_intelligence` into the simulated-trading decision log. If a market-data source fails, its `source_status` is retained, and the current decision continues with available information and existing risk controls.
 
 The canonical URL for the Practice page is `/?category=practice`. The candidate query and refresh endpoints are `/api/practice_candidates` and `/api/practice_candidates/refresh`, respectively. The old `category=b1_screen` and `/api/b1_screen` paths are retained only as compatibility entry points.
+
+### 3.1 Practice-Strategy Scheduling and Process Ownership
+
+Individual practice strategies do not own separate candidate-scan timers. At every configured time, the B1 scheduler inside the Dashboard starts the shared scanner. The scanner reads `DASHBOARD_ACTIVE_STRATEGY` and runs only the scorers in that active suite. After a successful scan, the scheduled path synchronously runs the model assessment and simulated execution-layer checks.
+
+| Setting | Default | Scope | Application |
+|---|---|---|---|
+| `DASHBOARD_ACTIVE_STRATEGY` | `zettaranc` | New candidates, model prompt, and entry rules | Hot-applied; used by the next scan |
+| `DASHBOARD_B1_SCHEDULE_ENABLED` | `1` | Starts the Dashboard's built-in candidate scheduler | Dashboard restart required |
+| `DASHBOARD_B1_SCHEDULE_TIMES` | `09:25,10:00,10:30,11:00,11:20,13:00,13:30,14:00,14:30,14:50` | Candidate-scan and trading-decision times | Hot-applied |
+| `DASHBOARD_B1_SCHEDULE_CATCHUP_MINUTES` | `35` | Catch-up window after brief Dashboard downtime | Dashboard restart required |
+| `DASHBOARD_B3_EXIT_TIME` | `09:37` | Opening automatic-exit check | Read by a subsequent Cron cycle |
+| `DASHBOARD_TIME_EXIT_TIME` | `14:45` | End-of-day automatic exits and time-box checks | Read by a subsequent Cron cycle |
+
+The 09:25 scan falls in the quiet period after the opening auction. The system may generate candidates and model actions, but it does not book a fill at the auction reference price. Executable actions are queued, and after 09:30 the Dashboard's deferred-decision worker rechecks the session, current price, cash, and strategy risk budgets.
+
+Users can click **Manually trigger candidate scan and trading strategy** on the Practice page to run the complete flow. It uses the same scanner, active-strategy setting, and execution layer as the scheduled path; it is not a force-fill or risk-bypass endpoint. A normal page refresh only reads cached and account state.
+
+Local automatic exits are invoked by the separate Cron Scheduler process. Structural stops, Sector Tide deterioration, strategy time boxes, 2R, and 2 ATR are scheduled checks rather than tick-by-tick monitoring. Both the Dashboard and Cron Scheduler processes must be running for the full lifecycle.
+
+When a strategy appears not to trigger, check in this order:
+
+1. Confirm that `DASHBOARD_ACTIVE_STRATEGY` in `.local-data/dashboard.env` names the expected suite.
+2. Confirm that `DASHBOARD_B1_SCHEDULE_ENABLED` is enabled and the Dashboard process is still running.
+3. Confirm that the current time is at a `DASHBOARD_B1_SCHEDULE_TIMES` slot or within the catch-up window.
+4. Inspect `.local-data/runtime/cron/state/b1_schedule_state.json` for an `ok`, `error`, or `skipped` status for the slot.
+5. Inspect `.local-data/runtime/cron/output/multi_strategy_latest.json` for a recent `generated_at`, the active suite's candidates, and required context fields.
+6. If automatic exits did not run, inspect the Cron Scheduler process and `.local-data/runtime/logs/niuone_cron_scheduler.log`.
+
+See the [Strategy Research Guide](strategies/README_EN.md#34-sector-tide) for Sector Tide user rules, risk budgets, and the developer data contract.
 
 ## 4. Validation Procedure
 

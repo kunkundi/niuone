@@ -5,6 +5,7 @@
 """
 import json
 import re
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -102,7 +103,7 @@ def _compute():
     }
 
 
-def fetch_sector_data():
+def fetch_sector_data(force_refresh=False):
     empty = {"sectors": [], "items": [], "gain_top": [], "loss_top": []}
     return load_cached_payload(
         CACHE_PATH,
@@ -111,7 +112,8 @@ def fetch_sector_data():
         empty=empty,
         read_cache=read_json_cache,
         write_cache=write_json_cache,
+        force_refresh=force_refresh,
     )
 
 if __name__ == '__main__':
-    print(json.dumps(fetch_sector_data(), ensure_ascii=False, indent=2))
+    print(json.dumps(fetch_sector_data(force_refresh='--force-refresh' in sys.argv[1:]), ensure_ascii=False, indent=2))

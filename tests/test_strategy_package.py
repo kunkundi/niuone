@@ -27,6 +27,7 @@ class StrategyPackageTests(unittest.TestCase):
             "base": ("基础策略：", ("Z哥评分基准", "李大霄")),
             "zettaranc": ("Z哥评分基准", ("基础策略：", "李大霄")),
             "li_daxiao_bottom": ("李大霄", ("Z哥评分基准", "基础策略：")),
+            "sector_tide": ("板块潮汐（市场→行业→个股", ("Z哥评分基准", "基础策略：", "李大霄")),
         }
         for suite, (included, excluded) in cases.items():
             sections = build_strategy_prompt_sections(

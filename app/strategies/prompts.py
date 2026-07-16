@@ -61,7 +61,11 @@ def build_strategy_prompt_sections(
         STRATEGY_DEFINITIONS.items(),
         key=lambda item: int(item[1].get("display_order", 999)),
     ):
-        if definition.get("family") != "persona" or definition.get("persona") == "zettaranc" or strategy_id not in active_strategy_ids:
+        if (
+            definition.get("family") != "persona"
+            or definition.get("persona") in {"zettaranc", "sector_tide"}
+            or strategy_id not in active_strategy_ids
+        ):
             continue
         profile = definition.get("profile") or {}
         heuristics = profile.get("decision_heuristics") or []
@@ -91,6 +95,19 @@ Z哥卖出风控（属于Z哥体系）：
     base_strategy_section = """基础策略：
 1. 突破确认：优先看有效突破和回踩不破，再作为确认仓处理
 2. 趋势回踩：强趋势股回踩BBI/EMA不破，按低吸仓处理""" if base_strategy_enabled else ""
+    sector_tide_enabled = any(
+        STRATEGY_DEFINITIONS.get(strategy_id, {}).get("persona") == "sector_tide"
+        for strategy_id in active_strategy_ids
+    )
+    sector_tide_strategy_section = """板块潮汐（市场→行业→个股，三层硬门控）：
+1. 先服从市场状态：进攻/轮动/冰点修复总仓动态上限为45%/30%/15%；防守状态或复合风险硬停止时禁止新开仓，不能用个股高分抵消。
+2. 主线领航：仅做进攻/轮动行情中的领先行业，个股必须处行业前20%，只买放量突破或EMA20附近缩量回踩；8%仅为单票绝对上限，实际仓位由风险预算计算。
+3. 轮动初升：仅做排名加速度≥15且进入改善潮位的行业，个股必须处行业前30%，单日涨幅>7%或距EMA20>1.5ATR不追；6%仅为单票绝对上限。
+4. 冰点修复：仅在防守解除后的修复状态做率先转强行业，重新站回EMA20或突破修复高点才买；4%仅为单票绝对上限，当日只建观察仓，次日确认后才可加仓。
+5. 动态风险预算：进攻/轮动/修复的单笔权益风险≤0.30%/0.20%/0.10%，策略内组合未实现止损风险≤1.50%/0.80%/0.30%，单行业风险≤0.60%/0.40%/0.20%，行业敞口≤12%/10%/6%，同一行业最多2只。
+6. 有效损失距离=结构止损距离+max(近60日向下跳空P95, 0.5ATR占比)+0.20%费用滑点；动态单票上限=min(注册绝对上限, 单笔风险预算÷有效损失距离)。
+7. 退出服从潮退：行业分数<55连续两次退出；市场复合风险硬停止且行业转弱时减仓/退出。主线5日、轮动3日、修复T+2未延续退出。盈利达到2R先减半，余仓按峰值-2ATR跟踪，不使用固定8%/12%止盈。
+8. 行业资金流缺失时只允许使用量能参与度替代，并明确标记数据源；不得把缺失资金流当成净流入。""" if sector_tide_enabled else ""
     if strategy_suite == STRATEGY_SOURCE_PRESET_TEXT:
         persona_strategy_section = ""
     else:
@@ -100,6 +117,7 @@ Z哥卖出风控（属于Z哥体系）：
             section
             for section in (
                 preset_strategy_section,
+                sector_tide_strategy_section,
                 zettaranc_strategy_section,
                 base_strategy_section,
                 persona_strategy_section,
@@ -116,6 +134,7 @@ Z哥卖出风控（属于Z哥体系）：
         "position_limit_desc": position_limit_desc,
         "zettaranc_strategy_section": zettaranc_strategy_section,
         "base_strategy_section": base_strategy_section,
+        "sector_tide_strategy_section": sector_tide_strategy_section,
         "persona_strategy_section": persona_strategy_section,
         "preset_strategy_section": preset_strategy_section,
     }

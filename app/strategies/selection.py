@@ -27,11 +27,12 @@ def candidate_is_trade_ready(item: dict[str, Any]) -> bool:
     threshold = safe_float(item.get("entry_threshold")) or 8
     blockers = item.get("hard_blockers") or []
     distance = safe_float(item.get("distance_pct"))
+    sector_tide = str(item.get("best_strategy") or "") in {"tide_leader", "tide_rotation", "tide_recovery"}
     return (
         bool(item.get("actionable", score >= threshold))
         and score >= threshold
         and not blockers
-        and (distance is None or distance <= COMMON_MAX_BBI_DISTANCE_PCT)
+        and (sector_tide or distance is None or distance <= COMMON_MAX_BBI_DISTANCE_PCT)
     )
 
 

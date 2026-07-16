@@ -45,12 +45,16 @@ def classify_exit_rule(reason: str = "", exit_signal: str | None = None) -> str:
     """Classify why a position was closed, separate from the entry tactic."""
     signal = str(exit_signal or "").strip()
     if signal:
-        if signal in {"shaofu_entry_stop", "hard_stop"}:
+        if signal in {"shaofu_entry_stop", "tide_structure_stop", "hard_stop"}:
             return "stop_loss"
-        if signal in {"take_profit", "partial_take_profit", "luzhu_half"}:
+        if signal in {"take_profit", "partial_take_profit", "luzhu_half", "tide_2r_partial"}:
             return "take_profit"
-        if signal in {"profit_giveback", "atr_chandelier", "breakeven_trail", "profit_to_loss"}:
+        if signal in {"profit_giveback", "atr_chandelier", "tide_atr_trail", "breakeven_trail", "profit_to_loss"}:
             return "profit_protection"
+        if signal == "tide_sector_weak":
+            return "sector_retreat"
+        if signal == "tide_market_hard_stop":
+            return "market_risk"
         if signal in {"s1_distribution", "s2_macd_divergence", "s3_last_escape", "chuhuo_wushi"}:
             return "top_escape"
         if signal in {
@@ -60,7 +64,10 @@ def classify_exit_rule(reason: str = "", exit_signal: str | None = None) -> str:
             return "technical_break"
         if signal in {"sell_score_exit", "sell_score_reduce"}:
             return "sell_score"
-        if signal in {"no_progress", "max_hold_days", "stale_loser", "stale_below_bbi"}:
+        if signal in {
+            "no_progress", "max_hold_days", "stale_loser", "stale_below_bbi",
+            "tide_leader_no_progress", "tide_rotation_no_follow_through", "tide_recovery_unconfirmed",
+        }:
             return "no_progress"
 
     text = str(reason or "")
@@ -76,6 +83,10 @@ def classify_exit_rule(reason: str = "", exit_signal: str | None = None) -> str:
         return "sell_score"
     if "BBI" in text or "白线" in text or "死叉" in text or "低点跌破" in text or "趋势确认失效" in text:
         return "technical_break"
+    if "行业退潮" in text or "行业分数" in text:
+        return "sector_retreat"
+    if "市场复合风险" in text or "市场硬停止" in text:
+        return "market_risk"
     if "未兑现" in text or "低效持仓" in text or "持仓到期" in text or "次日不涨" in text or "未延续" in text:
         return "no_progress"
     if "调仓" in text or "仓位" in text or "硬约束" in text:
@@ -91,6 +102,8 @@ EXIT_RULE_LABELS: dict[str, str] = {
     "profit_protection": "盈利保护",
     "top_escape": "逃顶/出货",
     "technical_break": "技术破位",
+    "sector_retreat": "板块退潮",
+    "market_risk": "市场风险",
     "sell_score": "卖出评分",
     "no_progress": "信号未兑现",
     "position_adjust": "仓位调整",

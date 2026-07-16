@@ -682,17 +682,20 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual([marker['is_full_exit'] for marker in sells], [False, True, False, True])
         self.assertEqual([marker['time'] for marker in markers], sorted(marker['time'] for marker in markers))
 
-    def test_b1_payload_preserves_market_snapshot(self):
+    def test_b1_payload_preserves_market_and_sector_tide_snapshots(self):
         snapshot = {'source': 'b1_mainboard_quotes', 'sample_count': 3000, 'up': 2000, 'down': 900}
+        tide_context = {'market': {'state': 'rotation'}, 'sectors': {'半导体': {'score': 72}}}
 
         payload = dashboard.normalize_b1_payload_for_trader({
             'generated_at': '2026-07-10 10:00:05',
             'items': [],
             'market_snapshot': snapshot,
+            'sector_tide_context': tide_context,
             'schedule_slot': '2026-07-10 10:00',
         })
 
         self.assertEqual(payload['market_snapshot'], snapshot)
+        self.assertEqual(payload['sector_tide_context'], tide_context)
         self.assertEqual(payload['schedule_slot'], '2026-07-10 10:00')
 
     def test_no_candidate_b1_still_refreshes_and_logs_market_context(self):
@@ -1293,7 +1296,9 @@ console.log(JSON.stringify(result));
         self.assertIn('最低/最高', DASHBOARD_FRONTEND)
         self.assertNotIn('最低涨幅', DASHBOARD_FRONTEND)
         self.assertNotIn('最高涨幅', DASHBOARD_FRONTEND)
-        self.assertIn('industryLabel = item.industry || item.sector || item.board', DASHBOARD_FRONTEND)
+        self.assertIn("main_board: '主板'", DASHBOARD_FRONTEND)
+        self.assertIn('industryLabel = item.industry || item.sector || item.board_label || STOCK_BOARD_LABELS[item.board]', DASHBOARD_FRONTEND)
+        self.assertNotIn('item.industry || item.sector || item.board ||', DASHBOARD_FRONTEND)
         self.assertIn('${esc(industryLabel)}</span>', DASHBOARD_FRONTEND)
         self.assertIn('white-space:nowrap', DASHBOARD_FRONTEND)
         self.assertNotIn('所属板块', DASHBOARD_FRONTEND)
@@ -2208,6 +2213,44 @@ process.stdout.write(JSON.stringify({
             dashboard.get_practice_market_summary_status = original_status
             dashboard.generate_practice_market_summary = original_generate
             dashboard.RATE_LIMIT_ADMIN = original_admin_limit
+
+    def test_manual_market_summary_snapshot_force_refreshes_live_channels(self):
+        original_runner = dashboard.run_dashboard_helper
+        original_builder = dashboard.practice_market_summary_impl.build_realtime_market_snapshot
+        calls = []
+        captured = {}
+        try:
+            def fake_runner(script_name, fallback, timeout=90, args=()):
+                calls.append((script_name, timeout, args))
+                return {"script": script_name}
+
+            def fake_builder(indices, sectors, money_flow, now):
+                captured.update({
+                    "indices": indices,
+                    "sectors": sectors,
+                    "money_flow": money_flow,
+                    "now": now,
+                })
+                return {"complete": True, "time": now.strftime('%Y-%m-%d %H:%M:%S')}
+
+            dashboard.run_dashboard_helper = fake_runner
+            dashboard.practice_market_summary_impl.build_realtime_market_snapshot = fake_builder
+            now = datetime(2026, 7, 14, 12, 0, 0)
+
+            result = dashboard.fetch_practice_realtime_market_snapshot(now)
+        finally:
+            dashboard.run_dashboard_helper = original_runner
+            dashboard.practice_market_summary_impl.build_realtime_market_snapshot = original_builder
+
+        self.assertTrue(result["complete"])
+        self.assertEqual({call[0] for call in calls}, {
+            "indices_dashboard_api.py",
+            "sectors_dashboard_api.py",
+            "money_flow_dashboard_api.py",
+        })
+        self.assertTrue(all(call[1:] == (120, ("--force-refresh",)) for call in calls))
+        self.assertEqual(captured["indices"]["script"], "indices_dashboard_api.py")
+        self.assertEqual(captured["now"], now)
 
     def test_notification_test_api_has_dedicated_rate_limit_and_body_limit(self):
         original_sender = dashboard.send_notification_test

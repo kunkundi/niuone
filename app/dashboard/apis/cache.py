@@ -18,11 +18,13 @@ def load_cached_payload(
     empty: Payload,
     read_cache: CacheReader,
     write_cache: CacheWriter,
+    force_refresh: bool = False,
 ) -> Payload:
     """Load fresh data, recompute it, or annotate a stale fallback."""
-    cached = read_cache(cache_path, ttl_seconds)
-    if cached is not None:
-        return cached
+    if not force_refresh:
+        cached = read_cache(cache_path, ttl_seconds)
+        if cached is not None:
+            return cached
     try:
         data = compute()
         write_cache(cache_path, data)

@@ -131,8 +131,8 @@ By default, runtime data is stored in:
 | `X_WATCHLIST_ACCOUNTS` | Empty | Comma-separated list of monitored tweet authors |
 | `DASHBOARD_DECISION_INTELLIGENCE_ENABLED` | `1` | Whether to enable the global intelligence bundle for trading decisions |
 | `DASHBOARD_TRADE_DISCIPLINE_TEXT` | Empty | Trading-discipline text for the trading-decision prompt; the built-in default discipline is used when empty |
-| `DASHBOARD_MAX_TOTAL_POSITION_PCT` | `80` | Model position-sizing reference; not a hard execution-layer restriction |
-| `DASHBOARD_MIN_CASH_RESERVE_PCT` | `20` | Model cash-buffer reference; not a hard execution-layer restriction |
+| `DASHBOARD_MAX_TOTAL_POSITION_PCT` | `80` | Global total-exposure cap; `zettaranc` and `sector_tide` enforce the stricter of the global limit and the strategy-suite hard cap, while other suites mainly use it as model guidance |
+| `DASHBOARD_MIN_CASH_RESERVE_PCT` | `20` | Global cash buffer; `zettaranc` and `sector_tide` also enforce it at execution time, while other suites mainly use it as model guidance |
 
 After settings are saved, configurations that support hot application are used immediately for subsequent requests. Restart the local service for configurations that require a restart.
 
@@ -143,8 +143,10 @@ A complete background deployment generally consists of three independent process
 | Process | macOS / Linux entry point | Windows entry point | Required? |
 |---|---|---|---|
 | Dashboard | `run-dashboard.sh` | `run.bat --no-browser --skip-install` | Yes |
-| Scheduled-task scheduler | `run-niuone-cron-scheduler.sh` | `.local-data\.venv\Scripts\python.exe app\niuone_cron_scheduler.py` | Required when automatic summaries and database writes are enabled |
+| Scheduled-task scheduler | `run-niuone-cron-scheduler.sh` | `.local-data\.venv\Scripts\python.exe app\niuone_cron_scheduler.py` | Required for automatic summaries, database writes, or simulated-position automatic-exit checks |
 | Watch-source daemon | `run-x-watchlist-daemon.sh` | `.local-data\.venv\Scripts\python.exe app\x_watchlist_daemon.py` | Required when the X watchlist is enabled |
+
+The live B1 stock-selection schedule runs inside the Dashboard process. The scheduled-task scheduler does not select stocks, but it does run the independent automatic-exit checks for simulated positions. Both processes must stay running for the full scheduled selection-decision-exit lifecycle.
 
 ### One-Click Enablement
 

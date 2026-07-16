@@ -5,18 +5,27 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 
-StrategyScorer = Callable[[list[dict[str, Any]]], dict[str, Any] | None]
+StrategyScorer = Callable[..., dict[str, Any] | None]
 
 
 def analyze_enriched_rows(
     rows: list[dict[str, Any]],
     scorers: Mapping[str, StrategyScorer],
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Run scorers against enriched OHLCV rows and choose the best result."""
+    """Run scorers against enriched OHLCV rows and choose the best result.
+
+    Legacy scorers keep their one-argument API. Cross-sectional strategies opt
+    into the shared scan context by setting ``requires_context = True``.
+    """
     strategies: dict[str, dict[str, Any]] = {}
     for strategy_id, scorer in scorers.items():
         # Each scorer may annotate rows, so isolate its shallow mutations.
-        scored = scorer([dict(row) for row in rows])
+        scorer_rows = [dict(row) for row in rows]
+        if getattr(scorer, "requires_context", False):
+            scored = scorer(scorer_rows, context or {})
+        else:
+            scored = scorer(scorer_rows)
         if scored:
             strategies[strategy_id] = scored
 

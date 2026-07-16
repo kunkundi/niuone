@@ -26,7 +26,7 @@ STRATEGY_SOURCE_OPTIONS: tuple[dict[str, str], ...] = (
     {
         "id": STRATEGY_SOURCE_BUILTIN,
         "label": "内置策略",
-        "desc": "在基础策略、Z哥、李大霄中选择一个参与选股和买卖决策",
+        "desc": "在基础策略、Z哥、李大霄、板块潮汐中选择一个参与选股和买卖决策",
         "color": "#60a5fa",
     },
     {
@@ -134,6 +134,66 @@ STRATEGY_DEFINITIONS: dict[str, dict[str, Any]] = {
             "time_stop": "跌破BBI/EMA支撑走",
             "certainty_rank": 3,
             "risk_reward_rank": 2,
+        },
+    },
+    "tide_leader": {
+        "label": "主线领航",
+        "color": "#06b6d4",
+        "desc": "进攻或轮动行情中强行业的领涨突破/缩量回踩",
+        "family": "persona",
+        "persona": "sector_tide",
+        "scorer": "score_tide_leader",
+        "display_order": 60,
+        "position_limit_pct": 8.0,
+        "aliases": ["板块潮汐", "主线领航", "tide_leader"],
+        "profile": {
+            "priority": 88,
+            "entry_threshold": 8.0,
+            "score_basis": "领先行业/板块内领涨/趋势确认",
+            "position_hint": "按有效损失距离动态定仓，单票绝对上限8%",
+            "time_stop": "5日未创新高或不再跑赢行业退出",
+            "certainty_rank": 1,
+            "risk_reward_rank": 2,
+        },
+    },
+    "tide_rotation": {
+        "label": "轮动初升",
+        "color": "#14b8a6",
+        "desc": "行业排名与广度快速改善时捕捉第一梯队",
+        "family": "persona",
+        "persona": "sector_tide",
+        "scorer": "score_tide_rotation",
+        "display_order": 62,
+        "position_limit_pct": 6.0,
+        "aliases": ["轮动初升", "tide_rotation"],
+        "profile": {
+            "priority": 80,
+            "entry_threshold": 8.2,
+            "score_basis": "行业排名改善/第一梯队/拒绝补涨追高",
+            "position_hint": "按轮动风险预算动态定仓，单票绝对上限6%",
+            "time_stop": "3日不延续或行业改善失败退出",
+            "certainty_rank": 2,
+            "risk_reward_rank": 2,
+        },
+    },
+    "tide_recovery": {
+        "label": "冰点修复",
+        "color": "#22d3ee",
+        "desc": "复合风险解除后参与最先修复的行业和个股",
+        "family": "persona",
+        "persona": "sector_tide",
+        "scorer": "score_tide_recovery",
+        "display_order": 64,
+        "position_limit_pct": 4.0,
+        "aliases": ["冰点修复", "tide_recovery"],
+        "profile": {
+            "priority": 72,
+            "entry_threshold": 8.5,
+            "score_basis": "市场修复确认/行业率先转强/小仓验证",
+            "position_hint": "按修复风险预算建观察仓，单票绝对上限4%，次日确认后才允许加仓",
+            "time_stop": "T+2未确认修复退出",
+            "certainty_rank": 3,
+            "risk_reward_rank": 1,
         },
     },
     "super_b1": {
@@ -261,6 +321,13 @@ STRATEGY_SUITES: dict[str, dict[str, Any]] = {
         "desc": "低估蓝筹、底部发育、逆向情绪和去杠杆防守代理",
         "color": "#f59e0b",
         "strategy_ids": ("li_daxiao_bottom",),
+    },
+    "sector_tide": {
+        "id": "sector_tide",
+        "label": "板块潮汐",
+        "desc": "市场状态、行业轮动、板块内领涨与冰点修复",
+        "color": "#06b6d4",
+        "strategy_ids": strategy_ids_for_persona("sector_tide"),
     },
 }
 
@@ -415,23 +482,42 @@ def default_trade_discipline_text(
     adaptive_label: str = "中性",
     adaptive_position_mult: float = 1.0,
     zettaranc_enabled: bool = True,
+    sector_tide_enabled: bool = False,
 ) -> str:
     position_limit_desc = str(position_limit_desc or "无固定百分比硬限制")
     position_rule = (
+        "- 板块潮汐由动态风险预算决定仓位：进攻/轮动/修复的单笔风险预算分别为权益0.30%/0.20%/0.10%，策略内组合未实现止损风险≤1.50%/0.80%/0.30%，总仓≤45%/30%/15%，行业敞口≤12%/10%/6%；防守禁止新仓。主线/轮动/修复的8%/6%/4%仅是单票绝对天花板，同一行业最多2只。"
+        if sector_tide_enabled
+        else
         "- Z哥人格仓位必须硬执行注册战法上限（单票最高10%）、总仓位≤80%、现金≥20%，高确定性也不得突破；其他人格首次建仓、加仓、减仓比例由评分、风险标记、盘面级别和账户状态决定。"
         if zettaranc_enabled
         else "- 仓位不按固定百分比硬卡：首次建仓、加仓、减仓比例由评分、风险标记、盘面级别和账户状态决定；集中持仓必须在reason说明依据。"
     )
     execution_rule = (
+        "- 每条 BUY/SELL 必须给出100股整数倍 shares；板块潮汐执行层按“结构止损距离+近60日向下跳空P95与0.5ATR孰高+0.20%费用滑点”计算有效损失距离，再复核单笔、策略组合、行业风险预算和动态仓位上限；任何一项超限都直接拦截且不自动缩量。"
+        if sector_tide_enabled
+        else
         "- 每条 BUY/SELL 的仓位大小由你决定：必须给出100股整数倍 shares；仓位大小一律按“参考价或成交价 × shares ÷ 当前总权益 × 100%”定义，并在 reason 里写明这个百分比依据；执行层不会替你补默认仓位或自动缩量，Z哥仓位超限、现金不足、动态盘面暂停买入或超过可卖数量都会直接拦截。"
         if zettaranc_enabled
         else "- 每条 BUY/SELL 的仓位大小由你决定：必须给出100股整数倍 shares；仓位大小一律按“参考价或成交价 × shares ÷ 当前总权益 × 100%”定义，并在 reason 里写明这个百分比依据；执行层不会替你补默认仓位或自动缩量，现金不足、动态盘面暂停买入或超过可卖数量会直接拦截。"
     )
     risk_rule = (
+        "- 板块潮汐退出：结构止损；行业分数<55连续两次；复合风险硬停止且行业转弱；主线5日/轮动3日/修复T+2不延续；达到2R先减半，余仓峰值-2ATR跟踪"
+        if sector_tide_enabled
+        else
         "- 系统底线风控：持仓超25日退出；Z哥按入场战法使用专属结构止损，防卖飞、卤煮、S1/S2/S3、出货五式、白线/黄线等归属于下方 Z哥卖出风控"
         if zettaranc_enabled
         else "- 系统底线风控：持仓超25日退出；其他止损止盈按当前激活策略和既有持仓标记执行"
     )
+    registered_position_rule = (
+        "- 板块潮汐动态风险预算、总仓/行业敞口和8%/6%/4%绝对上限是执行层硬限制，不是参考值。"
+        if sector_tide_enabled
+        else f"- 注册策略仓位纪律只作为参考：{position_limit_desc}。"
+    )
+    generic_exit_rules = [] if sector_tide_enabled else [
+        "- 移动止损：盈利>5%后进入回撤保护，回到成本附近自动退出",
+        "- 信号恶化退出：持有>10天仍未站回BBI且盈利不足，或持有>12天仍亏>3%，自动离场",
+    ]
     return "\n".join([
         "- A股模拟成交窗口：09:30-11:30、13:00-15:00；09:15-09:25只作开盘集合竞价观察/申报参考，09:25-09:30为静默期，不得直接按参考价记成交。",
         "- T+1：今日买入的股票今日不可卖；只能卖available_qty。",
@@ -440,13 +526,12 @@ def default_trade_discipline_text(
         position_rule,
         f"- 今日盘面监控指引优先调整买入节奏；谨慎/防守盘面必须主动缩手或等待确认，不能上午把{max_open_positions}只买满。",
         execution_rule,
-        f"- 注册策略仓位纪律只作为参考：{position_limit_desc}。",
+        registered_position_rule,
         "- 综合决策参考是每次决策的必读输入：盘面监控、隔夜美股、指数/期货、板块涨跌、行业资金、热门股、消息面预检、当前仓位和现金状态都必须影响BUY/SELL/HOLD与shares。",
         "- 当前账户JSON里的 strategy_mark/buy_strategy/entry_reason/last_exit_rule 是既有持仓的策略标记；后续加仓、减仓、清仓必须读取这些标记，按原入场策略的时间纪律和卖出规则处理，不能把 B3、B2、趋势回踩、李大霄等不同策略混同。",
         "- 对已有持仓再次输出 BUY 表示加仓/补仓，shares 是本次新增股数而不是目标总股数；只允许顺势确认加仓，不能为了摊低亏损成本而越跌越买，今日新买且T+1锁仓的票原则上不再日内加仓。",
         risk_rule,
-        "- 移动止损：盈利>5%后进入回撤保护，回到成本附近自动退出",
-        "- 信号恶化退出：持有>10天仍未站回BBI且盈利不足，或持有>12天仍亏>3%，自动离场",
+        *generic_exit_rules,
         "- 同板块持仓不超过2只（避免集中风险）",
         "- 必须按候选自带的“基准”判断是否达标；未达各自基准只能观察，不能因为裸分接近8就买",
         "- 策略共识只能用于排序，不能突破持仓数、T+1、现金不能为负、交易窗口等执行规则。",

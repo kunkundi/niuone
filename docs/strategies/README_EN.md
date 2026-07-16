@@ -17,9 +17,25 @@ Strategy outputs are experimental signals and must not be used as the basis for 
 
 ## 2. Independent Strategies
 
-The settings page directly selects one active strategy suite. Basic Strategies, Z-ge, Li Daxiao, and Preset Text are peer, mutually exclusive suites. Each suite independently owns its candidate scope, scoring, entry, exit, sizing, and model-prompt rules. Inactive suites do not enter the current new-position scan or decision context.
+The settings page directly selects one active strategy suite. Basic Strategies, Z-ge, Li Daxiao, Sector Tide, and Preset Text are peer, mutually exclusive suites. Each suite independently owns its candidate scope, scoring, entry, exit, sizing, and model-prompt rules. Inactive suites do not enter the current new-position scan or decision context.
 
 Switching suites does not rewrite historical position attribution. Existing positions continue to use the `strategy_mark` captured at entry for their original exit discipline. Preset Text uses the basic scan only as a raw candidate pool and applies the text rules as the independent decision policy. Empty text creates no new simulated positions and only performs risk checks on existing holdings.
+
+### 2.1 User Guide: Enabling and Triggering a Strategy
+
+1. Set **Active independent strategy** to **Sector Tide** on the settings page. The corresponding value is `DASHBOARD_ACTIVE_STRATEGY=sector_tide`. This setting is applied at runtime and takes effect on the next scan without restarting the Dashboard.
+2. New candidates and model decisions reuse the practice page's B1 schedule. The scheduler inside the Dashboard process reads `DASHBOARD_B1_SCHEDULE_TIMES`; Sector Tide does not have a separate candidate-scan timer.
+3. To run immediately, click **Manually trigger candidate scan and trading strategy** on the practice page. One full cycle performs the market scan, candidate generation, model assessment, and execution-layer risk checks.
+4. A 09:25 scan may use the opening-auction result to form candidates, but it cannot simulate a fill during the 09:25–09:30 quiet period. Any executable action is queued for a fresh price, session, and risk check after 09:30.
+
+Scheduling ownership is split between two processes:
+
+| Work | Process | Main settings | Behavior |
+|---|---|---|---|
+| Candidate scan and model decision | Dashboard | `DASHBOARD_B1_SCHEDULE_ENABLED`, `DASHBOARD_B1_SCHEDULE_TIMES` | Runs the scan on schedule or on manual request and sends only the active suite's candidates into the simulated decision flow |
+| Local automatic exits | Cron Scheduler | `DASHBOARD_B3_EXIT_TIME`, `DASHBOARD_TIME_EXIT_TIME` | Refreshes position data at the configured times and checks structural stops, sector deterioration, time boxes, 2R, and 2 ATR rules |
+
+Automatic exits are discrete scheduled checks, not broker-native conditional orders or tick-by-tick monitoring. Refreshing the page only reads state and never creates a simulated fill. Switching away from Sector Tide stops new Sector Tide candidates, while existing Sector Tide positions continue to receive exits according to their stored strategy marks.
 
 ## 3. Strategy Suites
 
@@ -28,6 +44,7 @@ Switching suites does not rewrite historical position attribution. Existing posi
 | Basic Strategies | Breakout confirmation, trend pullback | General technical-pattern observation |
 | Z-ge | Shaofu B1, B2 confirmation, B3 continuation, Super B1, exit risk controls | Trend- and timing-oriented rule experiments |
 | Li Daxiao | Undervalued blue chips, bottom formation, contrarian sentiment, deleveraging defense | Value- and defense-oriented rule experiments |
+| Sector Tide | Main-theme leader, early rotation, freeze recovery | Market regime, industry rotation, and within-sector relative strength |
 
 ### 3.1 Basic Strategies
 
@@ -48,6 +65,57 @@ Exit and risk rules include constraints based on the previous low or entry candl
 ### 3.3 Li Daxiao Rule Group
 
 This rule group references the policy, value, bottom-formation, contrarian-sentiment, and leverage-risk-control frameworks in [`li-daxiao-skill`](https://github.com/sherjy/li-daxiao-skill). It uses highly liquid blue chips, low-level stabilization, low turnover, contracting volume and low volatility, anti-chasing rules, and risky-security filters as executable proxy signals.
+
+### 3.4 Sector Tide
+
+Sector Tide builds one cross-sectional snapshot from the same liquid-stock universe before scoring any stock. It then applies hard gates in the order market regime → industry tide → within-sector stock strength. Industry strength is a mandatory gate rather than a score bonus.
+
+- **Main-theme Leader**: available only in offensive or rotation regimes, requires a leading industry and a stock in the top 20% of its industry, and accepts only a breakout or a low-volume EMA20 pullback. Its 8% single-name limit is an absolute ceiling; dynamic risk determines the actual size.
+- **Early Rotation**: requires an improving industry and a stock in its top 30%. It rejects a one-day gain above 7% and an extension above 1.5 ATR from EMA20. Its 6% limit is an absolute ceiling.
+- **Freeze Recovery**: available only after defense has cleared, requires one of the first industries and stocks to recover, and exits if recovery is not confirmed by T+2. Its 4% limit is an absolute ceiling; the recovery risk budget determines the actual size.
+
+In offensive/rotation/recovery regimes, per-trade NAV risk is budgeted at 0.30%/0.20%/0.10%, strategy open-stop risk at 1.50%/0.80%/0.30%, sector risk at 0.60%/0.40%/0.20%, total exposure at 45%/30%/15%, and sector exposure at 12%/10%/6%. Defensive regimes set all new-risk budgets to zero. Effective loss distance equals structural stop distance plus the larger of the trailing 60-day downside-gap p95 and 0.5 ATR, plus a 0.20% execution reserve; the smaller of risk-sized weight and the registered ceiling binds. Each industry remains limited to two names. Missing industry-flow data explicitly falls back to volume participation and is never interpreted as an inflow.
+
+#### User Guide: Sizing and Exit Behavior
+
+- Every model BUY/SELL action must specify a round lot in multiples of 100 shares. The execution layer neither invents a default size nor automatically shrinks an oversized order.
+- A candidate must have a valid structural stop no farther than both 6% and 1.5 ATR. Missing downside-gap/ATR reserve data blocks the entry.
+- The requested size is checked against the dynamic single-name cap, market-regime total exposure, same-industry count, industry exposure, per-trade risk, strategy open risk, and strategy-sector risk. Any breach rejects the entire order and records the reason in the decision log.
+- A regime budget is Sector Tide's maximum permission. If global market guidance, `DASHBOARD_MAX_TOTAL_POSITION_PCT`, or the cash reserve is tighter, the execution layer uses the smallest limit; a looser global setting never expands the Sector Tide budget.
+- Total and industry exposure use the whole simulated account. Same-industry counts include every open position carrying that industry label. Open-stop and sector-stop risk totals include Sector Tide positions only.
+- Main-theme Leader exits after five trading days without progress, Early Rotation after three days without continuation, and Freeze Recovery at T+2 without confirmation. These time-box rules are evaluated during the configured end-of-day exit check.
+- `2R target = average cost + 2 × (average cost - entry structural stop)`. The first 2R event sells half; the remainder exits at `highest price since entry - 2 × ATR` after that trailing line is above cost.
+
+#### Developer Contract: Regimes, Scores, and Data
+
+The market regime is created from the same scan snapshot. The market composite weights core-index trend at 25%, advance/decline breadth at 25%, median return at 15%, limit-up/limit-down structure at 15%, the universe's 20-day trend at 10%, and volume participation at 10%.
+
+| State | Rule |
+|---|---|
+| `offensive` | Market score ≥65 and advance breadth ≥55%, after state confirmation |
+| `rotation` | Neither defensive nor offensive, after state confirmation |
+| `recovery` | The prior confirmed state was defensive and the current raw state has cleared defense |
+| `defensive` | Compound hard stop, or market score <40; all new-risk budgets become zero |
+
+The compound hard stop requires index breakdown, market-breadth breakdown, and limit-down expansion at the same time. Except for a hard stop, a state change normally requires two consecutive scans with the same raw state; a first run with no state history accepts the current result immediately.
+
+Industry score weights and tide thresholds are:
+
+| Factor | Weight |
+|---|---:|
+| 20-day relative-strength percentile | 25% |
+| 5-day relative-strength percentile | 15% |
+| Rank-acceleration percentile | 15% |
+| Breadth above EMA20 | 20% |
+| 20-day new-high ratio | 10% |
+| Industry flow; volume participation when missing | 10% |
+| Industry turnover-liquidity percentile | 5% |
+
+An industry needs at least three valid members, and each stock needs at least 55 daily bars. `leading` requires an industry score ≥75 and a 20-day relative-strength percentile ≥70. `improving` requires a score ≥65, rank acceleration ≥15, and a 5-day relative-strength percentile ≥65. A score <45 or 20-day relative-strength percentile <35 is `lagging`; every other case is `weakening`.
+
+The entry-score thresholds for Main-theme Leader, Early Rotation, and Freeze Recovery are 8.0, 8.2, and 8.5; their minimum within-industry strength percentiles are 80, 70, and 70. Candidate-cache records must carry the market regime, industry tide, structural stop, gap reserve, effective loss distance, and all applicable risk budgets. The execution layer recalculates risk using the live simulated fill price and shared registered parameters; it does not trust model-supplied risk numbers.
+
+The primary implementation files are `app/strategies/scoring/sector_tide.py`, `app/strategies/sector_tide_risk.py`, and `app/trading/practice_trader.py`. Run `python3 -m unittest -v tests.test_sector_tide_strategy` for the focused regression suite and `./scripts/validate.sh` for full validation.
 
 The names above are used only to label rule experiments in this project. They do not indicate that the original authors participated in, approved, or endorsed this project. When redistributing related descriptions, retain the references to `zettaranc-skill` and `li-daxiao-skill`.
 
@@ -79,7 +147,7 @@ Related settings:
 | `DASHBOARD_MAX_TOTAL_POSITION_PCT` | Reference percentage for total simulated exposure |
 | `DASHBOARD_MIN_CASH_RESERVE_PCT` | Reference percentage for simulated cash reserves |
 
-Percentage settings are used primarily for model context and research discipline. They must not be treated as execution-layer risk safeguards for real trading.
+Percentage settings are primarily model context and research discipline by default. Suites with registered hard limits, including Z-ge and Sector Tide, enforce the stricter of the relevant global total-exposure/cash limits and their suite limits in the simulation layer. Whether or not a setting is hard-blocked in simulation, it must not be treated as a safeguard for a real brokerage account.
 
 ## 5. Configuration
 
@@ -87,7 +155,7 @@ Prefer maintaining the active independent strategy, text rules, and simulation d
 
 | Setting | Description |
 |---|---|
-| `DASHBOARD_ACTIVE_STRATEGY` | Active independent strategy: `base`, `zettaranc`, `li_daxiao_bottom`, or `preset_text` |
+| `DASHBOARD_ACTIVE_STRATEGY` | Active independent strategy: `base`, `zettaranc`, `li_daxiao_bottom`, `sector_tide`, or `preset_text` |
 | `DASHBOARD_PRESET_STRATEGY_TEXT` | Custom preset text rules |
 | `DASHBOARD_STOCK_UNIVERSE` | Comma-separated scopes: `st`, `chi_next`, `star_market`, and `main_board`; defaults to main board only |
 | `DASHBOARD_TRADE_DISCIPLINE_TEXT` | Additional simulation discipline |

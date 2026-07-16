@@ -54,7 +54,7 @@ class AShareAuctionSummaryTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["amount"], 1200)
 
-    def test_fetch_auction_snapshot_falls_back_when_first_page_disconnects(self):
+    def test_fetch_auction_snapshot_hides_primary_error_after_successful_fallback(self):
         mod = load_module()
         original_urlopen = mod.urlopen
         original_fallback = mod.fetch_tencent_auction_snapshot
@@ -68,7 +68,39 @@ class AShareAuctionSummaryTests(unittest.TestCase):
             mod.fetch_tencent_auction_snapshot = original_fallback
 
         self.assertEqual(rows, fallback_rows)
-        self.assertIn("已切换腾讯备用行情", err)
+        self.assertIsNone(err)
+
+    def test_fetch_auction_snapshot_hides_nonfatal_fallback_note_after_successful_fallback(self):
+        mod = load_module()
+        original_urlopen = mod.urlopen
+        original_fallback = mod.fetch_tencent_auction_snapshot
+        fallback_rows = [{"code": "600001", "name": "备用行情", "auction_pct": 1.0, "amount": 1.0}]
+        try:
+            mod.urlopen = lambda *args, **kwargs: (_ for _ in ()).throw(mod.RemoteDisconnected("closed"))
+            mod.fetch_tencent_auction_snapshot = lambda: (fallback_rows, "部分请求失败 1 组")
+            rows, err = mod.fetch_auction_snapshot()
+        finally:
+            mod.urlopen = original_urlopen
+            mod.fetch_tencent_auction_snapshot = original_fallback
+
+        self.assertEqual(rows, fallback_rows)
+        self.assertIsNone(err)
+
+    def test_fetch_auction_snapshot_keeps_error_when_fallback_also_fails(self):
+        mod = load_module()
+        original_urlopen = mod.urlopen
+        original_fallback = mod.fetch_tencent_auction_snapshot
+        try:
+            mod.urlopen = lambda *args, **kwargs: (_ for _ in ()).throw(mod.RemoteDisconnected("closed"))
+            mod.fetch_tencent_auction_snapshot = lambda: ([], "仅取到 0 只")
+            rows, err = mod.fetch_auction_snapshot()
+        finally:
+            mod.urlopen = original_urlopen
+            mod.fetch_tencent_auction_snapshot = original_fallback
+
+        self.assertEqual(rows, [])
+        self.assertIn("p1 RemoteDisconnected", err)
+        self.assertIn("腾讯备用行情 仅取到 0 只", err)
 
     def test_scheduled_report_rejects_incomplete_snapshot_before_optional_fetches(self):
         mod = load_module()

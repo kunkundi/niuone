@@ -52,7 +52,8 @@ def strategy_hard_blockers(strategy_name: str, payload: dict[str, Any]) -> list[
     """Hard buy gates distilled from registered strategy rules; blocked names may still be watched."""
     blockers: list[str] = []
     dist = safe_float(payload.get("distance_pct"))
-    if dist is not None and dist > COMMON_MAX_BBI_DISTANCE_PCT:
+    is_sector_tide = strategy_name in {"tide_leader", "tide_rotation", "tide_recovery"}
+    if not is_sector_tide and dist is not None and dist > COMMON_MAX_BBI_DISTANCE_PCT:
         blockers.append(f"距BBI>{COMMON_MAX_BBI_DISTANCE_PCT}%")
 
     risk_flags = set(str(x) for x in (payload.get("risk_flags") or []))
@@ -137,6 +138,61 @@ def strategy_hard_blockers(strategy_name: str, payload: dict[str, Any]) -> list[
         vol = safe_float(payload.get("volatility_20d_pct"))
         if vol is not None and vol > 3.8:
             blockers.append("底部波动过高")
+    elif is_sector_tide:
+        if not payload.get("market_allows_buys") or payload.get("market_hard_stop"):
+            blockers.append("市场风控禁止新开仓")
+        if not payload.get("sector_data_eligible"):
+            blockers.append("行业有效样本不足")
+        if not payload.get("risk_ok"):
+            blockers.append("结构止损超过1.5ATR或6%")
+        effective_loss = safe_float(payload.get("effective_loss_distance_pct"))
+        dynamic_cap = safe_float(payload.get("max_position_pct_by_risk"))
+        if effective_loss is None or effective_loss <= 0 or dynamic_cap is None or dynamic_cap <= 0:
+            blockers.append("动态风险预算无法计算")
+
+        status = str(payload.get("sector_status") or "")
+        regime = str(payload.get("market_regime") or "")
+        rank = safe_float(payload.get("stock_sector_rank")) or 0.0
+        acceleration = safe_float(payload.get("sector_rank_acceleration")) or 0.0
+        extension = safe_float(payload.get("extension_atr"))
+        change = safe_float(payload.get("change_pct"))
+        if strategy_name == "tide_leader":
+            if regime not in {"offensive", "rotation"}:
+                blockers.append("主线领航仅用于进攻/轮动行情")
+            if status != "leading":
+                blockers.append("行业不是领先潮位")
+            if rank < 80:
+                blockers.append("个股未进入行业前20%")
+            if not (payload.get("breakout") or payload.get("pullback")):
+                blockers.append("未形成突破/缩量回踩买点")
+            if extension is not None and extension > 2:
+                blockers.append("距EMA20超过2ATR")
+        elif strategy_name == "tide_rotation":
+            if regime not in {"offensive", "rotation"}:
+                blockers.append("轮动初升仅用于进攻/轮动行情")
+            if status != "improving":
+                blockers.append("行业不是改善潮位")
+            if acceleration < 15:
+                blockers.append("行业排名加速度不足")
+            if rank < 70:
+                blockers.append("个股未进入行业前30%")
+            if change is not None and change > 7:
+                blockers.append("单日涨幅>7%拒绝追高")
+            if extension is not None and extension > 1.5:
+                blockers.append("距EMA20超过1.5ATR")
+            if not (payload.get("breakout") or payload.get("pullback") or payload.get("reclaim")):
+                blockers.append("轮动买点未确认")
+        elif strategy_name == "tide_recovery":
+            if regime != "recovery":
+                blockers.append("市场未处冰点修复")
+            if status not in {"leading", "improving"}:
+                blockers.append("行业未率先修复")
+            if rank < 70:
+                blockers.append("个股修复强度不足")
+            if not (payload.get("reclaim") or payload.get("breakout")):
+                blockers.append("未站回EMA20/突破修复高点")
+            if extension is not None and extension > 1.5:
+                blockers.append("距EMA20超过1.5ATR")
 
     return blockers
 

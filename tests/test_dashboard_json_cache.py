@@ -14,6 +14,8 @@ ENTRYPOINTS = SRC / "entrypoints"
 sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(COMPAT))
 
+from dashboard.apis.cache import load_cached_payload
+
 
 def load_module(name):
     spec = importlib.util.spec_from_file_location(f"{name}_under_test", COMPAT / f"{name}.py")
@@ -23,6 +25,22 @@ def load_module(name):
 
 
 class DashboardJsonCacheTests(unittest.TestCase):
+    def test_force_refresh_bypasses_fresh_cache(self):
+        calls = []
+
+        result = load_cached_payload(
+            Path("unused.json"),
+            75,
+            compute=lambda: calls.append(True) or {"value": "live"},
+            empty={},
+            read_cache=lambda _path, ttl: {"value": "cached"} if ttl is not None else None,
+            write_cache=lambda _path, _data: None,
+            force_refresh=True,
+        )
+
+        self.assertEqual(result, {"value": "live"})
+        self.assertEqual(calls, [True])
+
     def test_read_json_cache_ignores_bad_json_and_non_object_values(self):
         cache = load_module("dashboard_json_cache")
         with tempfile.TemporaryDirectory() as td:

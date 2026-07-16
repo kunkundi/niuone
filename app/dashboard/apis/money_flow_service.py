@@ -3,6 +3,7 @@
 使用 akshare.stock_fund_flow_industry(symbol='即时')，该接口当前可用且不是 Eastmoney push2 blocked path。
 """
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -58,7 +59,7 @@ def _compute():
     }
 
 
-def fetch_money_flow():
+def fetch_money_flow(force_refresh=False):
     empty = {"inflow": [], "outflow": []}
     return load_cached_payload(
         CACHE_PATH,
@@ -67,7 +68,8 @@ def fetch_money_flow():
         empty=empty,
         read_cache=read_json_cache,
         write_cache=write_json_cache,
+        force_refresh=force_refresh,
     )
 
 if __name__ == '__main__':
-    print(json.dumps(fetch_money_flow(), ensure_ascii=False, indent=2))
+    print(json.dumps(fetch_money_flow(force_refresh='--force-refresh' in sys.argv[1:]), ensure_ascii=False, indent=2))

@@ -301,11 +301,9 @@ def fetch_auction_snapshot() -> tuple[list[dict[str, Any]], str | None]:
         if materially_incomplete:
             fallback_rows, fallback_err = fetch_tencent_auction_snapshot()
             if fallback_rows:
-                reason = "；".join(page_errors[:2]) if page_errors else f"只取到 {len(all_items)}/{total} 只"
-                note = f"东方财富竞价快照不完整（{reason}），已切换腾讯备用行情"
-                if fallback_err:
-                    note += f"；{fallback_err}"
-                return fallback_rows, note
+                # A complete fallback is a successful snapshot.  Do not expose
+                # failures from the discarded primary source in the report.
+                return fallback_rows, None
             if fallback_err:
                 page_errors.append(f"腾讯备用行情 {fallback_err}")
         if not rows:

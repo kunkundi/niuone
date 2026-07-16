@@ -34,6 +34,7 @@
 }
 """
 import json
+import concurrent.futures
 import os
 import re
 import shlex
@@ -77,8 +78,10 @@ from strategies.scoring import (
     LI_DAXIAO_MAX_DAILY_CHASE_PCT,
     LI_DAXIAO_MAX_TURNOVER,
     LI_DAXIAO_MIN_AMOUNT,
+    SECTOR_TIDE_STRATEGY_IDS,
     STRATEGY_SCORERS,
     analyze_enriched_rows,
+    build_sector_tide_context,
     candle_amplitude_pct,
     candle_body_pct,
     combine_z_yellow,
@@ -365,8 +368,15 @@ def tencent_klines(symbol, count=120):
 
 # ========== Multi-Strategy Analysis ==========
 
-def analyze_all_strategies(symbol, tencent_key, quote: dict[str, Any] | None = None, name: str = ""):
-    """Fetch K-lines once, enrich once, run all registered strategies. Returns dict or None."""
+def prepare_strategy_rows(
+    symbol: str,
+    tencent_key: str,
+    *,
+    quote: dict[str, Any] | None = None,
+    name: str = "",
+    industry: str = "",
+) -> list[dict[str, Any]] | None:
+    """Fetch and enrich a stock once so cross-sectional suites can reuse it."""
     try:
         rows = tencent_klines(tencent_key, 120)
     except Exception:
@@ -379,12 +389,62 @@ def analyze_all_strategies(symbol, tencent_key, quote: dict[str, Any] | None = N
     if rows:
         rows[-1]["symbol_code"] = symbol
         rows[-1]["stock_name"] = name or (quote or {}).get("name", "")
+        rows[-1]["industry"] = normalize_industry_name(industry)
         if quote:
             rows[-1]["quote_amount"] = quote.get("amount")
             rows[-1]["quote_turnover"] = quote.get("turnover")
             rows[-1]["quote_price"] = quote.get("price")
+            rows[-1]["quote_change_pct"] = quote.get("change_pct")
 
-    return analyze_enriched_rows(rows, active_strategy_scorers())
+    return rows
+
+
+def analyze_all_strategies(
+    symbol,
+    tencent_key,
+    quote: dict[str, Any] | None = None,
+    name: str = "",
+    *,
+    industry: str = "",
+    rows: list[dict[str, Any]] | None = None,
+    context: dict[str, Any] | None = None,
+    scorers: dict[str, Callable[..., dict[str, Any] | None]] | None = None,
+):
+    """Run all active strategies, optionally in one shared cross-sectional context."""
+    prepared = rows or prepare_strategy_rows(
+        symbol,
+        tencent_key,
+        quote=quote,
+        name=name,
+        industry=industry,
+    )
+    if not prepared:
+        return None
+
+    return analyze_enriched_rows(prepared, scorers or active_strategy_scorers(), context)
+
+
+def load_previous_sector_tide_market() -> dict[str, Any] | None:
+    """Load only the prior persisted tide state used for two-scan confirmation."""
+    try:
+        payload = json.loads(MULTI_STRATEGY_CACHE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    context = payload.get("sector_tide_context") if isinstance(payload, dict) else None
+    market = context.get("market") if isinstance(context, dict) else None
+    return market if isinstance(market, dict) else None
+
+
+def fetch_sector_tide_money_flow() -> dict[str, Any]:
+    """Return cached industry flows; an empty result activates volume fallback."""
+    try:
+        from dashboard.apis.money_flow_service import fetch_money_flow
+
+        payload = fetch_money_flow()
+        return payload if isinstance(payload, dict) else {"inflow": [], "outflow": []}
+    except Exception as exc:
+        print(f"[WARN] sector tide money flow unavailable: {type(exc).__name__}; using volume fallback", file=sys.stderr)
+        return {"inflow": [], "outflow": []}
 
 
 def load_a_share_code_pool(stock_universe: object | None = None):
@@ -735,6 +795,7 @@ def lookup_stock_industry(code: str, ak_module: Any | None = None) -> str:
 def annotate_candidate_industries(
     *groups: list[dict[str, Any]],
     lookup: Callable[[str], str | None] | None = None,
+    max_workers: int = 1,
 ) -> None:
     """Attach industry/sector labels to candidate rows without making them required."""
     missing_by_code: dict[str, list[dict[str, Any]]] = {}
@@ -771,16 +832,30 @@ def annotate_candidate_industries(
 
         if missing_by_code:
             cache_changed = False
-            for code in list(missing_by_code):
-                try:
-                    industry = normalize_industry_name(lookup_stock_industry(code))
-                except Exception:
-                    industry = ""
+            missing_codes = list(missing_by_code)
+            resolved: dict[str, str] = {}
+            workers = max(1, min(int(max_workers or 1), 12, len(missing_codes)))
+            if workers > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                    future_by_code = {pool.submit(lookup_stock_industry, code): code for code in missing_codes}
+                    for future in concurrent.futures.as_completed(future_by_code):
+                        code = future_by_code[future]
+                        try:
+                            resolved[code] = normalize_industry_name(future.result())
+                        except Exception:
+                            resolved[code] = ""
+            else:
+                for code in missing_codes:
+                    try:
+                        resolved[code] = normalize_industry_name(lookup_stock_industry(code))
+                    except Exception:
+                        resolved[code] = ""
+                    time.sleep(0.08)
+            for code, industry in resolved.items():
                 if industry:
                     cache[code] = industry
                     cache_changed = True
                     fill_code(code, industry)
-                time.sleep(0.08)
             if cache_changed:
                 save_stock_industry_cache(cache)
         return
@@ -918,10 +993,73 @@ def main():
     print(f"  High liquidity (成交额>8亿): {len(liquid)}, analyzing top {top_n}", file=sys.stderr)
 
     print("Step 3: Multi-strategy scoring (registered strategy profiles)...", file=sys.stderr)
+    scorers = active_strategy_scorers()
+    sector_tide_enabled = bool(SECTOR_TIDE_STRATEGY_IDS.intersection(scorers))
+    sector_tide_context: dict[str, Any] | None = None
+    prepared_by_code: dict[str, list[dict[str, Any]]] = {}
+    industry_by_code: dict[str, str] = {}
+
+    if sector_tide_enabled:
+        print("  Building shared market/sector tide context...", file=sys.stderr)
+        sector_members = [
+            {"code": code, "name": name, "quote": q}
+            for code, name, q in to_analyze
+        ]
+        annotate_candidate_industries(sector_members, max_workers=8)
+        prepared_items: list[dict[str, Any]] = []
+        for index, item in enumerate(sector_members):
+            code = str(item["code"])
+            name = str(item["name"])
+            industry = normalize_industry_name(item.get("industry"))
+            quote = item.get("quote") if isinstance(item.get("quote"), dict) else {}
+            rows = prepare_strategy_rows(
+                code,
+                tencent_keys[code],
+                quote=quote,
+                name=name,
+                industry=industry,
+            )
+            if rows:
+                prepared_by_code[code] = rows
+                industry_by_code[code] = industry
+                prepared_items.append({
+                    "code": code,
+                    "name": name,
+                    "industry": industry,
+                    "quote": quote,
+                    "rows": rows,
+                })
+            if (index + 1) % 50 == 0:
+                print(f"  ... {index + 1}/{len(sector_members)} tide members prepared", file=sys.stderr)
+            time.sleep(0.02)
+        sector_tide_context = build_sector_tide_context(
+            prepared_items,
+            market_snapshot=market_snapshot,
+            flow_rows=fetch_sector_tide_money_flow(),
+            previous_market=load_previous_sector_tide_market(),
+        )
+        market = sector_tide_context.get("market") or {}
+        print(
+            "  Tide context: "
+            f"market={market.get('state')} score={market.get('score')} "
+            f"sectors={sector_tide_context.get('sector_count')} "
+            f"coverage={sector_tide_context.get('data_coverage')}",
+            file=sys.stderr,
+        )
+
     results = []
     for i, (code, name, q) in enumerate(to_analyze):
         tencent_key = tencent_keys[code]
-        multi = analyze_all_strategies(code, tencent_key, quote=q, name=name)
+        multi = analyze_all_strategies(
+            code,
+            tencent_key,
+            quote=q,
+            name=name,
+            industry=industry_by_code.get(code, ""),
+            rows=prepared_by_code.get(code),
+            context=sector_tide_context,
+            scorers=scorers,
+        )
         if multi is None:
             continue
         # Backward compat fields
@@ -935,6 +1073,8 @@ def main():
             "amount": q.get("amount"),
             "amount_yi": round(q.get("amount", 0) / 1e8, 1) if q.get("amount") else None,
             "turnover": q.get("turnover"),
+            "industry": best.get("industry") or industry_by_code.get(code, ""),
+            "sector": best.get("industry") or industry_by_code.get(code, ""),
             # backward compat (the practice candidates panel expects these)
             "score": best.get("score", 0),
             "score_total": best.get("score_total", 10),
@@ -961,6 +1101,34 @@ def main():
             "time_stop": best.get("time_stop"),
             "actionable": best.get("actionable"),
             "hard_blockers": best.get("hard_blockers", []),
+            "market_regime": best.get("market_regime"),
+            "market_score": best.get("market_score"),
+            "market_hard_stop": best.get("market_hard_stop"),
+            "market_allows_buys": best.get("market_allows_buys"),
+            "sector_status": best.get("sector_status"),
+            "sector_score": best.get("sector_score"),
+            "sector_rank_acceleration": best.get("sector_rank_acceleration"),
+            "sector_breadth20": best.get("sector_breadth20"),
+            "stock_sector_rank": best.get("stock_sector_rank"),
+            "stock_market_rank": best.get("stock_market_rank"),
+            "ema20": best.get("ema20"),
+            "ema50": best.get("ema50"),
+            "atr20": best.get("atr20"),
+            "stop_price": best.get("stop_price"),
+            "stop_source": best.get("stop_source"),
+            "stop_distance_pct": best.get("stop_distance_pct"),
+            "stop_atr": best.get("stop_atr"),
+            "gap_buffer_pct": best.get("gap_buffer_pct"),
+            "execution_buffer_pct": best.get("execution_buffer_pct"),
+            "effective_loss_distance_pct": best.get("effective_loss_distance_pct"),
+            "per_trade_risk_budget_pct": best.get("per_trade_risk_budget_pct"),
+            "max_open_risk_pct": best.get("max_open_risk_pct"),
+            "max_sector_risk_pct": best.get("max_sector_risk_pct"),
+            "max_total_position_pct": best.get("max_total_position_pct"),
+            "max_sector_position_pct": best.get("max_sector_position_pct"),
+            "absolute_position_cap_pct": best.get("absolute_position_cap_pct"),
+            "max_position_pct_by_risk": best.get("max_position_pct_by_risk"),
+            "risk_ok": best.get("risk_ok"),
             "trade_ready": candidate_is_trade_ready(best),
             "strategies": multi["strategies"],
             "consensus_count": multi.get("consensus_count", 0),
@@ -1018,6 +1186,8 @@ def main():
         "strategy_score_profiles": active_strategy_score_profiles(),
         "market_snapshot": market_snapshot,
     }
+    if sector_tide_context is not None:
+        output["sector_tide_context"] = sector_tide_context
     json_str = json.dumps(output, ensure_ascii=False, indent=2)
     print(json_str)
     write_outputs(json_str, generated_at)

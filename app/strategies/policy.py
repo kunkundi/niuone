@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .registry import STRATEGY_POSITION_LIMIT_PCT
+from .registry import STRATEGY_DEFINITIONS, STRATEGY_POSITION_LIMIT_PCT
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -39,8 +39,10 @@ def candidate_buy_blockers(
         blockers.append(f"评分{score:g}<基准{threshold:g}")
     if candidate.get("actionable") is False:
         blockers.append("候选未通过战法硬过滤")
+    strategy_id = str(candidate.get("best_strategy") or candidate.get("buy_strategy") or "")
+    is_sector_tide = STRATEGY_DEFINITIONS.get(strategy_id, {}).get("persona") == "sector_tide"
     distance = candidate.get("distance_pct")
-    if distance is not None and _safe_float(distance, 99.0) > max_bbi_distance_pct:
+    if not is_sector_tide and distance is not None and _safe_float(distance, 99.0) > max_bbi_distance_pct:
         blockers.append(f"距BBI>{max_bbi_distance_pct}%")
     return blockers
 

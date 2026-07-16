@@ -91,6 +91,7 @@ def parse_content(content: str) -> dict[str, Any]:
         "tone": tone,
         "tone_label": str(payload.get("tone_label") or tone_labels[tone]).strip() or tone_labels[tone],
         "summary": str(payload.get("summary") or "").strip(),
+        "comparison_lines": clean_lines(payload.get("comparison_lines"), 5),
         "guidance_lines": clean_lines(payload.get("guidance_lines"), 8),
         "focus_lines": clean_lines(payload.get("focus_lines"), 4),
         "risk_lines": clean_lines(payload.get("risk_lines"), 4),

@@ -92,11 +92,12 @@ class AShareGrokSummaryTests(unittest.TestCase):
         mod = load_module()
 
         parsed = mod.parse_a_share_grok_content("""```json
-{"tone":"cautious","tone_label":"谨慎","summary":"盘面分化，先控仓。","guidance_lines":["风险级别：谨慎","开仓节奏：本轮最多1笔"],"focus_lines":["资金流向"],"risk_lines":["跌停扩散"]}
+{"tone":"cautious","tone_label":"谨慎","summary":"盘面分化，先控仓。","comparison_lines":["实时资金结构弱化"],"guidance_lines":["风险级别：谨慎","开仓节奏：本轮最多1笔"],"focus_lines":["资金流向"],"risk_lines":["跌停扩散"]}
 ```""")
 
         self.assertEqual(parsed["tone"], "cautious")
         self.assertEqual(parsed["tone_label"], "谨慎")
+        self.assertEqual(parsed["comparison_lines"], ["实时资金结构弱化"])
         self.assertEqual(parsed["guidance_lines"][1], "开仓节奏：本轮最多1笔")
 
     def test_apply_grok_report_puts_model_guidance_first(self):

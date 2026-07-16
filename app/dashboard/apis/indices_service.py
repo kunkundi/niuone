@@ -9,6 +9,7 @@ import json
 import os
 import re
 import ssl
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -488,9 +489,9 @@ def _fetch_kline(qt_code, count=45):
         return []
 
 
-def fetch_indices_data():
+def fetch_indices_data(force_refresh=False):
     now = time.time()
-    if _CACHE["data"] is not None and now - _CACHE["ts"] < CACHE_TTL:
+    if not force_refresh and _CACHE["data"] is not None and now - _CACHE["ts"] < CACHE_TTL:
         return _CACHE["data"]
 
     qt_codes = [code for _, code, _, _, _ in INDEX_DEFS]
@@ -572,4 +573,4 @@ def fetch_indices_data():
 
 
 if __name__ == "__main__":
-    print(json.dumps(fetch_indices_data(), ensure_ascii=False, indent=2))
+    print(json.dumps(fetch_indices_data(force_refresh="--force-refresh" in sys.argv[1:]), ensure_ascii=False, indent=2))
