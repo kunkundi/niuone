@@ -13,6 +13,7 @@ import concurrent.futures
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+from core.model_api import build_model_request, request_model
 from niuone_paths import get_dashboard_env_file, get_dashboard_home
 
 if __package__ == "app":
@@ -266,101 +267,32 @@ def is_temporary_error(exc):
     return False
 
 
-def responses_output_text(data):
-    direct = str(data.get("output_text") or "").strip()
-    if direct:
-        return direct
-    parts = []
-    for item in data.get("output") or []:
-        if not isinstance(item, dict):
-            continue
-        for content in item.get("content") or []:
-            if not isinstance(content, dict):
-                continue
-            if content.get("type") in {"output_text", "text"} and content.get("text"):
-                parts.append(str(content["text"]))
-    return "\n".join(parts).strip()
-
-
-def uses_responses_api(mode, model):
-    normalized = str(mode or "auto").strip().lower().replace("-", "_")
-    if normalized in {"responses", "response"}:
-        return True
-    if normalized in {"chat", "chat_completions", "chat_completion"}:
-        return False
-    # Preserve zero-config compatibility for the first Grok generation that
-    # requires tool-backed Responses requests, while allowing gateways and
-    # future model aliases to opt in explicitly.
-    return str(model or "").strip().lower().startswith("grok-4.5")
-
-
 def openai_chat_json(base_url, api_key, prompt, max_tokens, timeout=REQUEST_TIMEOUT_SECONDS, x_handles=None):
-    use_responses_tools = uses_responses_api(GROK_API_MODE, MODEL)
-    if use_responses_tools:
-        handles = []
-        for raw_handle in x_handles or []:
-            handle = str(raw_handle or "").strip().lstrip("@").lower()
-            if handle and handle not in handles:
-                handles.append(handle)
-        tool = {"type": "x_search"}
-        if handles:
-            tool["allowed_x_handles"] = handles[:20]
-        payload = {
-            "model": MODEL,
-            "input": [{"role": "user", "content": prompt}],
-            "tools": [tool],
-            "reasoning": {"effort": "low"},
-            "max_output_tokens": max_tokens,
-            "stream": False,
-        }
-        endpoint = base_url + "/responses"
-    else:
-        payload = {
-            "model": MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-        }
-        endpoint = base_url + "/chat/completions"
-    req = urllib.request.Request(
-        endpoint,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": "Bearer " + api_key,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "NiuOne/1.0",
-        },
+    handles = []
+    for raw_handle in x_handles or []:
+        handle = str(raw_handle or "").strip().lstrip("@").lower()
+        if handle and handle not in handles:
+            handles.append(handle)
+    tool = {"type": "x_search"}
+    if handles:
+        tool["allowed_x_handles"] = handles[:20]
+    model_request = build_model_request(
+        base_url,
+        MODEL,
+        [{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+        api_mode=GROK_API_MODE,
+        tools=[tool],
+        reasoning={"effort": "low"},
+        stream=False,
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read().decode("utf-8", "ignore")
-    if raw.lstrip().startswith("data:"):
-        content_parts = []
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line.startswith("data:"):
-                continue
-            chunk = line[5:].strip()
-            if not chunk or chunk == "[DONE]":
-                continue
-            try:
-                obj = json.loads(chunk)
-            except Exception:
-                continue
-            choice = (obj.get("choices") or [{}])[0]
-            delta = choice.get("delta") or {}
-            message = choice.get("message") or {}
-            piece = delta.get("content") or message.get("content") or ""
-            if piece:
-                content_parts.append(piece)
-        content = "".join(content_parts)
-    else:
-        data = json.loads(raw)
-        content = (
-            responses_output_text(data)
-            if use_responses_tools
-            else data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        )
-    return extract_json(content)
+    parsed = request_model(
+        model_request,
+        api_key,
+        timeout=timeout,
+        opener=urllib.request.urlopen,
+    )
+    return extract_json(parsed.content)
 
 
 def call_grok_once(base_url, api_key, account_handles, latest_by_handle, timeout=REQUEST_TIMEOUT_SECONDS):

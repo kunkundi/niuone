@@ -19,6 +19,7 @@ from urllib.parse import quote
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from core.model_api import build_model_request, request_model
 from niuone_paths import get_dashboard_env_file, get_dashboard_home
 
 CN_TZ = ZoneInfo("Asia/Shanghai")
@@ -318,21 +319,14 @@ def _call_grok_api(messages: list[dict[str, str]], *, max_tokens: int = US_MARKE
     base_url, api_key = _get_grok_credentials()
     if not base_url or not api_key:
         raise RuntimeError("Grok credentials not found: set DASHBOARD_GROK_BASE_URL and DASHBOARD_GROK_API_KEY")
-    body = json.dumps({
-        "model": US_MARKET_SUMMARY_MODEL,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "stream": False,
-    }).encode("utf-8")
-    req = Request(
-        f"{base_url}/chat/completions",
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json",
-            "User-Agent": "NiuOne/1.0",
-        },
+    model_request = build_model_request(
+        base_url,
+        US_MARKET_SUMMARY_MODEL,
+        messages,
+        max_tokens=max_tokens,
+        api_mode="chat",
+        stream=False,
+        extra_payload={"stream": False},
     )
     deadline = time.monotonic() + max(30, US_MARKET_SUMMARY_DEADLINE_SECONDS)
     last_err: Exception | None = None
@@ -342,12 +336,16 @@ def _call_grok_api(messages: list[dict[str, str]], *, max_tokens: int = US_MARKE
             break
         try:
             timeout_seconds = min(max(10, US_MARKET_SUMMARY_REQUEST_TIMEOUT_SECONDS), max(10, remaining - 2))
-            with urlopen(req, timeout=timeout_seconds, context=_SSL_CONTEXT) as resp:
-                payload = json.loads(resp.read().decode("utf-8", "ignore"))
-                content = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
-                if str(content or "").strip():
-                    return str(content).strip()
-                last_err = RuntimeError("Grok returned empty content")
+            parsed = request_model(
+                model_request,
+                api_key,
+                timeout=timeout_seconds,
+                opener=urlopen,
+                ssl_context=_SSL_CONTEXT,
+            )
+            if str(parsed.content or "").strip():
+                return str(parsed.content).strip()
+            last_err = RuntimeError("Grok returned empty content")
         except Exception as exc:
             last_err = exc
             if attempt < 3 and _is_transient_error(exc) and (deadline - time.monotonic()) > 8:

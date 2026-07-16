@@ -130,7 +130,7 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(admin.status, 200)
         admin_body = admin.wfile.getvalue().decode('utf-8')
         self.assertIn('<link rel="stylesheet" href="/static/admin.css?v=8">', admin_body)
-        self.assertIn('<script src="/static/admin.js?v=17" defer></script>', admin_body)
+        self.assertIn('<script src="/static/admin.js?v=18" defer></script>', admin_body)
         self.assertNotIn('name="admin_password"', admin_body)
         self.assertNotIn("name='env__DASHBOARD_GROK_API_KEY'", admin_body)
         self.assertIn("fetch('/api/admin/config'", ADMIN_FRONTEND)
@@ -1849,7 +1849,7 @@ process.stdout.write(JSON.stringify({
         unlocked_page = FakeHandler(path='/admin', headers={'Cookie': session_cookie})
         unlocked_page.do_GET()
         self.assertEqual(unlocked_page.status, 200)
-        self.assertIn('<script src="/static/admin.js?v=17" defer></script>', unlocked_page.wfile.getvalue().decode('utf-8'))
+        self.assertIn('<script src="/static/admin.js?v=18" defer></script>', unlocked_page.wfile.getvalue().decode('utf-8'))
 
         unlocked_api = FakeHandler(path='/api/admin/config', headers={'Cookie': session_cookie})
         unlocked_api.do_GET()
@@ -2510,7 +2510,7 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(handler.status, 200)
         self.assertEqual(len(payload['groups']), 12)
         self.assertEqual(item_names, set(dashboard.ADMIN_VISIBLE_ENV_NAMES))
-        self.assertIn('<script src="/static/admin.js?v=17" defer></script>', index_body)
+        self.assertIn('<script src="/static/admin.js?v=18" defer></script>', index_body)
         self.assertNotIn("name='env__", index_body)
         self.assertIn('function renderSettingsIndex()', ADMIN_FRONTEND)
         self.assertIn('function renderSettingsGroup(slug)', ADMIN_FRONTEND)
@@ -2542,7 +2542,7 @@ process.stdout.write(JSON.stringify({
             route = FakeHandler(path=f'/admin/settings/{slug}')
             route.do_GET()
             self.assertEqual(route.status, 200)
-            self.assertIn('<script src="/static/admin.js?v=17" defer></script>', route.wfile.getvalue().decode('utf-8'))
+            self.assertIn('<script src="/static/admin.js?v=18" defer></script>', route.wfile.getvalue().decode('utf-8'))
 
         self.assertEqual(len(groups), 12)
         self.assertEqual(len(slugs), len(set(slugs)))
@@ -2566,6 +2566,9 @@ process.stdout.write(JSON.stringify({
         config_by_name = {item['name']: item for item in dashboard.ENV_CONFIG_SCHEMA}
         self.assertEqual(config_by_name['DASHBOARD_GROK_API_MODE']['kind'], 'api_mode')
         self.assertEqual(config_by_name['DASHBOARD_GROK_API_MODE']['default'], 'auto')
+        self.assertEqual(config_by_name['DASHBOARD_NEWS_API_MODE']['kind'], 'api_mode')
+        self.assertEqual(config_by_name['DASHBOARD_NEWS_API_MODE']['default'], 'auto')
+        self.assertIn('DASHBOARD_NEWS_API_MODE', dashboard.TRADER_RUNTIME_ENV_NAMES)
         self.assertEqual(dashboard.normalize_env_update('DASHBOARD_GROK_API_MODE', 'responses', 'api_mode'), 'responses')
         self.assertEqual(dashboard.normalize_env_update('DASHBOARD_GROK_API_MODE', 'chat-completions', 'api_mode'), 'chat')
         self.assertEqual(
@@ -2646,7 +2649,7 @@ process.stdout.write(JSON.stringify({
         locked.do_GET()
         locked_body = locked.wfile.getvalue().decode('utf-8')
         self.assertEqual(locked.status, 200)
-        self.assertIn('<script src="/static/admin.js?v=17" defer></script>', locked_body)
+        self.assertIn('<script src="/static/admin.js?v=18" defer></script>', locked_body)
         self.assertNotIn("name='env__DASHBOARD_NOTIFICATION_ENABLED'", locked_body)
 
         cookie = self.admin_cookie()
@@ -2670,7 +2673,7 @@ process.stdout.write(JSON.stringify({
         )
         missing.do_GET()
         self.assertEqual(missing.status, 404)
-        self.assertIn('<script src="/static/admin.js?v=17" defer></script>', missing.wfile.getvalue().decode('utf-8'))
+        self.assertIn('<script src="/static/admin.js?v=18" defer></script>', missing.wfile.getvalue().decode('utf-8'))
         self.assertIn('未找到该设置分组', ADMIN_FRONTEND)
 
     def test_group_save_ignores_fields_from_other_settings_groups(self):
@@ -2979,7 +2982,7 @@ process.stdout.write(JSON.stringify({
 
         body = ADMIN_FRONTEND
         self.assertIn("'4096；例如 2048 或 8192'", body)
-        self.assertIn("'4096 tokens；填写后覆盖请求 max_tokens'", body)
+        self.assertIn("'4096 tokens；按所选接口映射为兼容的输出长度参数'", body)
         self.assertIn("'128000；例如 128K、1M 或 1000000'", body)
         self.assertIn("'128000 tokens；填写后保存为数字 tokens'", body)
 

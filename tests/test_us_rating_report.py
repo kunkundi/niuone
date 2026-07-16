@@ -20,6 +20,8 @@ class UsRatingReportTests(unittest.TestCase):
             env = os.environ.copy()
             env['DASHBOARD_HOME'] = tmp
             env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
+            env['DASHBOARD_GROK_MODEL'] = 'grok-4.20-multi-agent-xhigh'
+            env['DASHBOARD_GROK_API_MODE'] = 'auto'
             code = f"""
 import importlib.util, json, sys
 sys.path[:0] = [{str(COMPAT)!r}, {str(SRC)!r}]

@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from a_share_calendar import is_a_share_trading_day as calendar_is_a_share_trading_day, trading_day_status
+from core.model_api import build_model_request, parse_model_response, request_model
 from niuone_paths import get_dashboard_env_file, get_dashboard_home
 from screening.stock_universe import (
     STOCK_UNIVERSE_ENV,
@@ -161,6 +162,7 @@ DASHBOARD_HOME = get_dashboard_home(PROJECT_ROOT)
 def load_dashboard_env() -> None:
     allowed = {
         "DASHBOARD_NEWS_MODEL",
+        "DASHBOARD_NEWS_API_MODE",
         "DASHBOARD_NEWS_CONTEXT_LENGTH",
         "DASHBOARD_NEWS_MAX_TOKENS",
         "DASHBOARD_NEWS_BASE_URL",
@@ -360,6 +362,7 @@ DECISION_REQUEST_TIMEOUT = env_int("DASHBOARD_DECISION_TIMEOUT", 180)
 NEWS_PRECHECK_REQUEST_TIMEOUT = max(5, env_int("DASHBOARD_NEWS_TIMEOUT", 45))
 NEWS_PRECHECK_MAX_RETRIES = max(1, env_int("DASHBOARD_NEWS_MAX_RETRIES", 1))
 NEWS_PRECHECK_CONCURRENCY = max(1, min(5, env_int("DASHBOARD_NEWS_CONCURRENCY", 5)))
+NEWS_PRECHECK_API_MODE = os.environ.get("DASHBOARD_NEWS_API_MODE") or "auto"
 NEWS_PRECHECK_CONTEXT_LENGTH = env_token_count("DASHBOARD_NEWS_CONTEXT_LENGTH", 128000)
 NEWS_PRECHECK_MAX_TOKENS = env_token_count("DASHBOARD_NEWS_MAX_TOKENS", 4096)
 PROVIDER_DISPLAY_NAME = "Crossdesk.ccwu.cc"
@@ -4311,78 +4314,47 @@ def format_http_error(exc: urllib.error.HTTPError, model_name: str) -> RuntimeEr
 
 
 def parse_chat_completion_content(raw: str) -> tuple[str, str]:
-    """Return visible assistant content plus compact response metadata."""
-    if not (raw or "").strip():
-        raise ValueError("空响应")
-
-    if raw.lstrip().startswith("data:"):
-        parts = []
-        finish_reasons = []
-        usage = None
-        chunks = 0
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line.startswith("data:"):
-                continue
-            chunk = line[5:].strip()
-            if not chunk or chunk == "[DONE]":
-                continue
-            try:
-                obj = json.loads(chunk)
-            except Exception:
-                continue
-            chunks += 1
-            if obj.get("usage"):
-                usage = obj.get("usage")
-            choice = (obj.get("choices") or [{}])[0]
-            if choice.get("finish_reason"):
-                finish_reasons.append(str(choice.get("finish_reason")))
-            delta = choice.get("delta") or {}
-            message = choice.get("message") or {}
-            parts.append(delta.get("content") or message.get("content") or "")
-        detail_bits = [f"sse_chunks={chunks}"]
-        if finish_reasons:
-            detail_bits.append(f"finish_reason={finish_reasons[-1]}")
-        if usage:
-            detail_bits.append(f"usage={usage}")
-        return "".join(parts), ", ".join(detail_bits)
-
-    try:
-        data = json.loads(raw)
-    except Exception:
-        raise ValueError(f"模型返回了非JSON内容，请检查max_tokens/超时是否够用。前150字符: {clip_text(raw, 150)}")
-    choice = (data.get("choices") or [{}])[0]
-    message = choice.get("message") or {}
-    content = message.get("content") or ""
-    detail_bits = []
-    if choice.get("finish_reason"):
-        detail_bits.append(f"finish_reason={choice.get('finish_reason')}")
-    if data.get("usage"):
-        detail_bits.append(f"usage={data.get('usage')}")
-    return content, ", ".join(detail_bits)
+    """Backward-compatible wrapper around the shared model response parser."""
+    parsed = parse_model_response(raw)
+    return parsed.content, parsed.detail
 
 
-def request_chat_content(base_url: str, api_key: str, payload: dict, model_name: str,
-                         max_retries: int = 3, timeout: int = 60) -> str:
-    """Call chat/completions and require non-empty visible assistant content."""
+def request_chat_content(
+    base_url: str,
+    api_key: str,
+    payload: dict,
+    model_name: str,
+    max_retries: int = 3,
+    timeout: int = 60,
+    *,
+    api_mode: str = "chat",
+    tools: list[dict[str, Any]] | None = None,
+    reasoning: dict[str, Any] | None = None,
+) -> str:
+    """Call a compatible model endpoint and require visible assistant text."""
     import time as _time
     last_err: Exception | None = None
     request_payload = {**payload, "model": model_name}
     for attempt in range(max_retries):
         try:
-            req = urllib.request.Request(
-                base_url + "/chat/completions",
-                data=json.dumps(request_payload).encode("utf-8"),
-                headers={
-                    "Authorization": "Bearer " + api_key,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "User-Agent": "NiuOne/1.0",
-                },
+            model_request = build_model_request(
+                base_url,
+                model_name,
+                list(request_payload.get("messages") or []),
+                max_tokens=int(request_payload.get("max_tokens") or 0) or None,
+                api_mode=api_mode,
+                tools=tools,
+                reasoning=reasoning,
+                stream=bool(request_payload.get("stream", False)),
+                extra_payload=request_payload,
             )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode("utf-8", "ignore")
-            content, detail = parse_chat_completion_content(raw)
+            parsed = request_model(
+                model_request,
+                api_key,
+                timeout=timeout,
+                opener=urllib.request.urlopen,
+            )
+            content, detail = parsed.content, parsed.detail
             if not (content or "").strip():
                 if "finish_reason=length" in detail:
                     current_max = int(request_payload.get("max_tokens") or 0)
@@ -4441,21 +4413,24 @@ def api_call_with_retry(base_url: str, api_key: str, payload: dict, max_retries:
     last_err = None
     for attempt in range(max_retries):
         try:
-            req = urllib.request.Request(
-                base_url + "/chat/completions",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Authorization": "Bearer " + api_key,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "User-Agent": "NiuOne/1.0",
-                },
+            model_request = build_model_request(
+                base_url,
+                str(payload.get("model") or ""),
+                list(payload.get("messages") or []),
+                max_tokens=int(payload.get("max_tokens") or 0) or None,
+                api_mode="chat",
+                stream=bool(payload.get("stream", False)),
+                extra_payload=payload,
             )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode("utf-8", "ignore")
-            if not raw.strip():
+            parsed = request_model(
+                model_request,
+                api_key,
+                timeout=timeout,
+                opener=urllib.request.urlopen,
+            )
+            if parsed.data is None:
                 raise ValueError("空响应")
-            return json.loads(raw)
+            return parsed.data
         except Exception as e:
             last_err = e
             if attempt < max_retries - 1:
@@ -4593,6 +4568,9 @@ def request_single_candidate_news_precheck(
         model,
         max_retries=NEWS_PRECHECK_MAX_RETRIES,
         timeout=NEWS_PRECHECK_REQUEST_TIMEOUT,
+        api_mode=NEWS_PRECHECK_API_MODE,
+        tools=[{"type": "web_search"}],
+        reasoning={"effort": "low"},
     ).strip()
 
 

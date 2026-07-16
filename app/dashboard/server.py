@@ -360,6 +360,7 @@ ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
     {"name": "DASHBOARD_GROK_BASE_URL", "label": "Grok API 地址", "group": "牛牛美股", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_GROK_API_KEY", "label": "Grok API 密钥", "group": "牛牛美股", "kind": "secret", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_NEWS_MODEL", "label": "消息面预检模型", "group": "消息面预检模型", "kind": "text", "default": "", "effect": "next_run"},
+    {"name": "DASHBOARD_NEWS_API_MODE", "label": "消息面搜索工具接口模式", "group": "消息面预检模型", "kind": "api_mode", "default": "auto", "effect": "next_run"},
     {"name": "DASHBOARD_NEWS_CONTEXT_LENGTH", "label": "消息面预检上下文长度", "group": "消息面预检模型", "kind": "context_length", "default": DEFAULT_MODEL_CONTEXT_LENGTH, "effect": "next_run"},
     {"name": "DASHBOARD_NEWS_MAX_TOKENS", "label": "消息面预检最大输出长度", "group": "消息面预检模型", "kind": "max_tokens", "default": DEFAULT_MODEL_MAX_TOKENS, "effect": "next_run"},
     {"name": "DASHBOARD_NEWS_BASE_URL", "label": "消息面预检 API 地址", "group": "消息面预检模型", "kind": "text", "default": "", "effect": "next_run"},
@@ -430,6 +431,7 @@ ADMIN_VISIBLE_ENV_NAMES = [
     "US_RATING_DEADLINE_SECONDS",
     "US_RATING_REQUEST_TIMEOUT_SECONDS",
     "DASHBOARD_NEWS_MODEL",
+    "DASHBOARD_NEWS_API_MODE",
     "DASHBOARD_NEWS_CONTEXT_LENGTH",
     "DASHBOARD_NEWS_MAX_TOKENS",
     "DASHBOARD_NEWS_BASE_URL",
@@ -496,6 +498,7 @@ ADMIN_VISIBLE_ENV_NAMES = [
 TRADER_RUNTIME_ENV_NAMES = {
     STOCK_UNIVERSE_ENV,
     "DASHBOARD_NEWS_MODEL",
+    "DASHBOARD_NEWS_API_MODE",
     "DASHBOARD_NEWS_CONTEXT_LENGTH",
     "DASHBOARD_NEWS_MAX_TOKENS",
     "DASHBOARD_NEWS_BASE_URL",
@@ -2676,7 +2679,7 @@ CRON_TIME_CONFIGS = {
 }
 ADMIN_GROUP_NOTES = {
     "牛牛美股": "集中管理 X/推文监控、美股买入评级和隔夜美股盘面总结使用的 Grok 配置。长度默认：上下文 128000 tokens，最大输出 4096 tokens；关闭时隐藏 X/评级相关设置，隔夜美股总结仍会读取已配置的 Grok 参数。",
-    "消息面预检模型": "用于 A 股候选股最近 3 天消息面预检；需兼容 /chat/completions，且模型或网关应具备实时搜索能力。长度默认：上下文 128000 tokens，最大输出 4096 tokens。模型和密钥留空则跳过。",
+    "消息面预检模型": "用于 A 股候选股最近 3 天消息面预检；auto 会为 Grok 4.5 和 GPT-5 系列搜索模型选择 Responses API，也可显式选择 responses 或 chat。长度默认：上下文 128000 tokens，最大输出 4096 tokens。模型和密钥留空则跳过。",
     "买卖决策模型": "推荐使用 deepseek-v4-pro；也可填写其他兼容 /chat/completions 的模型服务。长度默认：上下文 128000 tokens，最大输出 4096 tokens。",
     "交易规则与风控": "约束买卖决策必须遵守的交易纪律、持仓数量、仓位比例、现金缓冲与盘面控仓规则。交易纪律 Prompt 会直接写入决策模型的必须遵守段。",
     "交易通知": "模拟买入或卖出成交落盘后推送。从下拉框按需添加渠道并分块配置；每个渠道可独立启用或关闭，关闭会保留配置，移除并保存后才会清除配置。Webhook、Bot Token 和签名密钥只保存、不回显。",

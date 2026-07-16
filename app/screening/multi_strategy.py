@@ -47,6 +47,7 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
+from core.model_api import build_model_request, request_model
 from niuone_paths import get_dashboard_env_file, get_dashboard_home
 from screening.stock_universe import (
     DEFAULT_STOCK_UNIVERSE,
@@ -933,20 +934,21 @@ def grok_industry_classify(candidates: list[dict]) -> None:
         base = crossdesk["base_url"].rstrip("/"); api_key = crossdesk["api_key"]
         stock_list = "\n".join(f"{c['code']} {c['name']}" for c in candidates)
         prompt = f"对以下A股每只给一个简短行业标签（如通信设备、半导体、汽车零部件）。只输出：代码 名称：行业\n\n{stock_list}"
-        payload = {"model":"grok-4.20-multi-agent-xhigh","messages":[{"role":"user","content":prompt}],"max_tokens":200}
-        req = urllib.request.Request(
-            f"{base}/chat/completions",
-            data=json.dumps(payload).encode(),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": "NiuOne/1.0",
-            },
+        model = "grok-4.20-multi-agent-xhigh"
+        model_request = build_model_request(
+            base,
+            model,
+            [{"role": "user", "content": prompt}],
+            max_tokens=200,
+            api_mode="chat",
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8","ignore"))
-        for line in data["choices"][0]["message"]["content"].strip().split("\n"):
+        parsed = request_model(
+            model_request,
+            api_key,
+            timeout=10,
+            opener=urllib.request.urlopen,
+        )
+        for line in parsed.content.strip().split("\n"):
             for c in candidates:
                 if c["code"] in line and c["name"] in line:
                     parts = line.split("：",1) if "：" in line else line.split(":",1) if ":" in line else [line,""]

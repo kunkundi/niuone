@@ -9,7 +9,6 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import ssl
@@ -18,8 +17,9 @@ import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.error import URLError, HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import urlopen
 
+from core.model_api import build_model_request, request_model
 from niuone_paths import get_dashboard_env_file, get_dashboard_home
 
 # Crossdesk has intermittent SSL record-layer failures with Python's
@@ -145,62 +145,16 @@ def _is_transient_error(err):
     return any(s in text for s in ("timed out", "timeout", "temporarily", "connection reset", "empty stream", "ssl"))
 
 
-def _responses_output_text(data: dict) -> str:
-    direct = str(data.get("output_text") or "").strip()
-    if direct:
-        return direct
-    parts: list[str] = []
-    for item in data.get("output") or []:
-        if not isinstance(item, dict):
-            continue
-        for content in item.get("content") or []:
-            if not isinstance(content, dict):
-                continue
-            if content.get("type") in {"output_text", "text"} and content.get("text"):
-                parts.append(str(content["text"]))
-    return "\n".join(parts).strip()
-
-
-def _uses_responses_api(mode: str, model: str) -> bool:
-    normalized = str(mode or "auto").strip().lower().replace("-", "_")
-    if normalized in {"responses", "response"}:
-        return True
-    if normalized in {"chat", "chat_completions", "chat_completion"}:
-        return False
-    return str(model or "").strip().lower().startswith("grok-4.5")
-
-
 def _call_api(base_url, api_key, messages, max_tokens=US_RATING_MAX_TOKENS):
-    use_responses_tools = _uses_responses_api(GROK_API_MODE, US_RATING_MODEL)
-    if use_responses_tools:
-        endpoint = f"{base_url}/responses"
-        payload = {
-            "model": US_RATING_MODEL,
-            "input": messages,
-            "tools": [{"type": "web_search"}],
-            "reasoning": {"effort": "low"},
-            "max_output_tokens": max_tokens,
-            "stream": False,
-        }
-    else:
-        endpoint = f"{base_url}/chat/completions"
-        payload = {
-            "model": US_RATING_MODEL,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "stream": False,
-        }
-    body = json.dumps(payload).encode("utf-8")
-
-    req = Request(
-        endpoint,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json",
-            "User-Agent": "NiuOne/1.0",
-        },
+    model_request = build_model_request(
+        base_url,
+        US_RATING_MODEL,
+        messages,
+        max_tokens=max_tokens,
+        api_mode=GROK_API_MODE,
+        tools=[{"type": "web_search"}],
+        reasoning={"effort": "low"},
+        stream=False,
     )
     last_err = None
     # Keep our own wall clock bounded so slow upstream model/web-search runs end
@@ -212,16 +166,16 @@ def _call_api(base_url, api_key, messages, max_tokens=US_RATING_MAX_TOKENS):
             break
         try:
             timeout_seconds = min(max(10, US_RATING_REQUEST_TIMEOUT_SECONDS), max(10, remaining - 2))
-            with urlopen(req, timeout=timeout_seconds, context=_SSL_CONTEXT) as resp:
-                data = json.loads(resp.read().decode("utf-8", "ignore"))
-                content = (
-                    _responses_output_text(data)
-                    if use_responses_tools
-                    else data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                )
-                if str(content or "").strip():
-                    return content
-                last_err = RuntimeError("API returned empty content")
+            parsed = request_model(
+                model_request,
+                api_key,
+                timeout=timeout_seconds,
+                opener=urlopen,
+                ssl_context=_SSL_CONTEXT,
+            )
+            if str(parsed.content or "").strip():
+                return parsed.content
+            last_err = RuntimeError("API returned empty content")
         except Exception as e:
             last_err = e
             if attempt < 3 and (deadline - time.monotonic()) > 8:

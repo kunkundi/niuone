@@ -165,7 +165,7 @@ function renderEnvInput(item) {
     var context = kind === 'context_length';
     return "<input type='text' name='" + fieldName + "' aria-label='" + label + "' value='" + escapedValue +
       "' placeholder='默认 " + (context ? '128000；例如 128K、1M 或 1000000' : '4096；例如 2048 或 8192') +
-      "' inputmode='numeric'><div class='config-meta'>默认 " + (context ? '128000 tokens；填写后保存为数字 tokens' : '4096 tokens；填写后覆盖请求 max_tokens') + "</div>";
+      "' inputmode='numeric'><div class='config-meta'>默认 " + (context ? '128000 tokens；填写后保存为数字 tokens' : '4096 tokens；按所选接口映射为兼容的输出长度参数') + "</div>";
   }
   return "<input type='" + (kind === 'int' ? 'number' : 'text') + "' name='" + fieldName +
     "' aria-label='" + label + "' value='" + escapedValue + "'>";
