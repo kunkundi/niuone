@@ -32,6 +32,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 def load_dashboard_env() -> None:
     allowed = {
         "DASHBOARD_GROK_MODEL",
+        "DASHBOARD_GROK_API_MODE",
         "DASHBOARD_GROK_CONTEXT_LENGTH",
         "DASHBOARD_GROK_BASE_URL",
         "DASHBOARD_GROK_API_KEY",
@@ -77,6 +78,7 @@ JOB_ID = "fd0b807138f4"
 JOB_NAME = "每日美股机构买入评级汇报"
 CONFIG_PATH = Path(os.environ.get("DASHBOARD_CONFIG") or str(DASHBOARD_HOME / "config.yaml")).expanduser()
 US_RATING_MODEL = os.environ.get("US_RATING_MODEL") or os.environ.get("DASHBOARD_GROK_MODEL") or "grok-4.20-multi-agent-xhigh"
+GROK_API_MODE = os.environ.get("DASHBOARD_GROK_API_MODE") or "auto"
 
 
 def _int_env(name: str, default: int, *, min_value: int) -> int:
@@ -143,16 +145,55 @@ def _is_transient_error(err):
     return any(s in text for s in ("timed out", "timeout", "temporarily", "connection reset", "empty stream", "ssl"))
 
 
+def _responses_output_text(data: dict) -> str:
+    direct = str(data.get("output_text") or "").strip()
+    if direct:
+        return direct
+    parts: list[str] = []
+    for item in data.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content") or []:
+            if not isinstance(content, dict):
+                continue
+            if content.get("type") in {"output_text", "text"} and content.get("text"):
+                parts.append(str(content["text"]))
+    return "\n".join(parts).strip()
+
+
+def _uses_responses_api(mode: str, model: str) -> bool:
+    normalized = str(mode or "auto").strip().lower().replace("-", "_")
+    if normalized in {"responses", "response"}:
+        return True
+    if normalized in {"chat", "chat_completions", "chat_completion"}:
+        return False
+    return str(model or "").strip().lower().startswith("grok-4.5")
+
+
 def _call_api(base_url, api_key, messages, max_tokens=US_RATING_MAX_TOKENS):
-    body = json.dumps({
-        "model": US_RATING_MODEL,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "stream": False,
-    }).encode("utf-8")
+    use_responses_tools = _uses_responses_api(GROK_API_MODE, US_RATING_MODEL)
+    if use_responses_tools:
+        endpoint = f"{base_url}/responses"
+        payload = {
+            "model": US_RATING_MODEL,
+            "input": messages,
+            "tools": [{"type": "web_search"}],
+            "reasoning": {"effort": "low"},
+            "max_output_tokens": max_tokens,
+            "stream": False,
+        }
+    else:
+        endpoint = f"{base_url}/chat/completions"
+        payload = {
+            "model": US_RATING_MODEL,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+    body = json.dumps(payload).encode("utf-8")
 
     req = Request(
-        f"{base_url}/chat/completions",
+        endpoint,
         data=body,
         headers={
             "Content-Type": "application/json",
@@ -173,7 +214,11 @@ def _call_api(base_url, api_key, messages, max_tokens=US_RATING_MAX_TOKENS):
             timeout_seconds = min(max(10, US_RATING_REQUEST_TIMEOUT_SECONDS), max(10, remaining - 2))
             with urlopen(req, timeout=timeout_seconds, context=_SSL_CONTEXT) as resp:
                 data = json.loads(resp.read().decode("utf-8", "ignore"))
-                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                content = (
+                    _responses_output_text(data)
+                    if use_responses_tools
+                    else data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                )
                 if str(content or "").strip():
                     return content
                 last_err = RuntimeError("API returned empty content")

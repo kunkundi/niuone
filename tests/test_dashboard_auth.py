@@ -2456,7 +2456,7 @@ process.stdout.write(JSON.stringify({
         self.assertIn("data-save-endpoint='/api/admin/config/env/", ADMIN_FRONTEND)
         self.assertIn("settingsGroupSlug()", ADMIN_FRONTEND)
         self.assertIn('保存本组设置', ADMIN_FRONTEND)
-        self.assertEqual(len(dashboard.admin_setting_group_env_names('us-market')), 14)
+        self.assertEqual(len(dashboard.admin_setting_group_env_names('us-market')), 16)
         decision_group = next(group for group in groups if group['slug'] == 'decision-times')
         self.assertEqual(decision_group['name'], '选股与买卖设置')
         strategy_group = next(group for group in groups if group['slug'] == 'stock-strategy')
@@ -2466,6 +2466,19 @@ process.stdout.write(JSON.stringify({
         self.assertIn('DASHBOARD_TRADE_CANDIDATE_LIMIT', decision_names)
         self.assertIn('DASHBOARD_STOCK_UNIVERSE', decision_names)
         config_by_name = {item['name']: item for item in dashboard.ENV_CONFIG_SCHEMA}
+        self.assertEqual(config_by_name['DASHBOARD_GROK_API_MODE']['kind'], 'api_mode')
+        self.assertEqual(config_by_name['DASHBOARD_GROK_API_MODE']['default'], 'auto')
+        self.assertEqual(dashboard.normalize_env_update('DASHBOARD_GROK_API_MODE', 'responses', 'api_mode'), 'responses')
+        self.assertEqual(dashboard.normalize_env_update('DASHBOARD_GROK_API_MODE', 'chat-completions', 'api_mode'), 'chat')
+        self.assertEqual(
+            dashboard.normalize_business_updates({'DASHBOARD_GROK_API_MODE': 'chat-completions'}),
+            {'DASHBOARD_GROK_API_MODE': 'chat'},
+        )
+        with self.assertRaises(ValueError):
+            dashboard.normalize_business_updates({'DASHBOARD_GROK_API_MODE': 'invalid'})
+        with self.assertRaises(ValueError):
+            dashboard.validate_business_updates({'X_WATCHLIST_REQUEST_TIMEOUT_SECONDS': '7'})
+        self.assertIn("kind === 'api_mode'", ADMIN_FRONTEND)
         self.assertEqual(config_by_name['DASHBOARD_DISPLAY_CANDIDATE_LIMIT']['default'], '10')
         self.assertEqual(config_by_name['DASHBOARD_TRADE_CANDIDATE_LIMIT']['default'], '10')
         self.assertEqual(config_by_name['DASHBOARD_STOCK_UNIVERSE']['default'], 'main_board')
