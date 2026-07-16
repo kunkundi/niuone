@@ -489,7 +489,7 @@
     .practice-calendar-rate.down, .practice-calendar-amount.down, .practice-calendar-stat-value.down { color:#39d98a; }
     .practice-calendar-no-data { align-self:end; color:#708099; font-size:10px; line-height:1; }
     .practice-calendar-day.weekend .practice-calendar-no-data { display:none; }
-    .dragon-tiger-panel { padding:0; }
+    .dragon-tiger-panel { width:100%; max-width:900px; margin-inline:auto; padding:0; }
     .dragon-tiger-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:18px 20px 15px; border-bottom:1px solid rgba(148,163,184,.12); background:linear-gradient(135deg, rgba(124,92,255,.12), rgba(36,198,220,.06)); }
     .dragon-tiger-head h2 { margin:0; color:#f8fafc; font-size:20px; line-height:1.25; font-weight:900; letter-spacing:-.02em; }
     .dragon-tiger-sub { margin-top:5px; color:#8290a5; font-size:12px; }
