@@ -9,6 +9,7 @@ from pathlib import Path
 
 from dashboard.apis.iwencai_service import (
     fetch_dragon_tiger,
+    write_dragon_tiger_archive,
     write_dragon_tiger_snapshot,
 )
 from niuone_paths import get_dashboard_home
@@ -24,7 +25,8 @@ SNAPSHOT_FILE = Path(
 
 def refresh_snapshot(path: Path = SNAPSHOT_FILE) -> tuple[dict[str, object], bool]:
     payload = fetch_dragon_tiger()
-    saved = write_dragon_tiger_snapshot(path, payload)
+    archived = write_dragon_tiger_archive(path.parent / "iwencai_dragon_tiger", payload)
+    saved = write_dragon_tiger_snapshot(path, payload) and archived
     return payload, saved
 
 
@@ -32,7 +34,7 @@ def main() -> int:
     payload, saved = refresh_snapshot()
     if saved:
         print(
-            f"问财龙虎榜快照已更新：{payload.get('date')}，"
+            f"问财龙虎榜快照及交易日归档已更新：{payload.get('date')}，"
             f"{len(payload.get('items') or [])} 条"
         )
         return 0

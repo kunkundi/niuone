@@ -175,8 +175,10 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(dashboard_js.wfile.getvalue(), (FRONTEND / 'dashboard.js').read_bytes())
         self.assertEqual(admin_js.wfile.getvalue(), (FRONTEND / 'admin.js').read_bytes())
         self.assertEqual(versioned_dashboard_js.wfile.getvalue(), (FRONTEND / 'dashboard.js').read_bytes())
-        self.assertIn('<link rel="stylesheet" href="/static/dashboard.css?v=26">', DASHBOARD_FRONTEND)
-        self.assertIn('<script src="/static/dashboard.js?v=36" defer></script>', DASHBOARD_FRONTEND)
+        self.assertIn('<link rel="stylesheet" href="/static/dashboard.css?v=34">', DASHBOARD_FRONTEND)
+        self.assertIn('<script src="/static/dashboard.js?v=45" defer></script>', DASHBOARD_FRONTEND)
+        self.assertIn('Boolean(payload?.seat_error || payload?.institution_error)', DASHBOARD_FRONTEND)
+        self.assertIn('当前历史快照暂无完整买卖席位数据。', DASHBOARD_FRONTEND)
         self.assertNotIn('document.title', DASHBOARD_FRONTEND)
         self.assertIn("document.title = '牛牛1号';", ADMIN_FRONTEND)
         self.assertNotIn("title + ' · 牛牛1号'", ADMIN_FRONTEND)
@@ -1579,7 +1581,7 @@ console.log(JSON.stringify(result));
         self.assertIn("practice: '/practice'", DASHBOARD_FRONTEND)
         self.assertIn("indices: '/indices'", DASHBOARD_FRONTEND)
         self.assertIn("dragon_tiger: '/dragon-tiger'", DASHBOARD_FRONTEND)
-        self.assertIn("fetch('/api/iwencai/dragon-tiger'", DASHBOARD_FRONTEND)
+        self.assertIn('fetch(`/api/iwencai/dragon-tiger${query}`', DASHBOARD_FRONTEND)
         self.assertIn('function renderDragonTigerPanel()', DASHBOARD_FRONTEND)
         self.assertIn('function sortDragonTigerItems(items)', DASHBOARD_FRONTEND)
         self.assertIn("renderDragonTigerSortButton('name', '名称')", DASHBOARD_FRONTEND)
@@ -1597,7 +1599,37 @@ console.log(JSON.stringify(result));
         self.assertIn('${renderDragonTigerStreak(item)}', DASHBOARD_FRONTEND)
         self.assertIn('class="dragon-tiger-reasons" aria-label="上榜理由"', DASHBOARD_FRONTEND)
         self.assertIn('${renderDragonTigerReasons(details)}', DASHBOARD_FRONTEND)
-        self.assertIn('点击股票可查看上榜理由与明细', DASHBOARD_FRONTEND)
+        self.assertIn('function renderDragonTigerSeats(item, payload)', DASHBOARD_FRONTEND)
+        self.assertIn('function groupDragonTigerSeatRecords(records)', DASHBOARD_FRONTEND)
+        self.assertIn('function renderDragonTigerSeatSide(records, side)', DASHBOARD_FRONTEND)
+        self.assertIn('function renderDragonTigerSeatGroup(group, index, totalGroups)', DASHBOARD_FRONTEND)
+        self.assertIn('const heading = totalGroups > 1', DASHBOARD_FRONTEND)
+        self.assertIn('class="dragon-tiger-seat-rank ${side}"', DASHBOARD_FRONTEND)
+        self.assertIn('class="dragon-tiger-seat-sides"', DASHBOARD_FRONTEND)
+        self.assertIn('aria-label="${label}"', DASHBOARD_FRONTEND)
+        self.assertIn("dragonTigerSeatSideRank(left, side) - dragonTigerSeatSideRank(right, side)", DASHBOARD_FRONTEND)
+        self.assertIn("renderDragonTigerSeatSide(group?.records || [], 'buy')", DASHBOARD_FRONTEND)
+        self.assertIn("renderDragonTigerSeatSide(group?.records || [], 'sell')", DASHBOARD_FRONTEND)
+        self.assertIn('.dragon-tiger-seat-sides { grid-template-columns:minmax(0,1fr); }', DASHBOARD_FRONTEND)
+        self.assertIn('.dragon-tiger-seat-values { display:grid;', DASHBOARD_FRONTEND)
+        self.assertIn('.dragon-tiger-seat-record + .dragon-tiger-seat-record', DASHBOARD_FRONTEND)
+        self.assertIn('const showReason = Array.isArray(details) && details.length > 1;', DASHBOARD_FRONTEND)
+        self.assertIn('class="dragon-tiger-funds" aria-label="榜单资金"', DASHBOARD_FRONTEND)
+        self.assertIn('class="dragon-tiger-seats" aria-label="席位明细"', DASHBOARD_FRONTEND)
+        self.assertLess(
+            DASHBOARD_FRONTEND.index('class="dragon-tiger-funds" aria-label="榜单资金"'),
+            DASHBOARD_FRONTEND.index('${renderDragonTigerSeats(item, payload)}'),
+        )
+        self.assertNotIn('class="dragon-tiger-seat-summary"', DASHBOARD_FRONTEND)
+        self.assertNotIn('<small>买方席位</small>', DASHBOARD_FRONTEND)
+        self.assertNotIn('<small>卖方席位</small>', DASHBOARD_FRONTEND)
+        self.assertNotIn('<small>机构席位</small>', DASHBOARD_FRONTEND)
+        self.assertNotIn('.dragon-tiger-seat-values > span { padding:6px 7px; }', DASHBOARD_FRONTEND)
+        self.assertIn('class="dragon-tiger-seat-group"', DASHBOARD_FRONTEND)
+        self.assertIn('${renderDragonTigerSeats(item, payload)}', DASHBOARD_FRONTEND)
+        self.assertIn("record?.seat_category === 'institution'", DASHBOARD_FRONTEND)
+        self.assertIn('data-dragon-tiger-date-action="load"', DASHBOARD_FRONTEND)
+        self.assertIn('点击股票可查看上榜理由、买卖前五机构及营业部席位与榜单明细', DASHBOARD_FRONTEND)
         self.assertNotIn('全部上榜理由', DASHBOARD_FRONTEND)
         self.assertNotIn('class="dragon-tiger-metrics"', DASHBOARD_FRONTEND)
         self.assertNotIn('class="dragon-tiger-metric"', DASHBOARD_FRONTEND)
@@ -3745,6 +3777,51 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(payload['date'], '2026-07-16')
         self.assertEqual(payload['requested_date'], '2026-07-17')
         self.assertEqual(payload['scheduled_refresh_time'], '18:00')
+
+    def test_iwencai_dashboard_reads_exact_trading_day_archive_without_upstream_call(self):
+        archive = {
+            'enabled': True,
+            'available': True,
+            'source': '同花顺问财',
+            'date': '2026-07-15',
+            'institution_available': True,
+            'items': [{
+                'code': '000001.SZ',
+                'name': '平安银行',
+                'institution_seats': [{
+                    'seat_name': '机构专用',
+                    'side': 'buy',
+                    'rank': 1,
+                    'buy_amount_yuan': 100.0,
+                    'sell_amount_yuan': 0.0,
+                    'net_amount_yuan': 100.0,
+                }],
+            }],
+        }
+        self.assertTrue(
+            dashboard.write_dragon_tiger_archive(
+                dashboard.iwencai_dragon_tiger_archive_dir(),
+                archive,
+            )
+        )
+        original_fetch = dashboard.fetch_dragon_tiger
+        try:
+            dashboard.fetch_dragon_tiger = lambda *_args, **_kwargs: self.fail('must not call upstream')
+            payload = dashboard.produce_iwencai_dragon_tiger_data(
+                '2026-07-15',
+                page=1,
+                limit=dashboard.IWENCAI_DRAGON_TIGER_DEFAULT_LIMIT,
+                allow_latest_snapshot=False,
+            )
+        finally:
+            dashboard.fetch_dragon_tiger = original_fetch
+
+        self.assertTrue(payload['archive'])
+        self.assertFalse(payload['stale'])
+        self.assertEqual(payload['date'], '2026-07-15')
+        self.assertFalse(payload['seat_data_complete'])
+        self.assertEqual(payload['items'][0]['seat_record_count'], 1)
+        self.assertEqual(payload['items'][0]['institution_record_count'], 1)
 
     def test_contest_routes_are_removed(self):
         get_handler = FakeHandler('/api/contest/status')

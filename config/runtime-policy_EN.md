@@ -62,7 +62,7 @@ Model keys may be stored only in `.local-data/dashboard.env`, `.local-data/runti
 
 The iWencai data source uses `IWENCAI_API_KEY`, which is subject to the same restriction and may only be stored in `.local-data/dashboard.env` or a controlled system environment variable.
 `IWENCAI_ENABLED` is disabled by default. iWencai data is a research snapshot and supplemental market source; incomplete or cached responses must never overwrite account, fill, or real trading records.
-The dragon-tiger job refreshes at 18:00 China time on A-share trading days by default. Only a non-empty successful response may atomically replace the local snapshot; failures and empty responses must preserve the last valid data.
+The dragon-tiger job refreshes at 18:00 China time on A-share trading days by default. Only a non-empty successful response may atomically replace the latest snapshot and write a dated archive; failures and empty responses must preserve the last valid data. If top-five buy/sell seat details fail independently, valid institution, brokerage, and other seat rows already archived for the same trading day are preserved instead of being replaced by missing data.
 
 ## Local Copies and Testing
 

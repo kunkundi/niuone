@@ -39,11 +39,14 @@ from dashboard import practice_market_summary as practice_market_summary_impl
 from dashboard import security as security_impl
 from dashboard.apis.iwencai_service import (
     DEFAULT_LIMIT as IWENCAI_DRAGON_TIGER_DEFAULT_LIMIT,
+    dragon_tiger_archive_path,
     fetch_dragon_tiger,
     normalize_limit as normalize_iwencai_limit,
     normalize_page as normalize_iwencai_page,
     normalize_trade_date as normalize_iwencai_trade_date,
+    read_dragon_tiger_archive,
     read_dragon_tiger_snapshot,
+    write_dragon_tiger_archive,
     write_dragon_tiger_snapshot,
 )
 from market_data.iwencai_client import (
@@ -2302,11 +2305,25 @@ def cached_json_data(cache_key: str, ttl: int, producer, fallback: dict[str, Any
         return {**fallback, "error": str(exc)}
 
 
-def iwencai_dragon_tiger_snapshot_version() -> int:
-    try:
-        return IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE.stat().st_mtime_ns
-    except OSError:
-        return 0
+def iwencai_dragon_tiger_archive_dir() -> Path:
+    return IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE.parent / "iwencai_dragon_tiger"
+
+
+def iwencai_dragon_tiger_snapshot_version(
+    trade_date: str,
+    *,
+    include_latest: bool,
+) -> int:
+    paths = [dragon_tiger_archive_path(iwencai_dragon_tiger_archive_dir(), trade_date)]
+    if include_latest:
+        paths.append(IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE)
+    versions = []
+    for path in paths:
+        try:
+            versions.append(path.stat().st_mtime_ns)
+        except OSError:
+            continue
+    return max(versions, default=0)
 
 
 def produce_iwencai_dragon_tiger_data(
@@ -2318,14 +2335,26 @@ def produce_iwencai_dragon_tiger_data(
 ) -> dict[str, Any]:
     use_snapshot = page == 1 and limit == IWENCAI_DRAGON_TIGER_DEFAULT_LIMIT
     if use_snapshot:
-        exact = read_dragon_tiger_snapshot(
+        exact_latest = read_dragon_tiger_snapshot(
             IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE,
             trade_date=trade_date,
         )
-        if exact:
-            exact["stale"] = False
-            exact["scheduled_refresh_time"] = "18:00"
-            return exact
+        if allow_latest_snapshot and exact_latest:
+            exact_latest["stale"] = False
+            exact_latest["scheduled_refresh_time"] = "18:00"
+            return exact_latest
+        archived = read_dragon_tiger_archive(
+            iwencai_dragon_tiger_archive_dir(),
+            trade_date=trade_date,
+        )
+        if archived:
+            archived["stale"] = False
+            archived["scheduled_refresh_time"] = "18:00"
+            return archived
+        if exact_latest:
+            exact_latest["stale"] = False
+            exact_latest["scheduled_refresh_time"] = "18:00"
+            return exact_latest
         if allow_latest_snapshot:
             latest = read_dragon_tiger_snapshot(IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE)
             if latest:
@@ -2336,8 +2365,14 @@ def produce_iwencai_dragon_tiger_data(
 
     payload = fetch_dragon_tiger(trade_date, page=page, limit=limit)
     payload["scheduled_refresh_time"] = "18:00"
-    if use_snapshot and write_dragon_tiger_snapshot(IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE, payload):
-        payload["snapshot_saved"] = True
+    if use_snapshot:
+        if write_dragon_tiger_archive(iwencai_dragon_tiger_archive_dir(), payload):
+            payload["archive_saved"] = True
+        if allow_latest_snapshot and write_dragon_tiger_snapshot(
+            IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE,
+            payload,
+        ):
+            payload["snapshot_saved"] = True
     return payload
 
 
@@ -4142,10 +4177,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             allow_latest_snapshot = not raw_trade_date
             snapshot_version = (
-                iwencai_dragon_tiger_snapshot_version()
-                if allow_latest_snapshot
-                and page == 1
-                and limit == IWENCAI_DRAGON_TIGER_DEFAULT_LIMIT
+                iwencai_dragon_tiger_snapshot_version(
+                    trade_date,
+                    include_latest=allow_latest_snapshot,
+                )
+                if page == 1 and limit == IWENCAI_DRAGON_TIGER_DEFAULT_LIMIT
                 else 0
             )
             cache_key = (
