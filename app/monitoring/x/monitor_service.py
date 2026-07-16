@@ -97,6 +97,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 def load_dashboard_env() -> None:
     allowed = {
         "DASHBOARD_GROK_MODEL",
+        "DASHBOARD_GROK_API_MODE",
         "DASHBOARD_GROK_CONTEXT_LENGTH",
         "DASHBOARD_GROK_BASE_URL",
         "DASHBOARD_GROK_API_KEY",
@@ -106,6 +107,7 @@ def load_dashboard_env() -> None:
         "X_WATCHLIST_BASE_URL",
         "X_WATCHLIST_API_KEY",
         "X_WATCHLIST_ACCOUNTS",
+        "X_WATCHLIST_REQUEST_TIMEOUT_SECONDS",
         "CROSSDESK_BASE_URL",
         "CROSSDESK_API_KEY",
     }
@@ -150,6 +152,7 @@ def configured_max_tokens(default: int) -> int:
 
 
 MODEL = os.environ.get("X_WATCHLIST_MODEL") or os.environ.get("DASHBOARD_GROK_MODEL") or "grok-4.20-multi-agent-xhigh"
+GROK_API_MODE = os.environ.get("DASHBOARD_GROK_API_MODE") or "auto"
 X_WATCHLIST_CONTEXT_LENGTH = env_token_count("X_WATCHLIST_CONTEXT_LENGTH", "DASHBOARD_GROK_CONTEXT_LENGTH", default=128000)
 X_WATCHLIST_MAX_TOKENS = env_token_count("X_WATCHLIST_MAX_TOKENS", default=4096)
 CROSSDESK_PROVIDER_NAME = "Crossdesk.ccwu.cc"
@@ -159,7 +162,13 @@ TEMPORARY_HTTP_CODES = {408, 429, 500, 502, 503, 504}
 # Grok-backed X fetching can intermittently return empty/non-JSON content or run slow;
 # those should be treated as transient poll misses, not user-visible job failures.
 TOTAL_DEADLINE_SECONDS = 135
-REQUEST_TIMEOUT_SECONDS = 25
+try:
+    REQUEST_TIMEOUT_SECONDS = max(
+        8,
+        min(120, int(os.environ.get("X_WATCHLIST_REQUEST_TIMEOUT_SECONDS") or "45")),
+    )
+except (TypeError, ValueError):
+    REQUEST_TIMEOUT_SECONDS = 45
 DETAIL_REQUEST_TIMEOUT_SECONDS = 8
 REPAIR_REQUEST_TIMEOUT_SECONDS = 10
 HELD_CONTEXT_REPAIR_TIMEOUT_SECONDS = 8
@@ -257,14 +266,63 @@ def is_temporary_error(exc):
     return False
 
 
-def openai_chat_json(base_url, api_key, prompt, max_tokens, timeout=REQUEST_TIMEOUT_SECONDS):
-    payload = {
-        "model": MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
-    }
+def responses_output_text(data):
+    direct = str(data.get("output_text") or "").strip()
+    if direct:
+        return direct
+    parts = []
+    for item in data.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content") or []:
+            if not isinstance(content, dict):
+                continue
+            if content.get("type") in {"output_text", "text"} and content.get("text"):
+                parts.append(str(content["text"]))
+    return "\n".join(parts).strip()
+
+
+def uses_responses_api(mode, model):
+    normalized = str(mode or "auto").strip().lower().replace("-", "_")
+    if normalized in {"responses", "response"}:
+        return True
+    if normalized in {"chat", "chat_completions", "chat_completion"}:
+        return False
+    # Preserve zero-config compatibility for the first Grok generation that
+    # requires tool-backed Responses requests, while allowing gateways and
+    # future model aliases to opt in explicitly.
+    return str(model or "").strip().lower().startswith("grok-4.5")
+
+
+def openai_chat_json(base_url, api_key, prompt, max_tokens, timeout=REQUEST_TIMEOUT_SECONDS, x_handles=None):
+    use_responses_tools = uses_responses_api(GROK_API_MODE, MODEL)
+    if use_responses_tools:
+        handles = []
+        for raw_handle in x_handles or []:
+            handle = str(raw_handle or "").strip().lstrip("@").lower()
+            if handle and handle not in handles:
+                handles.append(handle)
+        tool = {"type": "x_search"}
+        if handles:
+            tool["allowed_x_handles"] = handles[:20]
+        payload = {
+            "model": MODEL,
+            "input": [{"role": "user", "content": prompt}],
+            "tools": [tool],
+            "reasoning": {"effort": "low"},
+            "max_output_tokens": max_tokens,
+            "stream": False,
+        }
+        endpoint = base_url + "/responses"
+    else:
+        payload = {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+        }
+        endpoint = base_url + "/chat/completions"
     req = urllib.request.Request(
-        base_url + "/chat/completions",
+        endpoint,
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": "Bearer " + api_key,
@@ -297,7 +355,11 @@ def openai_chat_json(base_url, api_key, prompt, max_tokens, timeout=REQUEST_TIME
         content = "".join(content_parts)
     else:
         data = json.loads(raw)
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        content = (
+            responses_output_text(data)
+            if use_responses_tools
+            else data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        )
     return extract_json(content)
 
 
@@ -325,6 +387,7 @@ def call_grok_once(base_url, api_key, account_handles, latest_by_handle, timeout
         prompt,
         configured_max_tokens(min(3000, 1000 + 500 * len(account_handles))),
         timeout=timeout,
+        x_handles=account_handles,
     )
     return parsed.get("accounts", [])
 
@@ -370,6 +433,8 @@ def hydrate_posts(base_url, api_key, new_items, timeout=DETAIL_REQUEST_TIMEOUT_S
 - 如果推文或引用/回复里有图片/视频/GIF，尽量返回可打开的媒体 URL；不需要识图、OCR 或图片内容描述。
 """
     try:
+        # Context may belong to an unmonitored reply or quote author, so this
+        # lookup must not inherit the initial account-fetch allowlist.
         parsed = openai_chat_json(
             base_url,
             api_key,
@@ -609,7 +674,15 @@ tweet_url：{tweet_url}
 - reply_to_chinese_text / quoted_chinese_text 只填中文：外文原帖只给中文翻译，中文原帖只给中文原文；不要中英双语，不要加“翻译：”。
 - 如果原推包含图片/视频/GIF，尽量返回 reply_to_media/quoted_media 的可打开 URL；不需要识图、OCR 或图片内容描述。
 """
-    parsed = openai_chat_json(base_url, api_key, prompt, configured_max_tokens(3000), timeout=timeout)
+    # The parent or quoted post can belong to a different account. Restricting
+    # X Search to the monitored handle would make that context unreachable.
+    parsed = openai_chat_json(
+        base_url,
+        api_key,
+        prompt,
+        configured_max_tokens(3000),
+        timeout=timeout,
+    )
     if not isinstance(parsed, dict):
         return post
     merged = dict(post)

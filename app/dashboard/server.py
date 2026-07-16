@@ -354,6 +354,7 @@ ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
     {"name": "CROSSDESK_BASE_URL", "label": "Crossdesk Base URL", "group": "上游模型覆盖", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "CROSSDESK_API_KEY", "label": "Crossdesk API Key", "group": "上游模型覆盖", "kind": "secret", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_GROK_MODEL", "label": "Grok 模型", "group": "牛牛美股", "kind": "text", "default": "grok-4.20-multi-agent-xhigh", "effect": "next_run"},
+    {"name": "DASHBOARD_GROK_API_MODE", "label": "Grok 搜索工具接口模式", "group": "牛牛美股", "kind": "api_mode", "default": "auto", "effect": "next_run"},
     {"name": "DASHBOARD_GROK_CONTEXT_LENGTH", "label": "Grok 模型上下文长度", "group": "牛牛美股", "kind": "context_length", "default": DEFAULT_MODEL_CONTEXT_LENGTH, "effect": "next_run"},
     {"name": "DASHBOARD_GROK_MAX_TOKENS", "label": "Grok 最大输出长度", "group": "牛牛美股", "kind": "max_tokens", "default": DEFAULT_MODEL_MAX_TOKENS, "effect": "next_run"},
     {"name": "DASHBOARD_GROK_BASE_URL", "label": "Grok API 地址", "group": "牛牛美股", "kind": "text", "default": "", "effect": "next_run"},
@@ -393,6 +394,7 @@ ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
 
     {"name": "X_WATCHLIST_STRICT_CONTEXT_HOLD", "label": "X 上下文缺失时暂缓发送", "group": "X 监控", "kind": "bool", "default": "0", "effect": "next_run"},
     {"name": "X_WATCHLIST_DEADLINE_SECONDS", "label": "X 总截止秒数", "group": "X 监控", "kind": "int", "default": "135", "effect": "next_run"},
+    {"name": "X_WATCHLIST_REQUEST_TIMEOUT_SECONDS", "label": "X 单账号请求超时秒数", "group": "牛牛美股", "kind": "int", "default": "45", "effect": "next_run"},
     {"name": "X_WATCHLIST_SCRIPT_ALARM_SECONDS", "label": "X 脚本 alarm 秒数", "group": "X 监控", "kind": "int", "default": "90", "effect": "next_run"},
     {"name": "X_WATCHLIST_MAX_WORKERS", "label": "X 抓取并发", "group": "X 监控", "kind": "int", "default": "5", "effect": "next_run"},
     {"name": "X_WATCHLIST_MAX_ATTEMPTS", "label": "X 抓取重试次数", "group": "X 监控", "kind": "int", "default": "1", "effect": "next_run"},
@@ -414,12 +416,14 @@ ADMIN_VISIBLE_ENV_NAMES = [
     "DASHBOARD_ADMIN_PASSWORD",
     "DASHBOARD_US_FEATURES_ENABLED",
     "DASHBOARD_GROK_MODEL",
+    "DASHBOARD_GROK_API_MODE",
     "DASHBOARD_GROK_CONTEXT_LENGTH",
     "DASHBOARD_GROK_MAX_TOKENS",
     "DASHBOARD_GROK_BASE_URL",
     "DASHBOARD_GROK_API_KEY",
     "X_WATCHLIST_ACCOUNTS",
     "X_WATCHLIST_DAEMON_INTERVAL_SECONDS",
+    "X_WATCHLIST_REQUEST_TIMEOUT_SECONDS",
     "DASHBOARD_US_RATING_CRON",
     "US_RATING_CONTEXT_LENGTH",
     "US_RATING_MAX_TOKENS",
@@ -2433,6 +2437,19 @@ def normalize_env_update(name: str, value: str, kind: str) -> str:
         int(value)
     if kind in {"max_tokens", "context_length"}:
         return normalize_context_length_update(value)
+    if kind == "api_mode":
+        normalized = value.lower().replace("-", "_") or "auto"
+        aliases = {
+            "auto": "auto",
+            "responses": "responses",
+            "response": "responses",
+            "chat": "chat",
+            "chat_completions": "chat",
+            "chat_completion": "chat",
+        }
+        if normalized not in aliases:
+            raise ValueError("API 接口模式必须是 auto、responses 或 chat")
+        return aliases[normalized]
     if kind == "time":
         normalized = normalize_hhmm(value)
         if value and not normalized:
@@ -2815,6 +2832,7 @@ US_FEATURE_GATED_NAMES = {
     "US_RATING_CONTEXT_LENGTH",
     "US_RATING_MAX_TOKENS",
     "DASHBOARD_GROK_MODEL",
+    "DASHBOARD_GROK_API_MODE",
     "DASHBOARD_GROK_CONTEXT_LENGTH",
     "DASHBOARD_GROK_MAX_TOKENS",
     "DASHBOARD_GROK_BASE_URL",
@@ -2822,6 +2840,7 @@ US_FEATURE_GATED_NAMES = {
     "X_WATCHLIST_ACCOUNTS",
     "X_WATCHLIST_MAX_TOKENS",
     "X_WATCHLIST_DAEMON_INTERVAL_SECONDS",
+    "X_WATCHLIST_REQUEST_TIMEOUT_SECONDS",
     "DASHBOARD_US_RATING_CRON",
     "US_RATING_DEADLINE_SECONDS",
     "US_RATING_REQUEST_TIMEOUT_SECONDS",
@@ -3016,6 +3035,8 @@ def normalize_business_updates(updates: dict[str, str]) -> dict[str, str]:
             normalized[name] = normalize_preset_strategy_text_update(normalized[name])
         elif ENV_CONFIG_BY_NAME.get(name, {}).get("kind") == "trade_discipline_text":
             normalized[name] = normalize_trade_discipline_text_update(normalized[name])
+        elif ENV_CONFIG_BY_NAME.get(name, {}).get("kind") == "api_mode":
+            normalized[name] = normalize_env_update(name, normalized[name], "api_mode")
         elif ENV_CONFIG_BY_NAME.get(name, {}).get("kind") in {"max_tokens", "context_length"}:
             normalized[name] = normalize_context_length_update(normalized[name])
     return normalized
@@ -3082,6 +3103,10 @@ def validate_business_updates(updates: dict[str, str]) -> None:
             timeout = int(value)
             if timeout < 1 or timeout > 30:
                 raise ValueError(f"{name} 必须在 1 到 30 之间")
+        elif name == "X_WATCHLIST_REQUEST_TIMEOUT_SECONDS" and str(value or "").strip():
+            timeout = int(value)
+            if timeout < 8 or timeout > 120:
+                raise ValueError(f"{name} 必须在 8 到 120 之间")
         elif name in {
             "DASHBOARD_MAX_SINGLE_POSITION_PCT",
             "DASHBOARD_MAX_TOTAL_POSITION_PCT",
