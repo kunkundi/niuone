@@ -341,6 +341,11 @@ def _unsupported_output_limit(error_body: str) -> bool:
         r"(?:unknown|unrecognized)\s+(?:request\s+)?(?:parameter|argument|field)",
         r"(?:parameter|argument|field)[^\n]{0,120}\bnot\s+supported\b",
         r"max_output_tokens[^\n]{0,120}\bnot\s+supported\b",
+        r"max_output_tokens(?:[\"'`]|[\s:,-]){0,8}(?:is\s+)?unsupported\b",
+        (
+            r"\b(?:does|do)\s+not\s+support\s+"
+            r"(?:the\s+)?(?:parameter\s+)?[\"'`]?max_output_tokens\b"
+        ),
     )
     return any(re.search(pattern, text) for pattern in unsupported_patterns)
 

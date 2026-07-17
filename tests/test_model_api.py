@@ -167,23 +167,33 @@ class ModelApiTests(unittest.TestCase):
             max_tokens=500,
             api_mode="responses",
         )
-        payloads: list[dict] = []
+        error_bodies = (
+            b'{"detail":"Unsupported parameter: max_output_tokens"}',
+            b'{"detail":"max_output_tokens is unsupported"}',
+            b'{"detail":"gateway does not support max_output_tokens"}',
+        )
 
-        def opener(req, timeout=0):
-            payloads.append(json.loads(req.data.decode("utf-8")))
-            if len(payloads) == 1:
-                body = io.BytesIO(b'{"detail":"Unsupported parameter: max_output_tokens"}')
-                raise urllib.error.HTTPError(req.full_url, 400, "Bad Request", {}, body)
-            return _Response(
-                '{"output":[{"content":[{"type":"output_text","text":"ok"}]}]}'
-            )
+        for error_body in error_bodies:
+            with self.subTest(error_body=error_body):
+                payloads: list[dict] = []
 
-        parsed = request_model(request, "secret", timeout=3, opener=opener)
+                def opener(req, timeout=0):
+                    payloads.append(json.loads(req.data.decode("utf-8")))
+                    if len(payloads) == 1:
+                        body = io.BytesIO(error_body)
+                        raise urllib.error.HTTPError(
+                            req.full_url, 400, "Bad Request", {}, body
+                        )
+                    return _Response(
+                        '{"output":[{"content":[{"type":"output_text","text":"ok"}]}]}'
+                    )
 
-        self.assertEqual(parsed.content, "ok")
-        self.assertEqual(len(payloads), 2)
-        self.assertIn("max_output_tokens", payloads[0])
-        self.assertNotIn("max_output_tokens", payloads[1])
+                parsed = request_model(request, "secret", timeout=3, opener=opener)
+
+                self.assertEqual(parsed.content, "ok")
+                self.assertEqual(len(payloads), 2)
+                self.assertIn("max_output_tokens", payloads[0])
+                self.assertNotIn("max_output_tokens", payloads[1])
 
     def test_invalid_output_limit_value_does_not_retry_without_parameter(self):
         request = build_model_request(
