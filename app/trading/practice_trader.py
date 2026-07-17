@@ -239,6 +239,7 @@ STAMP_DUTY_SELL_RATE = 0.0005
 TRANSFER_FEE_RATE = 0.00001
 REALTIME_QUOTE_MAX_AGE_SECONDS = 8
 EQUITY_HEARTBEAT_MIN_SECONDS = 60
+_PENDING_EQUITY_DB_SYNC_TIME = "_pending_equity_db_sync_time"
 INTRADAY_CACHE_TTL_SECONDS = 45
 INTRADAY_MAX_POINTS = 260
 TENCENT_MINUTE_URL = "https://ifzq.gtimg.cn/appstock/app/minute/query"
@@ -500,6 +501,16 @@ def equity_heartbeat_due(
     return now_minute - last_minute >= timedelta(minutes=interval_minutes)
 
 
+def latest_equity_timestamp(state: dict[str, Any]) -> datetime | None:
+    for item in reversed(state.get("equity_history") or []):
+        if not isinstance(item, dict):
+            continue
+        parsed = parse_ts(item.get("time", ""))
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def current_session_minute(dt: datetime | None = None) -> int:
     """Return the latest valid A-share minute that should exist at this clock time."""
     dt = dt or datetime.now()
@@ -647,6 +658,7 @@ def load_state() -> dict[str, Any]:
 
 
 _STATE_FILE_THREAD_LOCK = threading.RLock()
+_STATE_FILE_LOCK_DEPTH = threading.local()
 
 
 @contextmanager
@@ -655,29 +667,42 @@ def state_file_write_lock():
     lock_file = STATE_FILE.with_name(f"{STATE_FILE.name}.lock")
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     with _STATE_FILE_THREAD_LOCK:
-        with lock_file.open("a+b") as handle:
-            if os.name == "nt":  # pragma: no cover - exercised on Windows deployments
-                import msvcrt
+        depth = int(getattr(_STATE_FILE_LOCK_DEPTH, "value", 0) or 0)
+        if depth:
+            _STATE_FILE_LOCK_DEPTH.value = depth + 1
+            try:
+                yield
+            finally:
+                _STATE_FILE_LOCK_DEPTH.value = depth
+            return
 
-                handle.seek(0, os.SEEK_END)
-                if handle.tell() == 0:
-                    handle.write(b"\0")
-                    handle.flush()
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-                try:
-                    yield
-                finally:
+        _STATE_FILE_LOCK_DEPTH.value = 1
+        try:
+            with lock_file.open("a+b") as handle:
+                if os.name == "nt":  # pragma: no cover - exercised on Windows deployments
+                    import msvcrt
+
+                    handle.seek(0, os.SEEK_END)
+                    if handle.tell() == 0:
+                        handle.write(b"\0")
+                        handle.flush()
                     handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    try:
+                        yield
+                    finally:
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
 
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    try:
+                        yield
+                    finally:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            _STATE_FILE_LOCK_DEPTH.value = 0
 
 
 def reconcile_positions_with_trade_log(state: dict[str, Any]) -> list[str]:
@@ -749,6 +774,7 @@ def reconcile_positions_with_trade_log(state: dict[str, Any]) -> list[str]:
 def save_state(state: dict[str, Any]) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     with state_file_write_lock():
+        pending_equity_sync_time = str(state.pop(_PENDING_EQUITY_DB_SYNC_TIME, "") or "")
         state["updated_at"] = now_ts()
 
         # Merge append-only logs with the on-disk copy before replacing the file.
@@ -756,7 +782,8 @@ def save_state(state: dict[str, Any]) -> None:
         # replace alone prevents partial JSON, but it does not prevent a slower
         # writer that loaded stale state from replacing a newer decision record.
         if STATE_FILE.exists():
-            current = json.loads(STATE_FILE.read_text())
+            current = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            current.pop(_PENDING_EQUITY_DB_SYNC_TIME, None)
 
             def merge_list(key: str, identity_fields: tuple[str, ...], prefer_state: bool = False) -> None:
                 merged = []
@@ -773,18 +800,26 @@ def save_state(state: dict[str, Any]) -> None:
                     merged.append(item)
                 state[key] = merged
 
+            trade_identity_fields = ("time", "action", "code", "shares", "price", "reason")
+
+            def trade_id(item: dict[str, Any]) -> tuple[str, ...]:
+                return tuple(
+                    json.dumps(item.get(field, ""), ensure_ascii=False, sort_keys=True)
+                    for field in trade_identity_fields
+                )
+
             state_trade_ids = {
-                tuple(json.dumps(item.get(f, ""), ensure_ascii=False, sort_keys=True)
-                      for f in ("time", "action", "code", "shares", "price", "reason"))
+                trade_id(item)
                 for item in (state.get("trade_log") or [])
                 if isinstance(item, dict)
             }
-            current_has_unseen_trades = any(
-                tuple(json.dumps(item.get(f, ""), ensure_ascii=False, sort_keys=True)
-                      for f in ("time", "action", "code", "shares", "price", "reason")) not in state_trade_ids
+            current_trade_ids = {
+                trade_id(item)
                 for item in (current.get("trade_log") or [])
                 if isinstance(item, dict)
-            )
+            }
+            current_has_unseen_trades = bool(current_trade_ids - state_trade_ids)
+            state_has_unseen_trades = bool(state_trade_ids - current_trade_ids)
             if current_has_unseen_trades:
                 # A slow dashboard quote refresh can save an old portfolio after
                 # the trade engine has already appended fills. Keep the traded
@@ -793,10 +828,14 @@ def save_state(state: dict[str, Any]) -> None:
                 state["positions"] = current.get("positions", state.get("positions", {}))
 
             merge_list("decision_log", ("time", "b1_generated_at", "decision"))
-            merge_list("trade_log", ("time", "action", "code", "shares", "price", "reason"))
+            merge_list("trade_log", trade_identity_fields)
             merge_list("pending_decisions", ("id",), prefer_state=True)
-            merge_list("equity_history", ("time",), prefer_state=True)
-            merge_list("daily_equity_history", ("time",), prefer_state=True)
+            # A writer that has not seen an already-persisted trade must not replace
+            # the corresponding same-minute post-trade equity point with its stale
+            # pre-trade snapshot. A writer carrying a new trade remains authoritative.
+            prefer_state_equity = not current_has_unseen_trades or state_has_unseen_trades
+            merge_list("equity_history", ("time",), prefer_state=prefer_state_equity)
+            merge_list("daily_equity_history", ("time",), prefer_state=prefer_state_equity)
 
             # Position snapshots are mutable and can be stale even when the
             # append-only trade merge succeeded. Re-apply the retained ledger
@@ -822,9 +861,28 @@ def save_state(state: dict[str, Any]) -> None:
         normalize_daily_equity_history(state)
         sort_equity_history(state)
 
+        equity_point_to_sync = next(
+            (
+                dict(point)
+                for point in reversed(state.get("equity_history") or [])
+                if isinstance(point, dict)
+                and str(point.get("time") or "") == pending_equity_sync_time
+            ),
+            None,
+        )
         tmp = STATE_FILE.with_name(f"{STATE_FILE.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(STATE_FILE)
+
+        # Synchronize SQLite only after the canonical same-minute point is chosen.
+        # Keeping this under the state-file lock preserves JSON/DB writer ordering.
+        if equity_point_to_sync is not None:
+            try:
+                from niuniu_db import record_daily_equity as _record_db
+
+                _record_db(equity_point_to_sync)
+            except Exception:
+                pass
 
 
 def normalize_code(code: str) -> str:
@@ -1264,6 +1322,43 @@ def refresh_realtime_prices(state: dict[str, Any]) -> dict[str, Any]:
     return meta
 
 
+def apply_realtime_price_snapshot(
+    state: dict[str, Any],
+    refreshed_state: dict[str, Any],
+) -> None:
+    """Apply fetched quote fields without restoring stale account positions."""
+
+    refreshed_positions = {
+        normalize_code(code): position
+        for code, position in (refreshed_state.get("positions") or {}).items()
+        if isinstance(position, dict)
+    }
+    quote_fields = (
+        "last_price",
+        "quote_time",
+        "quote_source",
+        "change_pct",
+        "prev_close",
+        "day_high",
+        "day_low",
+    )
+    for code, position in (state.get("positions") or {}).items():
+        if not isinstance(position, dict):
+            continue
+        refreshed = refreshed_positions.get(normalize_code(code))
+        if refreshed is None:
+            continue
+        for field in quote_fields:
+            if field in refreshed:
+                position[field] = refreshed[field]
+        if not position.get("name") and refreshed.get("name"):
+            position["name"] = refreshed["name"]
+
+    refresh_meta = refreshed_state.get("last_quote_refresh")
+    if isinstance(refresh_meta, dict):
+        state["last_quote_refresh"] = dict(refresh_meta)
+
+
 def refresh_position_intraday(state: dict[str, Any]) -> dict[str, Any]:
     positions = state.get("positions") or {}
     meta = {"enabled": True, "source": "Tencent ifzq minute/query", "updated": 0, "error": "", "quote_time": now_ts()}
@@ -1673,12 +1768,9 @@ def record_equity(state: dict[str, Any]) -> bool:
             # 新的一天，添加记录
             daily_history.append(pt)
         
-        # 同步写入 SQLite
-        try:
-            from niuniu_db import record_daily_equity as _record_db
-            _record_db(pt)
-        except Exception:
-            pass
+        # Defer SQLite synchronization until save_state() has merged any
+        # concurrent trade and selected the canonical same-minute point.
+        state[_PENDING_EQUITY_DB_SYNC_TIME] = now
     return should_save
 
 
@@ -1816,11 +1908,7 @@ def rebuild_intraday_equity_curve(
     daily_history.append(final_point)
     state["daily_equity_history"] = daily_history[-EQUITY_HISTORY_LIMIT:]
 
-    try:
-        from niuniu_db import record_daily_equity as _record_db
-        _record_db(final_point)
-    except Exception:
-        pass
+    state[_PENDING_EQUITY_DB_SYNC_TIME] = str(final_point.get("time") or "")
     return True
 
 
@@ -4238,26 +4326,47 @@ def maybe_record_session_equity_heartbeat(min_interval_seconds: int = EQUITY_HEA
     now = datetime.now()
     if not is_a_share_session_clock(now):
         return False
-    state = load_state()
-    pruned = prune_future_intraday_equity_points(state, now=now)
-    history = state.setdefault("equity_history", [])
-    last_dt = None
-    for item in reversed(history):
-        last_dt = parse_ts(item.get("time", ""))
-        if last_dt:
-            break
+    refreshed_state = load_state()
+    pruned = prune_future_intraday_equity_points(refreshed_state, now=now)
+    last_dt = latest_equity_timestamp(refreshed_state)
     if last_dt and not equity_heartbeat_due(now, last_dt, min_interval_seconds):
         if pruned:
-            save_state(state)
+            save_state(refreshed_state)
         return False
-    # Keep current holdings marked-to-market before taking a snapshot.
+
+    # Fetch quotes outside the portfolio lock so transient providers cannot
+    # block trading writes. Only quote fields are carried into the transaction.
     try:
-        refresh_realtime_prices(state)
+        refresh_realtime_prices(refreshed_state)
     except Exception as exc:
-        state["last_quote_refresh"] = {"time": now_ts(), "updated": 0, "error": f"{type(exc).__name__}: {exc}"}
-    recorded = record_equity(state)
-    save_state(state)
-    return recorded
+        refreshed_state["last_quote_refresh"] = {
+            "time": now_ts(),
+            "updated": 0,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    # Re-read under the cross-process write lock after the network call. A trade
+    # may have committed while quotes were loading; its same-minute point must
+    # remain authoritative instead of being replaced by this older snapshot.
+    with state_file_write_lock():
+        state = load_state()
+        commit_now = datetime.now()
+        if not is_a_share_session_clock(commit_now):
+            return False
+        pruned = prune_future_intraday_equity_points(state, now=commit_now)
+        last_dt = latest_equity_timestamp(state)
+        if last_dt and not equity_heartbeat_due(
+            commit_now,
+            last_dt,
+            min_interval_seconds,
+        ):
+            if pruned:
+                save_state(state)
+            return False
+        apply_realtime_price_snapshot(state, refreshed_state)
+        recorded = record_equity(state)
+        save_state(state)
+        return recorded
 
 
 def load_crossdesk_config(base_url_env: str = "", api_key_env: str = "") -> tuple[str, str]:
