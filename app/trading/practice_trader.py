@@ -486,6 +486,20 @@ def parse_ts(value: str) -> datetime | None:
         return None
 
 
+def equity_heartbeat_due(
+    now: datetime,
+    last: datetime | None,
+    min_interval_seconds: int = EQUITY_HEARTBEAT_MIN_SECONDS,
+) -> bool:
+    """Return whether a new wall-clock minute bucket should be sampled."""
+    if last is None:
+        return True
+    interval_minutes = max(1, math.ceil(max(0, int(min_interval_seconds or 0)) / 60))
+    now_minute = now.replace(second=0, microsecond=0)
+    last_minute = last.replace(second=0, microsecond=0)
+    return now_minute - last_minute >= timedelta(minutes=interval_minutes)
+
+
 def current_session_minute(dt: datetime | None = None) -> int:
     """Return the latest valid A-share minute that should exist at this clock time."""
     dt = dt or datetime.now()
@@ -1593,17 +1607,23 @@ def add_execution_block(decision: dict[str, Any], code: str, reason: str) -> Non
     decision["execution_blocked_reason"] = "；".join(blocks[-5:])
 
 
-def record_equity(state: dict[str, Any]) -> None:
+def record_equity(state: dict[str, Any]) -> bool:
     if not is_a_share_trading_day():
         prune_non_trading_day_equity_points(state)
-        return
+        return False
     prune_non_trading_day_equity_points(state)
     prune_future_intraday_equity_points(state)
     normalize_daily_equity_history(state)
     sort_equity_history(state)
     snap = enrich_portfolio(state)
     history = state.setdefault("equity_history", [])
-    now = now_ts()
+    raw_now = now_ts()
+    now_dt = parse_ts(raw_now)
+    now = (
+        now_dt.replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        if now_dt
+        else raw_now
+    )
     today = now[:10]
     
     # 获取今天已有的所有记录
@@ -1612,8 +1632,7 @@ def record_equity(state: dict[str, Any]) -> None:
     # 获取每日结算净值历史（按天存储）
     daily_history = state.setdefault("daily_equity_history", [])
     
-    # 动态降采样保存日内点：
-    # 每2分钟保存一次，或者收盘(15:00)时强制保存
+    # 按自然分钟保存日内点，或者收盘(15:00)时强制保存。
     should_save = False
     is_closing_point = False
     
@@ -1622,11 +1641,11 @@ def record_equity(state: dict[str, Any]) -> None:
     else:
         last_time_str = today_records[-1].get("time", "")
         if last_time_str:
-            import datetime
             try:
-                last_dt = datetime.datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
-                now_dt = datetime.datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
-                if (now_dt - last_dt).total_seconds() >= EQUITY_HEARTBEAT_MIN_SECONDS:
+                last_dt = parse_ts(last_time_str)
+                if now_dt is None or last_dt is None:
+                    should_save = True
+                elif equity_heartbeat_due(now_dt, last_dt):
                     should_save = True
                 elif "15:00:" in now and "15:00:" not in last_time_str:
                     should_save = True
@@ -1660,6 +1679,7 @@ def record_equity(state: dict[str, Any]) -> None:
             _record_db(pt)
         except Exception:
             pass
+    return should_save
 
 
 def rebuild_intraday_equity_curve(
@@ -4214,7 +4234,7 @@ def run_auto_exits_once(dt: datetime | None = None) -> dict[str, Any]:
 
 
 def maybe_record_session_equity_heartbeat(min_interval_seconds: int = EQUITY_HEARTBEAT_MIN_SECONDS) -> bool:
-    """Record account equity during the full 09:30-15:00 dashboard session, independent of trades/B1 candidates."""
+    """Record equity during the full 09:15-15:00 session, independent of dashboard requests."""
     now = datetime.now()
     if not is_a_share_session_clock(now):
         return False
@@ -4226,18 +4246,18 @@ def maybe_record_session_equity_heartbeat(min_interval_seconds: int = EQUITY_HEA
         last_dt = parse_ts(item.get("time", ""))
         if last_dt:
             break
-    if last_dt and (now - last_dt).total_seconds() < min_interval_seconds:
+    if last_dt and not equity_heartbeat_due(now, last_dt, min_interval_seconds):
         if pruned:
             save_state(state)
         return False
     # Keep current holdings marked-to-market before taking a snapshot.
     try:
-        refresh_position_quotes(state)
+        refresh_realtime_prices(state)
     except Exception as exc:
         state["last_quote_refresh"] = {"time": now_ts(), "updated": 0, "error": f"{type(exc).__name__}: {exc}"}
-    record_equity(state)
+    recorded = record_equity(state)
     save_state(state)
-    return True
+    return recorded
 
 
 def load_crossdesk_config(base_url_env: str = "", api_key_env: str = "") -> tuple[str, str]:

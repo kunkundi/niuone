@@ -2374,6 +2374,64 @@ class SellStrategyRuleTests(unittest.TestCase):
         self.assertEqual(state["trade_log"], [])
         self.assertEqual(state["positions"]["600000"]["qty"], 1000)
 
+    def test_session_equity_heartbeat_uses_wall_clock_minute_buckets(self):
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 7, 17, 10, 1, 1)
+
+        state = {
+            "initial_cash": 100000.0,
+            "cash": 100000.0,
+            "positions": {},
+            "trade_log": [],
+            "decision_log": [],
+            "equity_history": [{
+                "time": "2026-07-17 10:00:59",
+                "equity": 100000.0,
+                "cash": 100000.0,
+                "market_value": 0.0,
+                "pnl_pct": 0.0,
+            }],
+            "daily_equity_history": [],
+        }
+        calls = {"refresh": 0, "save": 0}
+        fake_db = types.ModuleType("niuniu_db")
+        fake_db.record_daily_equity = lambda _point: None
+        original_db = sys.modules.get("niuniu_db")
+        originals = {
+            "datetime": trader.datetime,
+            "is_a_share_trading_day": trader.is_a_share_trading_day,
+            "load_state": trader.load_state,
+            "save_state": trader.save_state,
+            "refresh_realtime_prices": trader.refresh_realtime_prices,
+        }
+        try:
+            sys.modules["niuniu_db"] = fake_db
+            trader.datetime = FixedDateTime
+            trader.is_a_share_trading_day = lambda dt=None: True
+            trader.load_state = lambda: state
+            trader.save_state = lambda _state: calls.__setitem__("save", calls["save"] + 1)
+            trader.refresh_realtime_prices = lambda _state: calls.__setitem__(
+                "refresh", calls["refresh"] + 1
+            )
+
+            self.assertTrue(trader.maybe_record_session_equity_heartbeat())
+            self.assertFalse(trader.maybe_record_session_equity_heartbeat())
+        finally:
+            for name, value in originals.items():
+                setattr(trader, name, value)
+            if original_db is None:
+                sys.modules.pop("niuniu_db", None)
+            else:
+                sys.modules["niuniu_db"] = original_db
+
+        self.assertEqual(calls, {"refresh": 1, "save": 1})
+        self.assertEqual(
+            [point["time"] for point in state["equity_history"]],
+            ["2026-07-17 10:00:59", "2026-07-17 10:01:00"],
+        )
+
     def test_intraday_curve_rebuild_skips_days_with_trades(self):
         state = {
             "cash": 90000.0,
