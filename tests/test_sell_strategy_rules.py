@@ -2433,6 +2433,79 @@ class SellStrategyRuleTests(unittest.TestCase):
             ["2026-07-17 10:00:59", "2026-07-17 10:01:00"],
         )
 
+    def test_session_equity_heartbeat_captures_the_full_closing_minute(self):
+        class ClosingDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 7, 17, 15, 0, 59)
+
+        state = {
+            "initial_cash": 100000.0,
+            "cash": 100000.0,
+            "positions": {},
+            "trade_log": [],
+            "decision_log": [],
+            "equity_history": [{
+                "time": "2026-07-17 14:59:00",
+                "equity": 100000.0,
+                "cash": 100000.0,
+                "market_value": 0.0,
+                "pnl_pct": 0.0,
+            }],
+            "daily_equity_history": [],
+        }
+        fake_db = types.ModuleType("niuniu_db")
+        fake_db.record_daily_equity = lambda _point: None
+        original_db = sys.modules.get("niuniu_db")
+        originals = {
+            "datetime": trader.datetime,
+            "is_a_share_trading_day": trader.is_a_share_trading_day,
+            "load_state": trader.load_state,
+            "save_state": trader.save_state,
+            "refresh_realtime_prices": trader.refresh_realtime_prices,
+        }
+        try:
+            sys.modules["niuniu_db"] = fake_db
+            trader.datetime = ClosingDateTime
+            trader.is_a_share_trading_day = lambda dt=None: True
+            trader.load_state = lambda: state
+            trader.save_state = lambda _state: None
+            trader.refresh_realtime_prices = lambda _state: {}
+
+            self.assertTrue(
+                trader.is_a_share_equity_heartbeat_clock(
+                    datetime(2026, 7, 17, 15, 0, 1)
+                )
+            )
+            self.assertFalse(
+                trader.is_a_share_session_clock(
+                    datetime(2026, 7, 17, 15, 0, 1)
+                )
+            )
+            self.assertTrue(
+                trader.is_a_share_equity_heartbeat_clock(
+                    datetime(2026, 7, 17, 15, 0, 59)
+                )
+            )
+            self.assertFalse(
+                trader.is_a_share_equity_heartbeat_clock(
+                    datetime(2026, 7, 17, 15, 1, 0)
+                )
+            )
+            self.assertTrue(trader.maybe_record_session_equity_heartbeat())
+        finally:
+            for name, value in originals.items():
+                setattr(trader, name, value)
+            if original_db is None:
+                sys.modules.pop("niuniu_db", None)
+            else:
+                sys.modules["niuniu_db"] = original_db
+
+        self.assertEqual(
+            [point["time"] for point in state["equity_history"]],
+            ["2026-07-17 14:59:00", "2026-07-17 15:00:00"],
+        )
+
     def test_session_equity_heartbeat_preserves_concurrent_trade_point(self):
         class FixedDateTime(datetime):
             @classmethod

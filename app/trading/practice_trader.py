@@ -480,6 +480,14 @@ def is_a_share_session_clock(dt: datetime | None = None) -> bool:
     return dtime(9, 15) <= dt.time() <= dtime(15, 0)
 
 
+def is_a_share_equity_heartbeat_clock(dt: datetime | None = None) -> bool:
+    """Equity sampling clock, including every second of the 15:00 closing minute."""
+    dt = dt or datetime.now()
+    if not is_a_share_trading_day(dt):
+        return False
+    return dtime(9, 15) <= dt.time() < dtime(15, 1)
+
+
 def parse_ts(value: str) -> datetime | None:
     try:
         return datetime.strptime(str(value or ""), "%Y-%m-%d %H:%M:%S")
@@ -4322,9 +4330,9 @@ def run_auto_exits_once(dt: datetime | None = None) -> dict[str, Any]:
 
 
 def maybe_record_session_equity_heartbeat(min_interval_seconds: int = EQUITY_HEARTBEAT_MIN_SECONDS) -> bool:
-    """Record equity during the full 09:15-15:00 session, independent of dashboard requests."""
+    """Record session equity independently of dashboard requests."""
     now = datetime.now()
-    if not is_a_share_session_clock(now):
+    if not is_a_share_equity_heartbeat_clock(now):
         return False
     refreshed_state = load_state()
     pruned = prune_future_intraday_equity_points(refreshed_state, now=now)
@@ -4351,7 +4359,7 @@ def maybe_record_session_equity_heartbeat(min_interval_seconds: int = EQUITY_HEA
     with state_file_write_lock():
         state = load_state()
         commit_now = datetime.now()
-        if not is_a_share_session_clock(commit_now):
+        if not is_a_share_equity_heartbeat_clock(commit_now):
             return False
         pruned = prune_future_intraday_equity_points(state, now=commit_now)
         last_dt = latest_equity_timestamp(state)
