@@ -189,6 +189,9 @@ B1_SCHEDULE_LOCK = threading.RLock()
 B1_SCHEDULE_THREAD: threading.Thread | None = None
 PENDING_DECISION_THREAD: threading.Thread | None = None
 PENDING_DECISION_POLL_SECONDS = float(os.environ.get("DASHBOARD_PENDING_DECISION_POLL_SECONDS", "5") or "5")
+PRACTICE_EQUITY_HEARTBEAT_LOCK = threading.Lock()
+PRACTICE_EQUITY_HEARTBEAT_THREAD: threading.Thread | None = None
+PRACTICE_EQUITY_HEARTBEAT_POLL_SECONDS = 5.0
 B1_CANDIDATE_REFRESH_LOCK = threading.Lock()
 B1_FULL_SCAN_LOCK = threading.Lock()
 B1_CANDIDATE_REFRESH_MIN_SECONDS = float(os.environ.get("DASHBOARD_B1_CANDIDATE_REFRESH_MIN_SECONDS", "0") or "0")
@@ -1065,9 +1068,10 @@ def apply_hot_stocks_sort(data: dict[str, Any], sort_by: str) -> dict[str, Any]:
 def get_practice_payload() -> dict[str, Any]:
     try:
         trader = get_trader_module()
-        # 盘面时间内按 dashboard 刷新节奏补记账户权益点；与是否交易/是否有B1候选无关。
-        if hasattr(trader, "maybe_record_session_equity_heartbeat"):
-            trader.maybe_record_session_equity_heartbeat()
+        # The independent heartbeat normally owns minute snapshots. Keep this
+        # request-side call as a safe fallback for legacy entrypoints that do not
+        # start dashboard background workers.
+        record_practice_equity_heartbeat(trader)
         payload = trader.get_dashboard_payload()
         payload["trade_markers"] = compact_trade_markers(payload.get("trade_log") or [])
         annotate_practice_snapshot(payload, mode="full", history_scope="retained_history")
@@ -1084,6 +1088,27 @@ def get_practice_payload() -> dict[str, Any]:
                    "equity_history": [], "trade_markers": [], "last_error": str(exc), "decision_model": "", "decision_provider": ""}
         annotate_practice_snapshot(payload, mode="full", history_scope="unavailable")
         return annotate_practice_payload_clock(payload)
+
+
+def record_practice_equity_heartbeat(trader: Any | None = None) -> bool:
+    """Record one due equity heartbeat without overlapping another producer."""
+
+    if not PRACTICE_EQUITY_HEARTBEAT_LOCK.acquire(blocking=False):
+        return False
+    try:
+        trader = trader or get_trader_module()
+        recorder = getattr(trader, "maybe_record_session_equity_heartbeat", None)
+        if recorder is None:
+            return False
+        recorded = bool(recorder())
+        if recorded:
+            invalidate_api_cache("niuniu_practice", PRACTICE_FAST_CACHE_KEY)
+        return recorded
+    except Exception as exc:
+        print(f"[WARN] 模拟账户权益心跳失败: {type(exc).__name__}: {exc}", flush=True)
+        return False
+    finally:
+        PRACTICE_EQUITY_HEARTBEAT_LOCK.release()
 
 def downsample_sequence(items: list[Any], max_points: int) -> list[Any]:
     return practice_payload_impl.downsample_sequence(items, max_points)
@@ -1991,6 +2016,33 @@ def pending_decision_loop() -> None:
         except Exception as exc:
             print(f"[WARN] 延迟成交检查失败: {type(exc).__name__}: {exc}", flush=True)
         time.sleep(max(1.0, PENDING_DECISION_POLL_SECONDS))
+
+
+def practice_equity_heartbeat_loop(
+    *,
+    stop_event: threading.Event | None = None,
+    poll_seconds: float = PRACTICE_EQUITY_HEARTBEAT_POLL_SECONDS,
+) -> None:
+    """Keep minute equity snapshots flowing even when no dashboard is open."""
+
+    stop_event = stop_event or threading.Event()
+    while not stop_event.is_set():
+        record_practice_equity_heartbeat()
+        if stop_event.wait(max(1.0, float(poll_seconds))):
+            return
+
+
+def start_practice_equity_heartbeat() -> None:
+    global PRACTICE_EQUITY_HEARTBEAT_THREAD
+    if PRACTICE_EQUITY_HEARTBEAT_THREAD and PRACTICE_EQUITY_HEARTBEAT_THREAD.is_alive():
+        return
+    PRACTICE_EQUITY_HEARTBEAT_THREAD = threading.Thread(
+        target=practice_equity_heartbeat_loop,
+        name="practice-equity-heartbeat",
+        daemon=True,
+    )
+    PRACTICE_EQUITY_HEARTBEAT_THREAD.start()
+    print("Practice equity heartbeat enabled: 60s", flush=True)
 
 
 def start_pending_decision_executor() -> None:
@@ -4720,6 +4772,7 @@ def main() -> None:
     server = ReusableThreadingHTTPServer((args.host, args.port), Handler)
     start_b1_scheduler()
     start_pending_decision_executor()
+    start_practice_equity_heartbeat()
     print(f"牛牛1号：http://{args.host}:{args.port}")
     if ADMIN_PASSWORD:
         print("设置页：/admin（管理员密码保护已启用）")

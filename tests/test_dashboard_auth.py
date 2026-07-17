@@ -1326,6 +1326,84 @@ console.log(JSON.stringify(result));
         self.assertTrue(dashboard.ReusableThreadingHTTPServer.daemon_threads)
         self.assertGreaterEqual(dashboard.ReusableThreadingHTTPServer.request_queue_size, 64)
 
+    def test_equity_heartbeat_records_without_dashboard_requests_and_invalidates_snapshots(self):
+        calls = []
+
+        class FakeTrader:
+            @staticmethod
+            def maybe_record_session_equity_heartbeat():
+                calls.append('recorded')
+                return True
+
+        dashboard.API_RESPONSE_CACHE['niuniu_practice'] = {'ts': 1.0, 'payload': b'{}'}
+        dashboard.API_RESPONSE_CACHE[dashboard.PRACTICE_FAST_CACHE_KEY] = {'ts': 1.0, 'payload': b'{}'}
+
+        self.assertTrue(dashboard.record_practice_equity_heartbeat(FakeTrader()))
+        self.assertEqual(calls, ['recorded'])
+        self.assertNotIn('niuniu_practice', dashboard.API_RESPONSE_CACHE)
+        self.assertNotIn(dashboard.PRACTICE_FAST_CACHE_KEY, dashboard.API_RESPONSE_CACHE)
+
+    def test_equity_heartbeat_loop_polls_independently_of_http_requests(self):
+        calls = []
+        waits = []
+        original_recorder = dashboard.record_practice_equity_heartbeat
+
+        class StopAfterFirstPoll:
+            @staticmethod
+            def is_set():
+                return False
+
+            @staticmethod
+            def wait(seconds):
+                waits.append(seconds)
+                return True
+
+        try:
+            dashboard.record_practice_equity_heartbeat = lambda: calls.append('heartbeat') or True
+            dashboard.practice_equity_heartbeat_loop(
+                stop_event=StopAfterFirstPoll(),
+                poll_seconds=5,
+            )
+        finally:
+            dashboard.record_practice_equity_heartbeat = original_recorder
+
+        self.assertEqual(calls, ['heartbeat'])
+        self.assertEqual(waits, [5.0])
+
+    def test_equity_heartbeat_starts_as_single_daemon_worker(self):
+        created = []
+        original_thread_class = dashboard.threading.Thread
+        original_worker = dashboard.PRACTICE_EQUITY_HEARTBEAT_THREAD
+
+        class FakeThread:
+            def __init__(self, *, target, name, daemon):
+                self.target = target
+                self.name = name
+                self.daemon = daemon
+                self.started = False
+                created.append(self)
+
+            def is_alive(self):
+                return self.started
+
+            def start(self):
+                self.started = True
+
+        try:
+            dashboard.threading.Thread = FakeThread
+            dashboard.PRACTICE_EQUITY_HEARTBEAT_THREAD = None
+            dashboard.start_practice_equity_heartbeat()
+            dashboard.start_practice_equity_heartbeat()
+        finally:
+            dashboard.threading.Thread = original_thread_class
+            dashboard.PRACTICE_EQUITY_HEARTBEAT_THREAD = original_worker
+
+        self.assertEqual(len(created), 1)
+        self.assertIs(created[0].target, dashboard.practice_equity_heartbeat_loop)
+        self.assertEqual(created[0].name, 'practice-equity-heartbeat')
+        self.assertTrue(created[0].daemon)
+        self.assertTrue(created[0].started)
+
     def test_us_sector_api_returns_sector_snapshot(self):
         original_producer = dashboard.produce_us_sector_data
         try:
