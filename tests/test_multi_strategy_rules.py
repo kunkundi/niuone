@@ -5,6 +5,7 @@ import sys
 import time
 import types
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +50,61 @@ class MultiStrategyRuleTests(unittest.TestCase):
         self.assertEqual((snapshot["limit_up"], snapshot["limit_down"]), (1, 1))
         self.assertEqual(snapshot["quote_time"], "2026-07-10 10:00:04")
         self.assertEqual(snapshot["total_amount"], 1e9)
+
+    def test_sector_tide_loads_only_exact_previous_trading_day_archive(self):
+        calls = {}
+
+        def status_loader(value, *, allow_refresh=True):
+            calls["status_value"] = value
+            calls["allow_refresh"] = allow_refresh
+            return {
+                "previous_trading_day": "2026-07-16",
+                "source": "test_calendar",
+            }
+
+        def archive_reader(path, *, trade_date):
+            calls["archive_path"] = path
+            calls["trade_date"] = trade_date
+            return {
+                "available": True,
+                "archive": True,
+                "source": "同花顺问财",
+                "date": trade_date,
+                "items": [{"code": "600000.SH"}],
+            }
+
+        archive_dir = Path("/tmp/niuone-sector-tide-dragon-tiger")
+        payload = screen.load_previous_sector_tide_dragon_tiger(
+            datetime(2026, 7, 17, 10, 0, 0),
+            archive_dir=archive_dir,
+            status_loader=status_loader,
+            archive_reader=archive_reader,
+        )
+
+        self.assertFalse(calls["allow_refresh"])
+        self.assertEqual(calls["trade_date"], "2026-07-16")
+        self.assertEqual(calls["archive_path"], archive_dir)
+        self.assertEqual(payload["date"], "2026-07-16")
+        self.assertEqual(payload["requested_date"], "2026-07-16")
+        self.assertEqual(payload["calendar_source"], "test_calendar")
+
+    def test_sector_tide_missing_previous_archive_degrades_without_latest_fallback(self):
+        requested = []
+
+        payload = screen.load_previous_sector_tide_dragon_tiger(
+            datetime(2026, 7, 17, 10, 0, 0),
+            archive_dir=Path("/tmp/niuone-sector-tide-dragon-tiger"),
+            status_loader=lambda _value, **_kwargs: {
+                "previous_trading_day": "2026-07-16",
+                "source": "test_calendar",
+            },
+            archive_reader=lambda _path, *, trade_date: requested.append(trade_date),
+        )
+
+        self.assertEqual(requested, ["2026-07-16"])
+        self.assertFalse(payload["available"])
+        self.assertEqual(payload["error"], "archive_missing")
+        self.assertEqual(payload["items"], [])
 
     def test_stock_universe_classifies_boards_and_st_as_additive_scopes(self):
         self.assertEqual(

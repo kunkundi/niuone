@@ -13,7 +13,7 @@ import concurrent.futures
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from core.model_api import build_model_request, request_model
+from core.model_api import ModelResponseParseError, build_model_request, request_model
 from niuone_paths import get_dashboard_env_file, get_dashboard_home
 
 if __package__ == "app":
@@ -37,6 +37,7 @@ if __package__ == "app":
     )
     from .monitoring.x.formatting import display_text, fmt_media_items, fmt_missing_context, fmt_post, fmt_text_box
     from .monitoring.x.state import (
+        canonical_post_time,
         choose_latest_value,
         compact_sent_context_entry,
         is_newer_post,
@@ -46,6 +47,7 @@ if __package__ == "app":
         merge_latest,
         merge_seen_ids,
         needs_context_hydration,
+        normalize_post_time,
         parse_any_datetime,
         parse_iso,
         parse_post_time,
@@ -74,6 +76,7 @@ else:
     )
     from monitoring.x.formatting import display_text, fmt_media_items, fmt_missing_context, fmt_post, fmt_text_box
     from monitoring.x.state import (
+        canonical_post_time,
         choose_latest_value,
         compact_sent_context_entry,
         is_newer_post,
@@ -83,6 +86,7 @@ else:
         merge_latest,
         merge_seen_ids,
         needs_context_hydration,
+        normalize_post_time,
         parse_any_datetime,
         parse_iso,
         parse_post_time,
@@ -262,7 +266,7 @@ def is_temporary_error(exc):
     # Grok/model-gateway sometimes returns empty text, truncated JSON, or prose
     # instead of the strictly requested JSON. For a polling monitor this is a
     # transient upstream miss; stay quiet and retry on the next cron tick.
-    if isinstance(exc, json.JSONDecodeError):
+    if isinstance(exc, (json.JSONDecodeError, ModelResponseParseError)):
         return True
     return False
 
@@ -396,9 +400,10 @@ def hydrate_posts(base_url, api_key, new_items, timeout=DETAIL_REQUEST_TIMEOUT_S
                     merged_post[key] = merge_media_items(merged_post.get(key) or [], value)
                     continue
                 merged_post[key] = value
+            merged_post = normalize_post_time(merged_post, post_id)
             hydrated.append((rich_post.get("display_name") or display_name, merged_post, post_id, handle))
         else:
-            hydrated.append((display_name, post, post_id, handle))
+            hydrated.append((display_name, normalize_post_time(post, post_id), post_id, handle))
     return hydrated
 
 
@@ -812,6 +817,65 @@ def load_state():
         return {"seen_ids": {}, "latest": {}, "created_at": datetime.now(timezone.utc).isoformat(), "recovered_from_corrupt": True}
 
 
+def normalize_item_post_times(items):
+    return [
+        (display_name, normalize_post_time(post, post_id), post_id, handle)
+        for display_name, post, post_id, handle in items
+    ]
+
+
+def normalize_monitor_state_times(state):
+    """Repair persisted X state times without changing post identity or content."""
+    changed = 0
+
+    def normalize_latest(values):
+        nonlocal changed
+        if not isinstance(values, dict):
+            return
+        for value in values.values():
+            if not isinstance(value, dict):
+                continue
+            normalized = normalize_post_time(value, value.get("post_id"))
+            if normalized.get("time") != value.get("time"):
+                value["time"] = normalized.get("time")
+                changed += 1
+
+    normalize_latest(state.get("latest"))
+    pending = state.get("pending_delivery")
+    if isinstance(pending, dict):
+        normalize_latest(pending.get("latest"))
+
+    for queue_name in ("sent_missing_context", "held_for_context"):
+        queue = state.get(queue_name)
+        if not isinstance(queue, list):
+            continue
+        for entry in queue:
+            if not isinstance(entry, dict):
+                continue
+            post = entry.get("post") if isinstance(entry.get("post"), dict) else {}
+            post_id = entry.get("post_id") or post.get("post_id")
+            normalized_post = normalize_post_time(post, post_id)
+            if post and normalized_post != post:
+                entry["post"] = normalized_post
+                changed += 1
+            post_time = canonical_post_time(
+                normalized_post.get("time") or entry.get("time"),
+                post_id,
+            )
+            if not post_time:
+                continue
+            time_text = post_time.strftime("%Y-%m-%d %H:%M:%S")
+            if entry.get("time") != time_text:
+                entry["time"] = time_text
+                changed += 1
+            if entry.get("timestamp") is not None:
+                timestamp = post_time.replace(tzinfo=timezone(timedelta(hours=8))).timestamp()
+                if abs(float(entry.get("timestamp") or 0) - timestamp) >= 1:
+                    entry["timestamp"] = timestamp
+                    changed += 1
+    return changed
+
+
 def save_state(state):
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = STATE_PATH.with_suffix(".tmp")
@@ -908,7 +972,8 @@ def write_direct_x_alerts_to_db(send_items):
     messages = []
     now = datetime.now(timezone.utc)
     for idx, (display_name, post, post_id, handle) in enumerate(send_items, 1):
-        post_time = parse_post_time(post.get("time"))
+        post = normalize_post_time(post, post_id)
+        post_time = canonical_post_time(post.get("time"), post_id)
         if post_time:
             timestamp = post_time.replace(tzinfo=timezone(timedelta(hours=8))).timestamp()
             time_text = post_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -1158,7 +1223,8 @@ def update_sent_context_queue_after_attempts(state, attempted_entries, repaired_
 def upsert_repaired_context_message(entry, display_name, repaired_post, post_id, handle):
     if push_history is None:
         return False
-    post_time = parse_post_time(repaired_post.get("time") or entry.get("time"))
+    repaired_post = normalize_post_time(repaired_post, post_id)
+    post_time = canonical_post_time(repaired_post.get("time") or entry.get("time"), post_id)
     timestamp = entry.get("timestamp")
     time_text = entry.get("time") or repaired_post.get("time") or ""
     if post_time:
@@ -1307,6 +1373,7 @@ def split_send_and_held(new_items):
 
 
 def send_ready_items(base_url, api_key, state, items, latest, deadline, limit=10):
+    items = normalize_item_post_times(items)
     send_items, held_for_context = split_send_and_held(items)
     send_items = send_items[:limit]
     send_seen_ids = {}
@@ -1354,6 +1421,7 @@ def main():
     self_deadline = started + int(os.environ.get("X_WATCHLIST_DEADLINE_SECONDS", str(TOTAL_DEADLINE_SECONDS)))
     base_url, api_key = load_config()
     state = load_state()
+    normalize_monitor_state_times(state)
     clear_stale_pending(state)
     apply_pending_if_delivered(state)
     if pending_in_cooldown(state):
@@ -1420,20 +1488,27 @@ def main():
         if not handle:
             continue
         display_name = account.get("display_name") or handle
-        posts = account.get("posts") or []
+        posts = [
+            normalize_post_time(post, post.get("post_id"))
+            for post in (account.get("posts") or [])
+            if isinstance(post, dict)
+        ]
         account_seen = set(seen.get(handle, []))
         latest_value = latest.get(handle) or {}
         account_pending = []
         sortable_posts = []
         for post in posts:
-            sortable_posts.append((parse_post_time(post.get("time")) or datetime.min, post))
+            sortable_posts.append((canonical_post_time(post.get("time"), post.get("post_id")) or datetime.min, post))
         for _post_time, post in sorted(sortable_posts, key=lambda item: item[0]):
             post_id = str(post.get("post_id") or "").strip()
             if not post_id:
                 text_key = (post.get("full_text") or post.get("chinese_text") or "")[:80]
                 post_id = f"{handle}:{post.get('time','')}:{text_key}"
-            post_time = parse_post_time(post.get("time"))
-            latest_time = parse_post_time((latest_value or {}).get("time"))
+            post_time = canonical_post_time(post.get("time"), post_id)
+            latest_time = canonical_post_time(
+                (latest_value or {}).get("time"),
+                (latest_value or {}).get("post_id"),
+            )
             # Fetching only the latest post per account misses active accounts that
             # post multiple times in one 20-minute poll window. Now that Grok returns
             # recent 3, deliver any not-yet-seen item within a bounded lookback even
@@ -1505,7 +1580,12 @@ if __name__ == "__main__":
             sys.exit(0)
         print(f"X 监控任务运行失败：{type(exc).__name__}: {exc}")
         sys.exit(1)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        json.JSONDecodeError,
+        ModelResponseParseError,
+    ) as exc:
         # Temporary network/model-output issue. Stay silent and try again next schedule.
         sys.exit(0)
     except Exception as exc:

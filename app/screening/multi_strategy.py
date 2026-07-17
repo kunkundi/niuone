@@ -43,6 +43,7 @@ import sys
 import threading
 import time
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
@@ -466,6 +467,73 @@ def fetch_sector_tide_money_flow() -> dict[str, Any]:
     except Exception as exc:
         print(f"[WARN] sector tide money flow unavailable: {type(exc).__name__}; using volume fallback", file=sys.stderr)
         return {"inflow": [], "outflow": []}
+
+
+def sector_tide_dragon_tiger_archive_dir() -> Path:
+    """Resolve the archive beside the configured latest-snapshot file."""
+    snapshot_file = Path(
+        os.environ.get("IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE")
+        or B1_OUTPUT_DIR / "iwencai_dragon_tiger_latest.json"
+    ).expanduser()
+    return snapshot_file.parent / "iwencai_dragon_tiger"
+
+
+def load_previous_sector_tide_dragon_tiger(
+    now: datetime | None = None,
+    *,
+    archive_dir: Path | None = None,
+    status_loader: Callable[..., dict[str, Any]] | None = None,
+    archive_reader: Callable[..., dict[str, Any] | None] | None = None,
+) -> dict[str, Any]:
+    """Load only the exact prior A-share trading-day archive; never use same-day data."""
+    if status_loader is None:
+        from a_share_calendar import trading_day_status
+
+        status_loader = trading_day_status
+    if archive_reader is None:
+        from dashboard.apis.iwencai_service import read_dragon_tiger_archive
+
+        archive_reader = read_dragon_tiger_archive
+
+    current = now or datetime.now()
+    try:
+        calendar = status_loader(current, allow_refresh=False)
+    except Exception as exc:
+        return {
+            "available": False,
+            "source": "local_dragon_tiger_archive",
+            "date": "",
+            "requested_date": "",
+            "items": [],
+            "error": f"calendar_{type(exc).__name__}",
+        }
+    previous_date = str(calendar.get("previous_trading_day") or "")
+    unavailable = {
+        "available": False,
+        "source": "local_dragon_tiger_archive",
+        "date": previous_date,
+        "requested_date": previous_date,
+        "items": [],
+        "calendar_source": str(calendar.get("source") or ""),
+    }
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", previous_date):
+        unavailable["error"] = "previous_trading_day_unavailable"
+        return unavailable
+    try:
+        snapshot = archive_reader(
+            archive_dir or sector_tide_dragon_tiger_archive_dir(),
+            trade_date=previous_date,
+        )
+    except Exception as exc:
+        unavailable["error"] = f"archive_read_{type(exc).__name__}"
+        return unavailable
+    if not isinstance(snapshot, dict):
+        unavailable["error"] = "archive_missing"
+        return unavailable
+    payload = dict(snapshot)
+    payload["requested_date"] = previous_date
+    payload["calendar_source"] = str(calendar.get("source") or "")
+    return payload
 
 
 def load_a_share_code_pool(stock_universe: object | None = None):
@@ -1085,13 +1153,17 @@ def main():
             market_snapshot=market_snapshot,
             flow_rows=fetch_sector_tide_money_flow(),
             previous_market=load_previous_sector_tide_market(),
+            dragon_tiger_snapshot=load_previous_sector_tide_dragon_tiger(),
         )
         market = sector_tide_context.get("market") or {}
+        dragon_tiger = sector_tide_context.get("dragon_tiger") or {}
         print(
             "  Tide context: "
             f"market={market.get('state')} score={market.get('score')} "
             f"sectors={sector_tide_context.get('sector_count')} "
-            f"coverage={sector_tide_context.get('data_coverage')}",
+            f"coverage={sector_tide_context.get('data_coverage')} "
+            f"dragon_tiger={dragon_tiger.get('as_of_date') or 'unavailable'} "
+            f"matched={dragon_tiger.get('matched_stock_count', 0)}",
             file=sys.stderr,
         )
 
@@ -1166,6 +1238,26 @@ def main():
             "sector_breadth20": best.get("sector_breadth20"),
             "stock_sector_rank": best.get("stock_sector_rank"),
             "stock_market_rank": best.get("stock_market_rank"),
+            "score_before_dragon_tiger": best.get("score_before_dragon_tiger"),
+            "dragon_tiger_available": best.get("dragon_tiger_available"),
+            "dragon_tiger_as_of_date": best.get("dragon_tiger_as_of_date"),
+            "dragon_tiger_source": best.get("dragon_tiger_source"),
+            "dragon_tiger_seat_data_complete": best.get("dragon_tiger_seat_data_complete"),
+            "dragon_tiger_listed": best.get("dragon_tiger_listed"),
+            "dragon_tiger_score": best.get("dragon_tiger_score"),
+            "dragon_tiger_signal": best.get("dragon_tiger_signal"),
+            "dragon_tiger_confidence": best.get("dragon_tiger_confidence"),
+            "dragon_tiger_adjustment": best.get("dragon_tiger_adjustment"),
+            "dragon_tiger_positive_suppressed": best.get("dragon_tiger_positive_suppressed"),
+            "dragon_tiger_net_amount_yuan": best.get("dragon_tiger_net_amount_yuan"),
+            "dragon_tiger_net_ratio_pct": best.get("dragon_tiger_net_ratio_pct"),
+            "dragon_tiger_seat_net_amount_yuan": best.get("dragon_tiger_seat_net_amount_yuan"),
+            "dragon_tiger_institution_net_amount_yuan": best.get("dragon_tiger_institution_net_amount_yuan"),
+            "dragon_tiger_seat_record_count": best.get("dragon_tiger_seat_record_count"),
+            "dragon_tiger_institution_record_count": best.get("dragon_tiger_institution_record_count"),
+            "sector_dragon_tiger_score": best.get("sector_dragon_tiger_score"),
+            "sector_dragon_tiger_adjustment": best.get("sector_dragon_tiger_adjustment"),
+            "sector_dragon_tiger_listed_count": best.get("sector_dragon_tiger_listed_count"),
             "ema20": best.get("ema20"),
             "ema50": best.get("ema50"),
             "atr20": best.get("atr20"),

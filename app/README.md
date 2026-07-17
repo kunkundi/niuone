@@ -9,7 +9,7 @@
 | `core/` | 路径、缓存等基础设施 |
 | `dashboard/` | Dashboard 服务、API 与安全辅助 |
 | `entrypoints/` | Dashboard、调度器、监控与报告等可执行入口 |
-| `market_data/` | A 股行情工具 |
+| `market_data/` | 行情访问、证券代码规范化与问财研究数据客户端 |
 | `messaging/` | 通知模型、渠道、分发与兼容层 |
 | `monitoring/x/` | X 监控服务、解析、格式化与状态规则 |
 | `reports/a_share/` | A 股竞价、午盘、盘后、日历与 Grok 报告 |

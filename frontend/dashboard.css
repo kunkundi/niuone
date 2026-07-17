@@ -89,6 +89,8 @@
     .market-strip { display:flex; gap:12px; overflow-x:auto; margin:0 0 16px; padding-bottom:4px; scrollbar-width:none; }
     .market-strip::-webkit-scrollbar { display:none; }
     .indices-page { display:grid; gap:14px; }
+    .indices-cache-notice { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; padding:9px 12px; border:1px solid rgba(56,189,248,.22); border-radius:12px; color:#bae6fd; background:rgba(14,116,144,.12); font-size:12px; font-weight:700; }
+    .indices-cache-notice span:last-child { color:#7dd3fc; font-variant-numeric:tabular-nums; }
     .indices-switch { width:min(320px,100%); display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:3px; padding:3px; border:1px solid rgba(148,163,184,.16); border-radius:14px; background:rgba(2,6,23,.46); box-shadow:inset 0 1px 0 rgba(255,255,255,.035); }
     .indices-switch-btn { appearance:none; border:0; border-radius:10px; margin:0; padding:9px 12px; min-width:0; color:#94a3b8; background:transparent; font-size:14px; line-height:1; font-weight:850; }
     .indices-switch-btn.active { color:#f8fafc; background:linear-gradient(135deg, rgba(124,92,255,.86), rgba(36,198,220,.58)); box-shadow:0 8px 22px rgba(124,92,255,.18), inset 0 1px 0 rgba(255,255,255,.10); }
@@ -487,6 +489,116 @@
     .practice-calendar-rate.down, .practice-calendar-amount.down, .practice-calendar-stat-value.down { color:#39d98a; }
     .practice-calendar-no-data { align-self:end; color:#708099; font-size:10px; line-height:1; }
     .practice-calendar-day.weekend .practice-calendar-no-data { display:none; }
+    .dragon-tiger-panel { width:100%; max-width:900px; margin-inline:auto; padding:0; }
+    .dragon-tiger-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:18px 20px 15px; border-bottom:1px solid rgba(148,163,184,.12); background:linear-gradient(135deg, rgba(124,92,255,.12), rgba(36,198,220,.06)); }
+    .dragon-tiger-head h2 { margin:0; color:#f8fafc; font-size:20px; line-height:1.25; font-weight:900; letter-spacing:-.02em; }
+    .dragon-tiger-sub { margin-top:5px; color:#8290a5; font-size:12px; }
+    .dragon-tiger-head-actions { display:grid; justify-items:end; gap:8px; }
+    .dragon-tiger-date-controls { display:flex; align-items:center; gap:5px; }
+    .dragon-tiger-date-controls input { min-width:132px; width:132px; border:1px solid rgba(148,163,184,.18); border-radius:8px; padding:5px 7px; color:#dbe5f2; background:rgba(15,23,42,.72); font-size:11px; color-scheme:dark; }
+    .dragon-tiger-date-controls button { min-width:0; border:1px solid rgba(124,92,255,.28); border-radius:8px; padding:5px 8px; color:#ddd6fe; background:rgba(124,92,255,.10); font-size:11px; font-weight:800; }
+    .dragon-tiger-date-controls button:hover { background:rgba(124,92,255,.20); }
+    .dragon-tiger-status { flex:0 0 auto; border:1px solid rgba(52,211,153,.24); border-radius:999px; padding:5px 9px; color:#a7f3d0; background:rgba(6,78,59,.17); font-size:11px; font-weight:800; white-space:nowrap; }
+    .dragon-tiger-status.stale { border-color:rgba(251,191,36,.28); color:#fde68a; background:rgba(120,53,15,.18); }
+    .dragon-tiger-list .up { color:#fb7185; }
+    .dragon-tiger-list .down { color:#34d399; }
+    .dragon-tiger-list { min-width:0; border-top:1px solid rgba(148,163,184,.10); overflow:hidden; }
+    .dragon-tiger-list-head, .dragon-tiger-item > summary { display:grid; min-width:0; grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) minmax(72px,.55fr) minmax(96px,.7fr); gap:clamp(7px,1.3vw,16px); align-items:center; padding:11px 40px 11px 20px; }
+    .dragon-tiger-list-head { color:#7f8da3; background:#0b101a; font-size:11px; font-weight:850; }
+    .dragon-tiger-list-head > :nth-child(n+3), .dragon-tiger-item > summary span:nth-child(n+3) { text-align:right; }
+    .dragon-tiger-sort-btn { display:flex; align-items:center; gap:4px; min-width:0; width:100%; border:0; border-radius:4px; padding:2px 0; color:inherit; background:transparent; font:inherit; font-weight:inherit; text-align:left; cursor:pointer; transition:color .16s ease,background .16s ease; }
+    .dragon-tiger-sort-btn:nth-child(n+3) { justify-content:flex-end; }
+    .dragon-tiger-sort-btn span:first-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .dragon-tiger-sort-btn:hover { color:#c4b5fd; background:rgba(124,92,255,.08); }
+    .dragon-tiger-sort-btn.active { color:#ddd6fe; }
+    .dragon-tiger-sort-btn:focus-visible { outline:2px solid rgba(167,139,250,.78); outline-offset:3px; }
+    .dragon-tiger-sort-indicator { flex:0 0 auto; color:#607089; font-size:10px; line-height:1; }
+    .dragon-tiger-sort-btn.active .dragon-tiger-sort-indicator { color:#a78bfa; }
+    .dragon-tiger-item { border-bottom:1px solid rgba(148,163,184,.09); }
+    .dragon-tiger-item > summary { position:relative; min-height:44px; color:#dbe5f2; cursor:pointer; list-style:none; transition:background .16s ease; }
+    .dragon-tiger-item > summary::-webkit-details-marker { display:none; }
+    .dragon-tiger-item > summary::after { content:'›'; position:absolute; right:22px; color:#64748b; font-size:20px; line-height:1; transform:rotate(0deg); transition:transform .16s ease,color .16s ease; }
+    .dragon-tiger-item > summary:hover { background:rgba(124,92,255,.07); }
+    .dragon-tiger-item[open] > summary { background:rgba(124,92,255,.09); }
+    .dragon-tiger-item[open] > summary::after { color:#c4b5fd; transform:rotate(90deg); }
+    .dragon-tiger-list-name { display:flex; align-items:center; gap:5px; min-width:0; overflow:hidden; color:#f8fafc; font-size:13px; font-weight:850; white-space:nowrap; }
+    .dragon-tiger-list-name > span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+    .dragon-tiger-streak { flex:0 0 auto; border:1px solid currentColor; border-radius:999px; padding:1px 4px; font-size:9px; font-weight:850; line-height:1.25; }
+    .dragon-tiger-streak.limit-up { color:#fb7185; background:rgba(190,24,93,.10); }
+    .dragon-tiger-streak.limit-down { color:#34d399; background:rgba(5,150,105,.10); }
+    .dragon-tiger-seat-badge { flex:0 0 auto; border:1px solid rgba(96,165,250,.40); border-radius:999px; padding:1px 4px; color:#bfdbfe; background:rgba(30,64,175,.14); font-size:9px; font-weight:850; line-height:1.25; }
+    .dragon-tiger-list-sector { min-width:0; overflow:hidden; color:#a9b6c8; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+    .dragon-tiger-list-number { font-size:13px; font-weight:850; font-variant-numeric:tabular-nums; white-space:nowrap; }
+    .dragon-tiger-detail { padding:12px 20px 16px; background:rgba(2,6,23,.30); }
+    .dragon-tiger-detail-meta { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); overflow:hidden; margin:0 0 10px; border:1px solid rgba(148,163,184,.11); border-radius:11px; background:rgba(15,23,42,.35); }
+    .dragon-tiger-detail-meta > span { min-width:0; border-left:1px solid rgba(148,163,184,.09); padding:9px 11px; }
+    .dragon-tiger-detail-meta > span:first-child { border-left:0; }
+    .dragon-tiger-detail-meta small, .dragon-tiger-detail-values small { display:block; color:#697990; font-size:9px; }
+    .dragon-tiger-detail-meta b, .dragon-tiger-detail-values b { display:block; margin-top:3px; overflow:hidden; color:#dce6f3; font-size:11px; font-variant-numeric:tabular-nums; text-overflow:ellipsis; white-space:nowrap; }
+    .dragon-tiger-reasons { margin:0 0 10px; border:1px solid rgba(167,139,250,.15); border-left:3px solid rgba(167,139,250,.52); border-radius:10px; padding:9px 10px; background:rgba(76,29,149,.07); }
+    .dragon-tiger-reasons-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .dragon-tiger-reasons-head b { color:#ddd6fe; font-size:12px; }
+    .dragon-tiger-reasons-head span { flex:0 0 auto; color:#8b9ab0; font-size:10px; }
+    .dragon-tiger-reason-list { display:grid; gap:5px; margin:6px 0 0; padding:0; list-style:none; }
+    .dragon-tiger-reason-list li { display:grid; grid-template-columns:18px minmax(0,1fr); gap:7px; align-items:start; color:#d2d9e5; font-size:11px; line-height:1.5; }
+    .dragon-tiger-reason-list li > b { display:grid; place-items:center; width:18px; height:18px; border-radius:999px; color:#c4b5fd; background:rgba(124,92,255,.16); font-size:9px; }
+    .dragon-tiger-reason-list li > span { min-width:0; overflow-wrap:anywhere; }
+    .dragon-tiger-reason-empty { margin-top:8px; color:#697990; font-size:11px; }
+    .dragon-tiger-seats { margin:0 0 10px; border:1px solid rgba(96,165,250,.17); border-radius:11px; padding:10px; background:linear-gradient(135deg,rgba(30,64,175,.10),rgba(15,23,42,.38)); }
+    .dragon-tiger-seats-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .dragon-tiger-seats-head b { color:#bfdbfe; font-size:12px; }
+    .dragon-tiger-seats-head span { color:#8290a5; font-size:10px; }
+    .dragon-tiger-seat-notice { margin-top:7px; border-radius:7px; padding:6px 8px; color:#fde68a; background:rgba(120,53,15,.16); font-size:10px; line-height:1.45; }
+    .dragon-tiger-seat-groups { display:grid; gap:8px; margin-top:8px; }
+    .dragon-tiger-seat-group { border-top:1px solid rgba(96,165,250,.10); padding-top:8px; }
+    .dragon-tiger-seat-group-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .dragon-tiger-seat-group-head b { color:#a5b4fc; font-size:11px; }
+    .dragon-tiger-seat-group > p { margin:4px 0 0; color:#8290a5; font-size:10px; line-height:1.45; }
+    .dragon-tiger-seat-sides { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; align-items:start; margin-top:7px; }
+    .dragon-tiger-seat-side { min-width:0; overflow:hidden; border:1px solid rgba(148,163,184,.11); border-radius:10px; background:rgba(8,15,29,.42); }
+    .dragon-tiger-seat-side.buy { border-color:rgba(251,113,133,.18); }
+    .dragon-tiger-seat-side.sell { border-color:rgba(52,211,153,.18); }
+    .dragon-tiger-seat-side-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 8px; border-bottom:1px solid rgba(148,163,184,.09); }
+    .dragon-tiger-seat-side-head b { color:#cbd5e1; font-size:10px; }
+    .dragon-tiger-seat-side.buy .dragon-tiger-seat-side-head b { color:#fda4af; }
+    .dragon-tiger-seat-side.sell .dragon-tiger-seat-side-head b { color:#6ee7b7; }
+    .dragon-tiger-seat-side-head span { color:#718198; font-size:9px; }
+    .dragon-tiger-seat-records { display:grid; padding:0 9px; }
+    .dragon-tiger-seat-record { padding:10px 0; }
+    .dragon-tiger-seat-record + .dragon-tiger-seat-record { border-top:1px solid rgba(96,165,250,.10); }
+    .dragon-tiger-seat-record-head { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:7px; align-items:center; }
+    .dragon-tiger-seat-record-head b { min-width:0; color:#e5edf8; font-size:11px; line-height:1.45; overflow-wrap:anywhere; }
+    .dragon-tiger-seat-rank { display:grid; place-items:center; min-width:25px; height:20px; border-radius:6px; font-size:9px; font-weight:850; font-variant-numeric:tabular-nums; }
+    .dragon-tiger-seat-rank.buy { color:#fda4af; background:rgba(190,24,93,.13); }
+    .dragon-tiger-seat-rank.sell { color:#6ee7b7; background:rgba(5,150,105,.13); }
+    .dragon-tiger-seat-category { border:1px solid rgba(148,163,184,.25); border-radius:999px; padding:1px 4px; color:#aab8ca; font-size:8px; font-style:normal; }
+    .dragon-tiger-seat-category.institution { border-color:rgba(96,165,250,.38); color:#bfdbfe; }
+    .dragon-tiger-seat-category.quant { border-color:rgba(167,139,250,.38); color:#ddd6fe; }
+    .dragon-tiger-seat-category.hot-money { border-color:rgba(251,146,60,.38); color:#fed7aa; }
+    .dragon-tiger-seat-values { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:hidden; margin-top:7px; white-space:nowrap; }
+    .dragon-tiger-seat-values > span { display:flex; min-width:0; align-items:baseline; gap:3px; padding:0 7px; white-space:nowrap; }
+    .dragon-tiger-seat-values > span + span { border-left:1px solid rgba(96,165,250,.09); }
+    .dragon-tiger-seat-values small { flex:0 0 auto; color:#6f819a; font-size:8px; }
+    .dragon-tiger-seat-values b { min-width:0; overflow:hidden; color:#dce6f3; font-size:10px; font-variant-numeric:tabular-nums; text-overflow:ellipsis; white-space:nowrap; }
+    .dragon-tiger-seat-side-empty { padding:10px 4px; color:#64748b; font-size:10px; text-align:center; }
+    .dragon-tiger-seat-empty { margin-top:8px; color:#718198; font-size:11px; line-height:1.5; }
+    .dragon-tiger-funds { margin:0 0 10px; }
+    .dragon-tiger-funds-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 2px 7px; }
+    .dragon-tiger-funds-head b { color:#c4b5fd; font-size:12px; }
+    .dragon-tiger-funds-head span { color:#718198; font-size:10px; }
+    .dragon-tiger-detail-records { display:grid; gap:8px; }
+    .dragon-tiger-detail-record { border:1px solid rgba(148,163,184,.10); border-radius:11px; padding:10px 11px; background:rgba(9,14,25,.60); }
+    .dragon-tiger-detail-record-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .dragon-tiger-detail-record-head b { color:#c4b5fd; font-size:11px; }
+    .dragon-tiger-detail-record-head span { color:#66758b; font-size:10px; }
+    .dragon-tiger-detail-record p { margin:7px 0 0; color:#b6c1d1; font-size:11px; line-height:1.5; }
+    .dragon-tiger-detail-values { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); margin-top:9px; border-top:1px solid rgba(148,163,184,.09); padding-top:9px; }
+    .dragon-tiger-detail-values > span { min-width:0; border-left:1px solid rgba(148,163,184,.09); padding:0 10px; }
+    .dragon-tiger-detail-values > span:first-child { border-left:0; padding-left:0; }
+    .dragon-tiger-foot { padding:10px 20px 13px; color:#64748b; font-size:10px; text-align:right; }
+    .dragon-tiger-unavailable { margin:18px 20px 20px; display:grid; justify-items:start; gap:7px; border:1px dashed rgba(148,163,184,.20); border-radius:14px; padding:24px; color:#94a3b8; background:rgba(2,6,23,.32); }
+    .dragon-tiger-unavailable b { color:#dbeafe; }
+    .dragon-tiger-unavailable a { margin-top:4px; border:1px solid rgba(124,92,255,.34); border-radius:9px; padding:7px 10px; color:#ddd6fe; background:rgba(124,92,255,.14); text-decoration:none; font-size:12px; font-weight:850; }
     .mobile-only { display:none; }
     .empty { color:var(--muted); text-align:center; padding:42px; border:1px dashed var(--line); border-radius:18px; }
     .right { margin-left:auto; }
@@ -532,6 +644,35 @@
       button { width:auto; min-width:78px; padding:8px 9px; font-size:13px; }
       main { padding:8px 8px 28px; }
       .feed { gap:11px; }
+      .dragon-tiger-head { display:grid; gap:9px; padding:13px 12px 11px; }
+      .dragon-tiger-head h2 { font-size:17px; }
+      .dragon-tiger-sub { font-size:10.5px; line-height:1.5; }
+      .dragon-tiger-head-actions { justify-items:start; width:100%; }
+      .dragon-tiger-date-controls { width:100%; }
+      .dragon-tiger-date-controls input { grid-column:auto; min-width:0; width:auto; flex:1 1 auto; }
+      .dragon-tiger-date-controls button { flex:0 0 auto; min-width:48px; padding:6px 7px; font-size:10.5px; }
+      .dragon-tiger-status { justify-self:start; font-size:10px; white-space:normal; }
+      .dragon-tiger-list-head, .dragon-tiger-item > summary { width:100%; grid-template-columns:minmax(0,1.15fr) minmax(0,.9fr) 58px 78px; gap:6px; padding:10px 27px 10px 10px; }
+      .dragon-tiger-list-head { font-size:10px; }
+      .dragon-tiger-sort-btn { min-width:0; width:100%; gap:2px; padding:2px 0; font-size:inherit; }
+      .dragon-tiger-sort-indicator { font-size:9px; }
+      .dragon-tiger-item > summary::after { right:9px; font-size:17px; }
+      .dragon-tiger-list-name, .dragon-tiger-list-number { font-size:11.5px; }
+      .dragon-tiger-list-name { gap:3px; }
+      .dragon-tiger-streak { padding:1px 3px; font-size:8px; }
+      .dragon-tiger-list-sector { font-size:10.5px; }
+      .dragon-tiger-detail { width:100%; min-width:0; padding:3px 10px 12px; }
+      .dragon-tiger-detail-meta, .dragon-tiger-detail-values { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .dragon-tiger-detail-meta > span:nth-child(odd), .dragon-tiger-detail-values > span:nth-child(odd) { border-left:0; }
+      .dragon-tiger-detail-meta > span:nth-child(n+3) { border-top:1px solid rgba(148,163,184,.09); }
+      .dragon-tiger-detail-values > span:nth-child(n+3) { margin-top:8px; border-top:1px solid rgba(148,163,184,.09); padding-top:8px; }
+      .dragon-tiger-reasons { padding:9px; }
+      .dragon-tiger-reason-list li { gap:6px; font-size:11.5px; }
+      .dragon-tiger-seats { padding:9px; }
+      .dragon-tiger-seat-sides { grid-template-columns:minmax(0,1fr); }
+      .dragon-tiger-seat-values > span { padding-inline:5px; }
+      .dragon-tiger-foot { padding:9px 12px 11px; text-align:left; }
+      .dragon-tiger-unavailable { margin:12px; padding:18px; }
       .card { padding:13px 12px; border-radius:14px; box-shadow:0 4px 12px rgba(0,0,0,0.2); }
       .mobile-head { display:flex; justify-content:flex-end; gap:8px; align-items:flex-start; color:rgba(148,163,184,0.65); font-size:12px; margin-bottom:10px; }
       .mobile-head b { color:var(--text); font-size:14px; font-weight:700; }
@@ -673,6 +814,7 @@
       .practice-calendar-amount { font-size:8px; }
       .market-strip { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:7px; margin:0 0 9px; }
       .indices-page { gap:11px; }
+      .indices-cache-notice { align-items:flex-start; flex-direction:column; gap:3px; }
       .indices-switch { width:100%; }
       .indices-switch-btn { padding:8px 10px; font-size:13px; }
       .indices-part-title-row { gap:8px; }

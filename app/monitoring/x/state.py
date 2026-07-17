@@ -8,6 +8,10 @@ from typing import Any
 from .content import has_recovered_context
 
 
+CN_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
+X_SNOWFLAKE_EPOCH_MS = 1288834974657
+
+
 def parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -21,19 +25,63 @@ def parse_post_time(value: object) -> datetime | None:
     if not value:
         return None
     text = str(value).strip()
+    zone_match = re.search(r"\s*(北京时间|GMT|UTC)$", text, flags=re.I)
+    zone_label = zone_match.group(1).lower() if zone_match else ""
     text = re.sub(r"\s*(北京时间|GMT|UTC)$", "", text, flags=re.I).strip()
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M"):
         try:
-            return datetime.strptime(text, fmt)
+            parsed = datetime.strptime(text, fmt)
+            if zone_label in {"gmt", "utc"}:
+                return parsed.replace(tzinfo=timezone.utc).astimezone(CN_TZ).replace(tzinfo=None)
+            return parsed
         except ValueError:
             pass
     parsed = parse_iso(text)
-    return parsed.replace(tzinfo=None) if parsed else None
+    if not parsed:
+        return None
+    if parsed.tzinfo:
+        return parsed.astimezone(CN_TZ).replace(tzinfo=None)
+    if zone_label in {"gmt", "utc"}:
+        return parsed.replace(tzinfo=timezone.utc).astimezone(CN_TZ).replace(tzinfo=None)
+    return parsed
+
+
+def x_snowflake_post_time(post_id: object) -> datetime | None:
+    """Return the authoritative Beijing wall time encoded by a modern X post ID."""
+    text = str(post_id or "").strip()
+    if not re.fullmatch(r"\d{15,20}", text):
+        return None
+    try:
+        timestamp_ms = (int(text) >> 22) + X_SNOWFLAKE_EPOCH_MS
+        parsed = datetime.fromtimestamp(timestamp_ms / 1000, timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    if parsed.year < 2010 or parsed.year > 2200:
+        return None
+    return parsed.astimezone(CN_TZ).replace(tzinfo=None)
+
+
+def canonical_post_time(value: object, post_id: object = None) -> datetime | None:
+    """Prefer an X Snowflake timestamp, falling back to a normalized model time."""
+    return x_snowflake_post_time(post_id) or parse_post_time(value)
+
+
+def normalize_post_time(post: dict[str, Any], post_id: object = None) -> dict[str, Any]:
+    """Return a post copy whose time is a timezone-free Beijing wall time string."""
+    normalized = dict(post)
+    resolved_id = post_id or normalized.get("post_id")
+    post_time = canonical_post_time(normalized.get("time"), resolved_id)
+    if post_time:
+        normalized["time"] = post_time.strftime("%Y-%m-%d %H:%M:%S")
+    return normalized
 
 
 def is_newer_post(post: dict[str, Any], latest_value: dict[str, Any] | None, post_id: object) -> bool:
-    latest_time = parse_post_time((latest_value or {}).get("time"))
-    post_time = parse_post_time(post.get("time"))
+    latest_time = canonical_post_time(
+        (latest_value or {}).get("time"),
+        (latest_value or {}).get("post_id"),
+    )
+    post_time = canonical_post_time(post.get("time"), post_id or post.get("post_id"))
     if latest_time and post_time:
         return post_time > latest_time
     latest_id = str((latest_value or {}).get("post_id") or "").strip()
@@ -44,7 +92,7 @@ def choose_latest_value(existing_latest: dict[str, Any] | None, posts: list[dict
     newest_post = None
     newest_time = None
     for post in posts or []:
-        post_time = parse_post_time(post.get("time"))
+        post_time = canonical_post_time(post.get("time"), post.get("post_id"))
         if post_time and (newest_time is None or post_time > newest_time):
             newest_post = post
             newest_time = post_time
@@ -55,12 +103,21 @@ def choose_latest_value(existing_latest: dict[str, Any] | None, posts: list[dict
 
     candidate = {
         "post_id": str(newest_post.get("post_id") or "").strip(),
-        "time": newest_post.get("time"),
+        "time": (
+            newest_time.strftime("%Y-%m-%d %H:%M:%S")
+            if newest_time
+            else newest_post.get("time")
+        ),
         "display_name": display_name,
     }
-    existing_time = parse_post_time((existing_latest or {}).get("time"))
+    existing_time = canonical_post_time(
+        (existing_latest or {}).get("time"),
+        (existing_latest or {}).get("post_id"),
+    )
     if existing_time and newest_time and existing_time >= newest_time:
-        return existing_latest or {}
+        normalized_existing = dict(existing_latest or {})
+        normalized_existing["time"] = existing_time.strftime("%Y-%m-%d %H:%M:%S")
+        return normalized_existing
     return candidate
 
 
@@ -78,8 +135,12 @@ def merge_seen_ids(seen: dict[str, list[str]], pending_seen_ids: dict[str, list[
 
 def merge_latest(latest: dict[str, dict[str, Any]], pending_latest: dict[str, dict[str, Any]] | None) -> None:
     for handle, value in (pending_latest or {}).items():
-        current_time = parse_post_time((latest.get(handle) or {}).get("time"))
-        value_time = parse_post_time((value or {}).get("time"))
+        current = latest.get(handle) or {}
+        current_time = canonical_post_time(current.get("time"), current.get("post_id"))
+        value_time = canonical_post_time((value or {}).get("time"), (value or {}).get("post_id"))
+        if value_time:
+            value = dict(value)
+            value["time"] = value_time.strftime("%Y-%m-%d %H:%M:%S")
         if not current_time or not value_time or value_time >= current_time:
             latest[handle] = value
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import statistics
 from collections import defaultdict
-from typing import Any
+from typing import Any, Mapping
 
 from ..sector_tide_risk import (
     SECTOR_TIDE_ABSOLUTE_POSITION_CAP_PCT,
@@ -21,6 +21,8 @@ from .common import safe_float, safe_round, with_strategy_profile
 SECTOR_TIDE_STRATEGY_IDS = frozenset({"tide_leader", "tide_rotation", "tide_recovery"})
 SECTOR_TIDE_MIN_MEMBERS = 3
 SECTOR_TIDE_MIN_ROWS = 55
+SECTOR_TIDE_DRAGON_TIGER_MAX_SECTOR_ADJUSTMENT = 2.5
+SECTOR_TIDE_DRAGON_TIGER_MAX_STOCK_ADJUSTMENT = 0.35
 
 
 def _mean(values: list[float], default: float = 0.0) -> float:
@@ -31,12 +33,175 @@ def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
     return max(low, min(high, value))
 
 
+def _clamp_signed(value: float) -> float:
+    return _clamp(value, -1.0, 1.0)
+
+
 def _industry_name(value: Any) -> str:
     text = re.sub(r"\s+", "", str(value or "")).strip()
     for suffix in ("行业", "板块", "概念", "指数"):
         if text.endswith(suffix) and len(text) > len(suffix) + 1:
             text = text[: -len(suffix)]
     return text
+
+
+def _stock_code(value: Any) -> str:
+    matched = re.search(r"\d{6}", str(value or ""))
+    return matched.group(0) if matched else ""
+
+
+def _dragon_tiger_direction_strength(
+    *,
+    net_amount: Any,
+    buy_amount: Any,
+    sell_amount: Any,
+    net_ratio_pct: Any = None,
+) -> float | None:
+    """Normalize one leaderboard balance without letting absolute size dominate."""
+    net = safe_float(net_amount)
+    buy = safe_float(buy_amount)
+    sell = safe_float(sell_amount)
+    ratio = safe_float(net_ratio_pct)
+    if net is None and buy is not None and sell is not None:
+        net = buy - sell
+    if net is None:
+        return None
+    if ratio is not None:
+        return _clamp_signed(ratio / 15.0)
+    gross = max(0.0, buy or 0.0) + max(0.0, sell or 0.0)
+    if gross > 0:
+        return _clamp_signed((net / gross) / 0.40)
+    return _clamp_signed(net / 50_000_000.0)
+
+
+def _dragon_tiger_item_signal(
+    item: Mapping[str, Any],
+    *,
+    seat_data_complete: bool,
+) -> dict[str, Any]:
+    """Build a bounded confirmation signal from the main list and top-five seats."""
+    main_strength = _dragon_tiger_direction_strength(
+        net_amount=item.get("net_amount_yuan"),
+        buy_amount=item.get("buy_amount_yuan"),
+        sell_amount=item.get("sell_amount_yuan"),
+        net_ratio_pct=item.get("net_ratio_pct"),
+    )
+    components: list[tuple[float, float]] = []
+    if main_strength is not None:
+        components.append((main_strength, 0.70))
+
+    if seat_data_complete and int(safe_float(item.get("seat_record_count")) or 0) > 0:
+        seat_strength = _dragon_tiger_direction_strength(
+            net_amount=item.get("seat_net_amount_yuan"),
+            buy_amount=item.get("seat_buy_amount_yuan"),
+            sell_amount=item.get("seat_sell_amount_yuan"),
+        )
+        if seat_strength is not None:
+            components.append((seat_strength, 0.20))
+    if seat_data_complete and int(safe_float(item.get("institution_record_count")) or 0) > 0:
+        institution_strength = _dragon_tiger_direction_strength(
+            net_amount=item.get("institution_net_amount_yuan"),
+            buy_amount=item.get("institution_buy_amount_yuan"),
+            sell_amount=item.get("institution_sell_amount_yuan"),
+        )
+        if institution_strength is not None:
+            components.append((institution_strength, 0.10))
+
+    total_weight = sum(weight for _value, weight in components)
+    strength = (
+        sum(value * weight for value, weight in components) / total_weight
+        if total_weight > 0
+        else 0.0
+    )
+    net = safe_float(item.get("net_amount_yuan"))
+    buy = safe_float(item.get("buy_amount_yuan"))
+    sell = safe_float(item.get("sell_amount_yuan"))
+    if net is None and buy is not None and sell is not None:
+        net = buy - sell
+    ratio = safe_float(item.get("net_ratio_pct"))
+    if ratio is None and net is not None:
+        gross = max(0.0, buy or 0.0) + max(0.0, sell or 0.0)
+        ratio = net / gross * 100 if gross > 0 else None
+    signal = "positive" if strength >= 0.15 else ("negative" if strength <= -0.15 else "neutral")
+    return {
+        "listed": True,
+        "score": round(50 + strength * 35, 2),
+        "strength": round(strength, 4),
+        "signal": signal,
+        "confidence": round(total_weight, 2),
+        "net_amount_yuan": net,
+        "net_ratio_pct": safe_round(ratio, 3),
+        "seat_net_amount_yuan": safe_float(item.get("seat_net_amount_yuan")),
+        "institution_net_amount_yuan": safe_float(item.get("institution_net_amount_yuan")),
+        "seat_record_count": int(safe_float(item.get("seat_record_count")) or 0),
+        "institution_record_count": int(safe_float(item.get("institution_record_count")) or 0),
+    }
+
+
+def _dragon_tiger_context(
+    snapshot: Any,
+    members: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Map an exact prior-day archive onto this scan's stock and industry universe."""
+    source = snapshot if isinstance(snapshot, Mapping) else {}
+    items = source.get("items") if isinstance(source.get("items"), list) else []
+    available = source.get("available") is True and bool(items)
+    member_by_code = {
+        _stock_code(member.get("code")): member
+        for member in members
+        if _stock_code(member.get("code"))
+    }
+    stock_signals: dict[str, dict[str, Any]] = {}
+    sector_signals: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    seat_data_complete = source.get("seat_data_complete") is True
+    if available:
+        for raw_item in items:
+            if not isinstance(raw_item, Mapping):
+                continue
+            code = _stock_code(raw_item.get("code"))
+            member = member_by_code.get(code)
+            if not code or member is None or code in stock_signals:
+                continue
+            signal = _dragon_tiger_item_signal(
+                raw_item,
+                seat_data_complete=seat_data_complete,
+            )
+            stock_signals[code] = signal
+            industry = str(member.get("industry") or "")
+            if industry:
+                sector_signals[industry].append(signal)
+
+    sectors: dict[str, dict[str, Any]] = {}
+    for industry, signals in sector_signals.items():
+        average_strength = _mean([float(signal["strength"]) for signal in signals])
+        support = min(1.0, len(signals) / 2.0)
+        strength = average_strength * support
+        sectors[industry] = {
+            "listed_count": len(signals),
+            "positive_count": sum(1 for signal in signals if signal["signal"] == "positive"),
+            "negative_count": sum(1 for signal in signals if signal["signal"] == "negative"),
+            "score": round(50 + strength * 35, 2),
+            "strength": round(strength, 4),
+            "adjustment": round(
+                strength * SECTOR_TIDE_DRAGON_TIGER_MAX_SECTOR_ADJUSTMENT,
+                3,
+            ),
+        }
+
+    metadata = {
+        "available": available,
+        "source": str(source.get("source") or "local_dragon_tiger_archive"),
+        "as_of_date": str(source.get("date") or ""),
+        "requested_date": str(source.get("requested_date") or source.get("date") or ""),
+        "archive": source.get("archive") is True,
+        "item_count": len(items),
+        "matched_stock_count": len(stock_signals),
+        "matched_sector_count": len(sectors),
+        "seat_data_complete": seat_data_complete,
+        "error": str(source.get("error") or ""),
+        "usage": "previous_trading_day_confirmation",
+    }
+    return metadata, stock_signals, sectors
 
 
 def _return_pct(rows: list[dict[str, Any]], lookback: int) -> float | None:
@@ -205,6 +370,7 @@ def build_sector_tide_context(
     market_snapshot: dict[str, Any] | None = None,
     flow_rows: Any = None,
     previous_market: dict[str, Any] | None = None,
+    dragon_tiger_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one immutable-style cross-sectional context for a full scan."""
     members = [metric for item in prepared_items if (metric := _member_metrics(item)) is not None]
@@ -216,6 +382,10 @@ def build_sector_tide_context(
     for member in members:
         if member["industry"]:
             grouped[str(member["industry"])].append(member)
+    dragon_tiger, dragon_tiger_stocks, dragon_tiger_sectors = _dragon_tiger_context(
+        dragon_tiger_snapshot,
+        members,
+    )
 
     raw_sectors: dict[str, dict[str, Any]] = {}
     for industry, sector_members in grouped.items():
@@ -251,7 +421,7 @@ def build_sector_tide_context(
         liquidity_percentile = _percentile(sector["amount"], liquidity_population)
         flow_value = _matched_flow(industry, flows)
         flow_score = _percentile(flow_value, flow_population) if flow_value is not None else volume_percentile
-        score = (
+        base_score = (
             sector["rs20_percentile"] * 0.25
             + sector["rs5_percentile"] * 0.15
             + acceleration_percentile * 0.15
@@ -260,6 +430,9 @@ def build_sector_tide_context(
             + flow_score * 0.10
             + liquidity_percentile * 0.05
         )
+        dragon_tiger_sector = dragon_tiger_sectors.get(industry) or {}
+        dragon_tiger_adjustment = float(dragon_tiger_sector.get("adjustment") or 0.0)
+        score = _clamp(base_score + dragon_tiger_adjustment)
         eligible_data = sector["member_count"] >= SECTOR_TIDE_MIN_MEMBERS
         if eligible_data and score >= 75 and sector["rs20_percentile"] >= 70:
             status = "leading"
@@ -271,6 +444,7 @@ def build_sector_tide_context(
             status = "weakening"
         sectors[industry] = {
             **sector,
+            "base_score": round(base_score, 2),
             "score": round(score, 2),
             "status": status,
             "eligible_data": eligible_data,
@@ -284,6 +458,11 @@ def build_sector_tide_context(
             "breadth20": round(sector["breadth20"], 2),
             "new_high20_ratio": round(sector["new_high20_ratio"], 2),
             "volume_ratio": round(sector["volume_ratio"], 2),
+            "dragon_tiger_score": dragon_tiger_sector.get("score", 50.0),
+            "dragon_tiger_adjustment": round(dragon_tiger_adjustment, 3),
+            "dragon_tiger_listed_count": int(dragon_tiger_sector.get("listed_count") or 0),
+            "dragon_tiger_positive_count": int(dragon_tiger_sector.get("positive_count") or 0),
+            "dragon_tiger_negative_count": int(dragon_tiger_sector.get("negative_count") or 0),
         }
 
     stock_context: dict[str, dict[str, Any]] = {}
@@ -294,22 +473,41 @@ def build_sector_tide_context(
         for member in sector_members:
             rs5_rank = _percentile(float(member["ret5"]), sector_ret5)
             rs20_rank = _percentile(float(member["ret20"]), sector_ret20)
+            dragon_tiger_stock = dragon_tiger_stocks.get(str(member["code"])) or {}
+            dragon_tiger_strength = float(dragon_tiger_stock.get("strength") or 0.0)
             stock_context[str(member["code"])] = {
                 "industry": industry,
                 "sector_relative_rank": round(rs20_rank * 0.6 + rs5_rank * 0.4, 2),
                 "market_relative_rank": round(_percentile(float(member["ret20"]), all_ret20), 2),
                 "ret5": round(float(member["ret5"]), 2),
                 "ret20": round(float(member["ret20"]), 2),
+                "dragon_tiger_listed": bool(dragon_tiger_stock.get("listed")),
+                "dragon_tiger_score": dragon_tiger_stock.get("score", 50.0),
+                "dragon_tiger_signal": dragon_tiger_stock.get("signal", "neutral"),
+                "dragon_tiger_confidence": dragon_tiger_stock.get("confidence", 0.0),
+                "dragon_tiger_adjustment": round(
+                    dragon_tiger_strength * SECTOR_TIDE_DRAGON_TIGER_MAX_STOCK_ADJUSTMENT,
+                    3,
+                ),
+                "dragon_tiger_net_amount_yuan": dragon_tiger_stock.get("net_amount_yuan"),
+                "dragon_tiger_net_ratio_pct": dragon_tiger_stock.get("net_ratio_pct"),
+                "dragon_tiger_seat_net_amount_yuan": dragon_tiger_stock.get("seat_net_amount_yuan"),
+                "dragon_tiger_institution_net_amount_yuan": dragon_tiger_stock.get("institution_net_amount_yuan"),
+                "dragon_tiger_seat_record_count": int(dragon_tiger_stock.get("seat_record_count") or 0),
+                "dragon_tiger_institution_record_count": int(
+                    dragon_tiger_stock.get("institution_record_count") or 0
+                ),
             }
 
     return {
-        "version": 2,
+        "version": 3,
         "market": market,
         "market_ret5_pct": round(market_ret5, 2),
         "market_ret20_pct": round(market_ret20, 2),
         "sector_count": len(sectors),
         "mapped_stock_count": len(stock_context),
         "data_coverage": round(len(stock_context) / len(prepared_items), 4) if prepared_items else 0.0,
+        "dragon_tiger": dragon_tiger,
         "sectors": sectors,
         "stocks": stock_context,
     }
@@ -324,6 +522,7 @@ def _entry_metrics(rows: list[dict[str, Any]], context: dict[str, Any]) -> dict[
     sector = (context.get("sectors") or {}).get(industry)
     stock = (context.get("stocks") or {}).get(code)
     market = context.get("market") if isinstance(context.get("market"), dict) else {}
+    dragon_tiger = context.get("dragon_tiger") if isinstance(context.get("dragon_tiger"), dict) else {}
     if not isinstance(sector, dict) or not isinstance(stock, dict):
         return None
     close = safe_float(latest.get("close"))
@@ -377,13 +576,26 @@ def _entry_metrics(rows: list[dict[str, Any]], context: dict[str, Any]) -> dict[
         + liquidity_score * 0.05
         + risk_score * 0.10
     )
-    composite_score = (stock_score * 0.60 + float(sector["score"]) * 0.40) / 10
+    sector_score = float(sector["score"])
+    base_sector_score = float(sector.get("base_score", sector_score))
+    score_before_dragon_tiger = (stock_score * 0.60 + base_sector_score * 0.40) / 10
+    sector_dragon_tiger_adjustment = (sector_score - base_sector_score) * 0.40 / 10
+    raw_dragon_tiger_adjustment = (
+        float(stock.get("dragon_tiger_adjustment") or 0.0)
+        + sector_dragon_tiger_adjustment
+    )
+    dragon_tiger_positive_suppressed = bool(
+        raw_dragon_tiger_adjustment > 0 and (change_pct > 7 or extension_atr > 1.5)
+    )
+    dragon_tiger_adjustment = 0.0 if dragon_tiger_positive_suppressed else raw_dragon_tiger_adjustment
+    composite_score = _clamp(score_before_dragon_tiger + dragon_tiger_adjustment, 0.0, 10.0)
     return {
         "code": code,
         "industry": industry,
         "market": market,
         "sector": sector,
         "stock": stock,
+        "dragon_tiger": dragon_tiger,
         "close": close,
         "ema20": ema20,
         "ema50": ema50,
@@ -404,6 +616,9 @@ def _entry_metrics(rows: list[dict[str, Any]], context: dict[str, Any]) -> dict[
         "effective_loss_distance_pct": effective_distance_pct,
         "risk_ok": risk_ok,
         "stock_score": stock_score,
+        "score_before_dragon_tiger": score_before_dragon_tiger,
+        "dragon_tiger_adjustment": dragon_tiger_adjustment,
+        "dragon_tiger_positive_suppressed": dragon_tiger_positive_suppressed,
         "composite_score": composite_score,
     }
 
@@ -419,6 +634,7 @@ def _payload(
     market = metrics["market"]
     sector = metrics["sector"]
     stock = metrics["stock"]
+    dragon_tiger = metrics["dragon_tiger"]
     budget = sector_tide_risk_budget(str(market.get("state") or ""))
     absolute_position_cap_pct = SECTOR_TIDE_ABSOLUTE_POSITION_CAP_PCT[strategy_name]
     max_position_pct_by_risk = risk_sized_position_cap_pct(
@@ -448,6 +664,29 @@ def _payload(
         "stock_sector_rank": stock.get("sector_relative_rank"),
         "stock_market_rank": stock.get("market_relative_rank"),
         "stock_score": round(metrics["stock_score"], 2),
+        "score_before_dragon_tiger": safe_round(metrics["score_before_dragon_tiger"], 3),
+        "dragon_tiger_available": bool(dragon_tiger.get("available")),
+        "dragon_tiger_as_of_date": dragon_tiger.get("as_of_date"),
+        "dragon_tiger_source": dragon_tiger.get("source"),
+        "dragon_tiger_seat_data_complete": bool(dragon_tiger.get("seat_data_complete")),
+        "dragon_tiger_listed": bool(stock.get("dragon_tiger_listed")),
+        "dragon_tiger_score": stock.get("dragon_tiger_score", 50.0),
+        "dragon_tiger_signal": stock.get("dragon_tiger_signal", "neutral"),
+        "dragon_tiger_confidence": stock.get("dragon_tiger_confidence", 0.0),
+        "dragon_tiger_adjustment": safe_round(metrics["dragon_tiger_adjustment"], 3),
+        "dragon_tiger_positive_suppressed": metrics["dragon_tiger_positive_suppressed"],
+        "dragon_tiger_net_amount_yuan": stock.get("dragon_tiger_net_amount_yuan"),
+        "dragon_tiger_net_ratio_pct": stock.get("dragon_tiger_net_ratio_pct"),
+        "dragon_tiger_seat_net_amount_yuan": stock.get("dragon_tiger_seat_net_amount_yuan"),
+        "dragon_tiger_institution_net_amount_yuan": stock.get("dragon_tiger_institution_net_amount_yuan"),
+        "dragon_tiger_seat_record_count": stock.get("dragon_tiger_seat_record_count", 0),
+        "dragon_tiger_institution_record_count": stock.get(
+            "dragon_tiger_institution_record_count",
+            0,
+        ),
+        "sector_dragon_tiger_score": sector.get("dragon_tiger_score", 50.0),
+        "sector_dragon_tiger_adjustment": sector.get("dragon_tiger_adjustment", 0.0),
+        "sector_dragon_tiger_listed_count": sector.get("dragon_tiger_listed_count", 0),
         "ema20": safe_round(metrics["ema20"], 3),
         "ema50": safe_round(metrics["ema50"], 3),
         "atr20": safe_round(metrics["atr20"], 3),

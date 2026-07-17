@@ -75,6 +75,8 @@ class DashboardAuthTests(unittest.TestCase):
         self.original_stats_db = dashboard.STATS_DB
         self.original_legacy_stats_db = dashboard.LEGACY_STATS_DB
         self.original_admin_token_file = dashboard.ADMIN_TOKEN_FILE
+        self.original_indices_snapshot_file = dashboard.INDICES_SNAPSHOT_FILE
+        self.original_iwencai_snapshot_file = dashboard.IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE
         self.original_admin_password = dashboard.ADMIN_PASSWORD
         self.saved_env = {
             name: os.environ.get(name)
@@ -85,6 +87,14 @@ class DashboardAuthTests(unittest.TestCase):
                 dashboard.STRATEGY_SOURCE_ENV,
                 dashboard.PERSONA_STRATEGY_ENV,
                 dashboard.PRESET_STRATEGY_TEXT_ENV,
+                'IWENCAI_ENABLED',
+                'IWENCAI_BASE_URL',
+                'IWENCAI_API_KEY',
+                'IWENCAI_TIMEOUT_SECONDS',
+                'IWENCAI_MAX_RETRIES',
+                'IWENCAI_MAX_CONCURRENCY',
+                'IWENCAI_CACHE_TTL_SECONDS',
+                'IWENCAI_DRAGON_TIGER_CRON',
             )
         }
         for name in self.saved_env:
@@ -95,6 +105,8 @@ class DashboardAuthTests(unittest.TestCase):
         dashboard.ADMIN_PASSWORD = ''
         dashboard.DASHBOARD_ENV_FILE = self.tmp_path / 'dashboard.env'
         dashboard.CRON_STATE_DIR = self.tmp_path / 'cron' / 'state'
+        dashboard.INDICES_SNAPSHOT_FILE = self.tmp_path / 'cron' / 'output' / 'indices_dashboard_cache.json'
+        dashboard.IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE = self.tmp_path / 'cron' / 'output' / 'iwencai_dragon_tiger_latest.json'
         dashboard.API_RESPONSE_CACHE.clear()
         dashboard.API_CACHE_KEY_LOCKS.clear()
         dashboard.API_CACHE_KEY_GENERATIONS.clear()
@@ -108,6 +120,8 @@ class DashboardAuthTests(unittest.TestCase):
         dashboard.STATS_DB = self.original_stats_db
         dashboard.LEGACY_STATS_DB = self.original_legacy_stats_db
         dashboard.ADMIN_TOKEN_FILE = self.original_admin_token_file
+        dashboard.INDICES_SNAPSHOT_FILE = self.original_indices_snapshot_file
+        dashboard.IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE = self.original_iwencai_snapshot_file
         dashboard.ADMIN_PASSWORD = self.original_admin_password
         for name, value in self.saved_env.items():
             if value is None:
@@ -161,8 +175,10 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(dashboard_js.wfile.getvalue(), (FRONTEND / 'dashboard.js').read_bytes())
         self.assertEqual(admin_js.wfile.getvalue(), (FRONTEND / 'admin.js').read_bytes())
         self.assertEqual(versioned_dashboard_js.wfile.getvalue(), (FRONTEND / 'dashboard.js').read_bytes())
-        self.assertIn('<link rel="stylesheet" href="/static/dashboard.css?v=14">', DASHBOARD_FRONTEND)
-        self.assertIn('<script src="/static/dashboard.js?v=27" defer></script>', DASHBOARD_FRONTEND)
+        self.assertIn('<link rel="stylesheet" href="/static/dashboard.css?v=34">', DASHBOARD_FRONTEND)
+        self.assertIn('<script src="/static/dashboard.js?v=45" defer></script>', DASHBOARD_FRONTEND)
+        self.assertIn('Boolean(payload?.seat_error || payload?.institution_error)', DASHBOARD_FRONTEND)
+        self.assertIn('当前历史快照暂无完整买卖席位数据。', DASHBOARD_FRONTEND)
         self.assertNotIn('document.title', DASHBOARD_FRONTEND)
         self.assertIn("document.title = '牛牛1号';", ADMIN_FRONTEND)
         self.assertNotIn("title + ' · 牛牛1号'", ADMIN_FRONTEND)
@@ -213,6 +229,7 @@ class DashboardAuthTests(unittest.TestCase):
             '/',
             '/practice',
             '/indices',
+            '/dragon-tiger',
             '/market-monitor',
             '/x-monitor',
             '/us-ratings',
@@ -236,6 +253,7 @@ class DashboardAuthTests(unittest.TestCase):
         for category, path in (
             ('practice', '/practice'),
             ('indices', '/indices'),
+            ('dragon_tiger', '/dragon-tiger'),
             ('market_monitor', '/market-monitor'),
             ('x_monitor', '/x-monitor'),
             ('us_ratings', '/us-ratings'),
@@ -1326,7 +1344,7 @@ console.log(JSON.stringify(result));
 
     def test_indices_market_panel_switches_to_us_sectors_with_index_session(self):
         self.assertIn("let usSectorData = {items: []};", DASHBOARD_FRONTEND)
-        self.assertIn("fetch('/api/us_sectors')", DASHBOARD_FRONTEND)
+        self.assertIn("fetchJson('/api/us_sectors'", DASHBOARD_FRONTEND)
         self.assertIn('function indicesSwitchSession(aIndexItems = [])', DASHBOARD_FRONTEND)
         self.assertIn("let indicesMarketRegionOverride = '';", DASHBOARD_FRONTEND)
         self.assertIn('function resolvedIndicesMarketRegion(aIndexItems = [])', DASHBOARD_FRONTEND)
@@ -1557,10 +1575,67 @@ console.log(JSON.stringify(result));
 
     def test_index_template_uses_independent_category_routes(self):
         self.assertIn("let activeCategory = categoryFromLocation(initialParams);", DASHBOARD_FRONTEND)
-        self.assertIn("const CATEGORY_ORDER = ['practice', 'indices', 'market_monitor', 'x_monitor', 'us_ratings'];", DASHBOARD_FRONTEND)
+        self.assertIn("const CATEGORY_ORDER = ['practice', 'indices', 'market_monitor', 'dragon_tiger', 'x_monitor', 'us_ratings'];", DASHBOARD_FRONTEND)
         self.assertIn("practice:'模拟交易'", DASHBOARD_FRONTEND)
+        self.assertIn("dragon_tiger:'龙虎榜'", DASHBOARD_FRONTEND)
         self.assertIn("practice: '/practice'", DASHBOARD_FRONTEND)
         self.assertIn("indices: '/indices'", DASHBOARD_FRONTEND)
+        self.assertIn("dragon_tiger: '/dragon-tiger'", DASHBOARD_FRONTEND)
+        self.assertIn('fetch(`/api/iwencai/dragon-tiger${query}`', DASHBOARD_FRONTEND)
+        self.assertIn('function renderDragonTigerPanel()', DASHBOARD_FRONTEND)
+        self.assertIn('function sortDragonTigerItems(items)', DASHBOARD_FRONTEND)
+        self.assertIn("renderDragonTigerSortButton('name', '名称')", DASHBOARD_FRONTEND)
+        self.assertIn("renderDragonTigerSortButton('sector', '板块')", DASHBOARD_FRONTEND)
+        self.assertIn("renderDragonTigerSortButton('change_pct', '涨幅')", DASHBOARD_FRONTEND)
+        self.assertIn("renderDragonTigerSortButton('net_amount_yuan', '净买入')", DASHBOARD_FRONTEND)
+        self.assertIn("event.target.closest('[data-dragon-tiger-sort]')", DASHBOARD_FRONTEND)
+        self.assertIn("let dragonTigerSort = {key: 'net_amount_yuan', direction: 'desc'};", DASHBOARD_FRONTEND)
+        self.assertIn('<details class="dragon-tiger-item">', DASHBOARD_FRONTEND)
+        self.assertIn('function collectDragonTigerReasons(details)', DASHBOARD_FRONTEND)
+        self.assertIn('function renderDragonTigerStreak(item)', DASHBOARD_FRONTEND)
+        self.assertIn('.dragon-tiger-panel { width:100%; max-width:900px; margin-inline:auto; padding:0; }', DASHBOARD_FRONTEND)
+        self.assertIn("upStreak === 1 ? '首板' : `${upStreak}连板`", DASHBOARD_FRONTEND)
+        self.assertIn("downStreak === 1 ? '首跌停' : `${downStreak}连跌停`", DASHBOARD_FRONTEND)
+        self.assertIn('${renderDragonTigerStreak(item)}', DASHBOARD_FRONTEND)
+        self.assertIn('class="dragon-tiger-reasons" aria-label="上榜理由"', DASHBOARD_FRONTEND)
+        self.assertIn('${renderDragonTigerReasons(details)}', DASHBOARD_FRONTEND)
+        self.assertIn('function renderDragonTigerSeats(item, payload)', DASHBOARD_FRONTEND)
+        self.assertIn('function groupDragonTigerSeatRecords(records)', DASHBOARD_FRONTEND)
+        self.assertIn('function renderDragonTigerSeatSide(records, side)', DASHBOARD_FRONTEND)
+        self.assertIn('function renderDragonTigerSeatGroup(group, index, totalGroups)', DASHBOARD_FRONTEND)
+        self.assertIn('const heading = totalGroups > 1', DASHBOARD_FRONTEND)
+        self.assertIn('class="dragon-tiger-seat-rank ${side}"', DASHBOARD_FRONTEND)
+        self.assertIn('class="dragon-tiger-seat-sides"', DASHBOARD_FRONTEND)
+        self.assertIn('aria-label="${label}"', DASHBOARD_FRONTEND)
+        self.assertIn("dragonTigerSeatSideRank(left, side) - dragonTigerSeatSideRank(right, side)", DASHBOARD_FRONTEND)
+        self.assertIn("renderDragonTigerSeatSide(group?.records || [], 'buy')", DASHBOARD_FRONTEND)
+        self.assertIn("renderDragonTigerSeatSide(group?.records || [], 'sell')", DASHBOARD_FRONTEND)
+        self.assertIn('.dragon-tiger-seat-sides { grid-template-columns:minmax(0,1fr); }', DASHBOARD_FRONTEND)
+        self.assertIn('.dragon-tiger-seat-values { display:grid;', DASHBOARD_FRONTEND)
+        self.assertIn('.dragon-tiger-seat-record + .dragon-tiger-seat-record', DASHBOARD_FRONTEND)
+        self.assertIn('const showReason = Array.isArray(details) && details.length > 1;', DASHBOARD_FRONTEND)
+        self.assertIn('class="dragon-tiger-funds" aria-label="榜单资金"', DASHBOARD_FRONTEND)
+        self.assertIn('class="dragon-tiger-seats" aria-label="席位明细"', DASHBOARD_FRONTEND)
+        self.assertLess(
+            DASHBOARD_FRONTEND.index('class="dragon-tiger-funds" aria-label="榜单资金"'),
+            DASHBOARD_FRONTEND.index('${renderDragonTigerSeats(item, payload)}'),
+        )
+        self.assertNotIn('class="dragon-tiger-seat-summary"', DASHBOARD_FRONTEND)
+        self.assertNotIn('<small>买方席位</small>', DASHBOARD_FRONTEND)
+        self.assertNotIn('<small>卖方席位</small>', DASHBOARD_FRONTEND)
+        self.assertNotIn('<small>机构席位</small>', DASHBOARD_FRONTEND)
+        self.assertNotIn('.dragon-tiger-seat-values > span { padding:6px 7px; }', DASHBOARD_FRONTEND)
+        self.assertIn('class="dragon-tiger-seat-group"', DASHBOARD_FRONTEND)
+        self.assertIn('${renderDragonTigerSeats(item, payload)}', DASHBOARD_FRONTEND)
+        self.assertIn("record?.seat_category === 'institution'", DASHBOARD_FRONTEND)
+        self.assertIn('data-dragon-tiger-date-action="load"', DASHBOARD_FRONTEND)
+        self.assertIn('点击股票可查看上榜理由、买卖前五机构及营业部席位与榜单明细', DASHBOARD_FRONTEND)
+        self.assertNotIn('全部上榜理由', DASHBOARD_FRONTEND)
+        self.assertNotIn('class="dragon-tiger-metrics"', DASHBOARD_FRONTEND)
+        self.assertNotIn('class="dragon-tiger-metric"', DASHBOARD_FRONTEND)
+        self.assertNotIn('净买入合计', DASHBOARD_FRONTEND)
+        self.assertNotIn('净卖出合计', DASHBOARD_FRONTEND)
+        self.assertNotIn('<th>上榜原因</th>', DASHBOARD_FRONTEND)
         self.assertIn("const LEGACY_CATEGORY_ALIASES = {b1_screen:'practice'};", DASHBOARD_FRONTEND)
         self.assertIn('const normalized = LEGACY_CATEGORY_ALIASES[category] || category;', DASHBOARD_FRONTEND)
         self.assertIn("fetchJson('/api/practice_candidates')", DASHBOARD_FRONTEND)
@@ -1770,6 +1845,76 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(payload['items'], [{'name': '银行'}])
         self.assertLessEqual(cached['ts'], before - 60)
         self.assertFalse(dashboard.seed_api_cache_from_json_file('sectors', snapshot, 60))
+
+    def test_indices_snapshot_only_replaces_cache_with_nonempty_success(self):
+        valid = {
+            'generated_at': '2026-07-17 10:00:00',
+            'items': [{'code': 'sh000001', 'name': '上证指数', 'price': 3500}],
+            'stale_cache': True,
+        }
+        self.assertTrue(dashboard.persist_indices_snapshot(valid))
+        stored = json.loads(dashboard.INDICES_SNAPSHOT_FILE.read_text(encoding='utf-8'))
+        self.assertEqual(stored['items'], valid['items'])
+        self.assertNotIn('stale_cache', stored)
+
+        self.assertFalse(dashboard.persist_indices_snapshot({'items': []}))
+        self.assertFalse(dashboard.persist_indices_snapshot({'items': valid['items'], 'error': 'upstream failed'}))
+        unchanged = json.loads(dashboard.INDICES_SNAPSHOT_FILE.read_text(encoding='utf-8'))
+        self.assertEqual(unchanged, stored)
+
+    def test_indices_route_serves_snapshot_while_refreshing_in_background(self):
+        dashboard.INDICES_SNAPSHOT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        dashboard.INDICES_SNAPSHOT_FILE.write_text(
+            json.dumps({
+                'generated_at': '2026-07-17 09:30:00',
+                'items': [{'code': 'sh000001', 'name': '上证指数', 'price': 3490}],
+            }),
+            encoding='utf-8',
+        )
+        original_producer = dashboard.produce_indices_data
+        producer_started = threading.Event()
+        release_producer = threading.Event()
+
+        def slow_producer():
+            producer_started.set()
+            self.assertTrue(release_producer.wait(timeout=2))
+            return {
+                'generated_at': '2026-07-17 10:01:00',
+                'items': [{'code': 'sh000001', 'name': '上证指数', 'price': 3510}],
+            }
+
+        dashboard.produce_indices_data = slow_producer
+        try:
+            handler = FakeHandler(path='/api/indices')
+            started_at = dashboard.time.monotonic()
+            handler.do_GET()
+            elapsed = dashboard.time.monotonic() - started_at
+            payload = json.loads(handler.wfile.getvalue().decode('utf-8'))
+
+            self.assertEqual(handler.status, 200)
+            self.assertLess(elapsed, 0.5)
+            self.assertTrue(payload['stale_cache'])
+            self.assertEqual(payload['items'][0]['price'], 3490)
+            self.assertTrue(producer_started.wait(timeout=1))
+        finally:
+            release_producer.set()
+            dashboard.produce_indices_data = original_producer
+
+        deadline = dashboard.time.time() + 2
+        while dashboard.time.time() < deadline:
+            cached = dashboard.API_RESPONSE_CACHE.get('indices', {})
+            if b'3510' in cached.get('payload', b''):
+                break
+            dashboard.time.sleep(0.01)
+        refreshed = json.loads(dashboard.API_RESPONSE_CACHE['indices']['payload'])
+        self.assertEqual(refreshed['items'][0]['price'], 3510)
+
+    def test_indices_frontend_prioritizes_primary_quotes_and_labels_stale_cache(self):
+        index_fetch = DASHBOARD_FRONTEND.index("fetchJson('/api/indices'")
+        sector_fetch = DASHBOARD_FRONTEND.index("fetchJson('/api/sectors'")
+        self.assertLess(index_fetch, sector_fetch)
+        self.assertIn('正在后台更新实时行情', DASHBOARD_FRONTEND)
+        self.assertIn('indices-cache-notice', DASHBOARD_FRONTEND)
 
     def test_index_template_intraday_curve_renders_single_point_from_opening_base(self):
         self.assertIn('if (rawPoints.length < (isDailyMode ? 2 : 1))', DASHBOARD_FRONTEND)
@@ -2508,7 +2653,7 @@ process.stdout.write(JSON.stringify({
         item_names = {item['name'] for item in payload['items']}
 
         self.assertEqual(handler.status, 200)
-        self.assertEqual(len(payload['groups']), 12)
+        self.assertEqual(len(payload['groups']), 13)
         self.assertEqual(item_names, set(dashboard.ADMIN_VISIBLE_ENV_NAMES))
         self.assertIn('<script src="/static/admin.js?v=18" defer></script>', index_body)
         self.assertNotIn("name='env__", index_body)
@@ -2544,17 +2689,21 @@ process.stdout.write(JSON.stringify({
             self.assertEqual(route.status, 200)
             self.assertIn('<script src="/static/admin.js?v=18" defer></script>', route.wfile.getvalue().decode('utf-8'))
 
-        self.assertEqual(len(groups), 12)
+        self.assertEqual(len(groups), 13)
         self.assertEqual(len(slugs), len(set(slugs)))
         self.assertEqual(slugs[:2], ['access-control', 'notifications'])
         self.assertEqual(slugs.index('trading-risk'), slugs.index('decision-model') + 1)
         self.assertEqual(slugs.index('decision-reference'), slugs.index('decision-times') + 1)
+        self.assertEqual(slugs.index('iwencai'), slugs.index('decision-reference') + 1)
         self.assertEqual(slugs.index('us-market'), slugs.index('stock-strategy') + 1)
         self.assertEqual(grouped_names, set(dashboard.ADMIN_VISIBLE_ENV_NAMES))
         self.assertIn("data-save-endpoint='/api/admin/config/env/", ADMIN_FRONTEND)
         self.assertIn("settingsGroupSlug()", ADMIN_FRONTEND)
         self.assertIn('保存本组设置', ADMIN_FRONTEND)
         self.assertEqual(len(dashboard.admin_setting_group_env_names('us-market')), 16)
+        self.assertEqual(len(dashboard.admin_setting_group_env_names('iwencai')), 8)
+        iwencai_group = next(group for group in groups if group['slug'] == 'iwencai')
+        self.assertEqual(iwencai_group['note'], '')
         decision_group = next(group for group in groups if group['slug'] == 'decision-times')
         self.assertEqual(decision_group['name'], '选股与买卖设置')
         strategy_group = next(group for group in groups if group['slug'] == 'stock-strategy')
@@ -2582,6 +2731,25 @@ process.stdout.write(JSON.stringify({
         self.assertIn("kind === 'api_mode'", ADMIN_FRONTEND)
         self.assertEqual(config_by_name['DASHBOARD_DISPLAY_CANDIDATE_LIMIT']['default'], '10')
         self.assertEqual(config_by_name['DASHBOARD_TRADE_CANDIDATE_LIMIT']['default'], '10')
+        self.assertEqual(config_by_name['IWENCAI_ENABLED']['default'], '0')
+        self.assertEqual(config_by_name['IWENCAI_BASE_URL']['default'], 'https://openapi.iwencai.com')
+        self.assertEqual(config_by_name['IWENCAI_API_KEY']['kind'], 'secret')
+        self.assertEqual(config_by_name['IWENCAI_DRAGON_TIGER_CRON']['default'], '0 18 * * 1-5')
+        self.assertEqual(
+            dashboard.normalize_business_updates({'IWENCAI_DRAGON_TIGER_CRON': '18:00'}),
+            {'IWENCAI_DRAGON_TIGER_CRON': '0 18 * * 1-5'},
+        )
+        dashboard.validate_business_updates({
+            'IWENCAI_BASE_URL': 'https://openapi.iwencai.com',
+            'IWENCAI_TIMEOUT_SECONDS': '20',
+            'IWENCAI_MAX_RETRIES': '1',
+            'IWENCAI_MAX_CONCURRENCY': '2',
+            'IWENCAI_CACHE_TTL_SECONDS': '300',
+        })
+        with self.assertRaises(ValueError):
+            dashboard.validate_business_updates({'IWENCAI_BASE_URL': 'http://openapi.iwencai.com'})
+        with self.assertRaises(ValueError):
+            dashboard.validate_business_updates({'IWENCAI_MAX_CONCURRENCY': '5'})
         self.assertEqual(config_by_name['DASHBOARD_STOCK_UNIVERSE']['default'], 'main_board')
         universe_item = next(item for item in payload['items'] if item['name'] == 'DASHBOARD_STOCK_UNIVERSE')
         self.assertEqual(universe_item['stock_universe_values'], ['main_board'])
@@ -3487,6 +3655,176 @@ process.stdout.write(JSON.stringify({
         self.assertNotIn('id="contestPanel"', body)
         self.assertNotIn('/api/contest/status', body)
         self.assertNotIn('LinuxDo', body)
+
+    def test_iwencai_settings_are_hot_applied_masked_and_invalidate_cache(self):
+        names = {
+            'IWENCAI_ENABLED',
+            'IWENCAI_BASE_URL',
+            'IWENCAI_API_KEY',
+            'IWENCAI_TIMEOUT_SECONDS',
+            'IWENCAI_MAX_RETRIES',
+            'IWENCAI_MAX_CONCURRENCY',
+            'IWENCAI_CACHE_TTL_SECONDS',
+        }
+        original_values = {name: dashboard.os.environ.get(name) for name in names}
+        original_ttl = dashboard.API_TTLS['iwencai_dragon_tiger']
+        try:
+            dashboard.API_RESPONSE_CACHE['iwencai_dragon_tiger:2026-07-16:1:100'] = {
+                'ts': 1,
+                'payload': b'{}',
+            }
+            updates = dashboard.normalize_business_updates({
+                'IWENCAI_ENABLED': '1',
+                'IWENCAI_BASE_URL': 'https://openapi.iwencai.com/',
+                'IWENCAI_API_KEY': 'test-secret',
+                'IWENCAI_TIMEOUT_SECONDS': '18',
+                'IWENCAI_MAX_RETRIES': '2',
+                'IWENCAI_MAX_CONCURRENCY': '3',
+                'IWENCAI_CACHE_TTL_SECONDS': '180',
+            })
+            dashboard.validate_business_updates(updates)
+            result = dashboard.write_env_file_values(updates)
+            runtime = dashboard.sync_business_runtime_settings(result['changed_names'])
+            stored = dashboard.parse_env_file(
+                dashboard.DASHBOARD_ENV_FILE,
+                include_container_overrides=False,
+            )
+            payload = dashboard.build_admin_config_payload()
+        finally:
+            dashboard.API_TTLS['iwencai_dragon_tiger'] = original_ttl
+            for name, value in original_values.items():
+                if value is None:
+                    dashboard.os.environ.pop(name, None)
+                else:
+                    dashboard.os.environ[name] = value
+
+        by_name = {item['name']: item for item in payload['items']}
+        self.assertEqual(stored['IWENCAI_BASE_URL'], 'https://openapi.iwencai.com')
+        self.assertEqual(stored['IWENCAI_API_KEY'], 'test-secret')
+        self.assertEqual(by_name['IWENCAI_API_KEY']['current_state'], '已设置')
+        self.assertEqual(by_name['IWENCAI_API_KEY']['file_value'], '')
+        self.assertNotIn('test-secret', json.dumps(payload, ensure_ascii=False))
+        self.assertIn('iwencai', runtime['applied'])
+        self.assertNotIn('iwencai_dragon_tiger:2026-07-16:1:100', dashboard.API_RESPONSE_CACHE)
+
+    def test_iwencai_dragon_tiger_route_is_bounded_and_cached(self):
+        original_fetch = dashboard.fetch_dragon_tiger
+        original_ttl = dashboard.API_TTLS['iwencai_dragon_tiger']
+        calls = []
+
+        def fake_fetch(trade_date, *, page, limit):
+            calls.append((trade_date, page, limit))
+            return {
+                'enabled': True,
+                'available': True,
+                'source': '同花顺问财',
+                'date': trade_date,
+                'items': [{'code': '000001.SZ'}],
+            }
+
+        try:
+            dashboard.fetch_dragon_tiger = fake_fetch
+            dashboard.API_TTLS['iwencai_dragon_tiger'] = 60
+            first = FakeHandler('/api/iwencai/dragon-tiger?date=2026-07-16&page=2&limit=10')
+            first.do_GET()
+            second = FakeHandler('/api/iwencai/dragon-tiger?date=2026-07-16&page=2&limit=10')
+            second.do_GET()
+            invalid = FakeHandler('/api/iwencai/dragon-tiger?page=1&limit=101')
+            invalid.do_GET()
+        finally:
+            dashboard.fetch_dragon_tiger = original_fetch
+            dashboard.API_TTLS['iwencai_dragon_tiger'] = original_ttl
+
+        payload = json.loads(first.wfile.getvalue().decode('utf-8'))
+        self.assertEqual(first.status, 200)
+        self.assertEqual(second.status, 200)
+        self.assertEqual(payload['items'], [{'code': '000001.SZ'}])
+        self.assertEqual(calls, [('2026-07-16', 2, 10)])
+        self.assertEqual(first.header('X-Dashboard-Cache'), 'MISS')
+        self.assertEqual(second.header('X-Dashboard-Cache'), 'HIT')
+        self.assertEqual(invalid.status, 400)
+        self.assertEqual(
+            json.loads(invalid.wfile.getvalue().decode('utf-8'))['error'],
+            'invalid_iwencai_dragon_tiger_request',
+        )
+
+    def test_iwencai_dashboard_uses_latest_snapshot_without_upstream_call(self):
+        snapshot = {
+            'enabled': True,
+            'available': True,
+            'source': '同花顺问财',
+            'date': '2026-07-16',
+            'generated_at': '2026-07-16T18:00:00+08:00',
+            'items': [{'code': '000001.SZ', 'name': '平安银行'}],
+        }
+        self.assertTrue(
+            dashboard.write_dragon_tiger_snapshot(
+                dashboard.IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE,
+                snapshot,
+            )
+        )
+        original_fetch = dashboard.fetch_dragon_tiger
+        try:
+            dashboard.fetch_dragon_tiger = lambda *_args, **_kwargs: self.fail('must not call upstream')
+            payload = dashboard.produce_iwencai_dragon_tiger_data(
+                '2026-07-17',
+                page=1,
+                limit=dashboard.IWENCAI_DRAGON_TIGER_DEFAULT_LIMIT,
+                allow_latest_snapshot=True,
+            )
+        finally:
+            dashboard.fetch_dragon_tiger = original_fetch
+
+        self.assertTrue(payload['snapshot'])
+        self.assertTrue(payload['stale'])
+        self.assertEqual(payload['date'], '2026-07-16')
+        self.assertEqual(payload['requested_date'], '2026-07-17')
+        self.assertEqual(payload['scheduled_refresh_time'], '18:00')
+
+    def test_iwencai_dashboard_reads_exact_trading_day_archive_without_upstream_call(self):
+        archive = {
+            'enabled': True,
+            'available': True,
+            'source': '同花顺问财',
+            'date': '2026-07-15',
+            'institution_available': True,
+            'items': [{
+                'code': '000001.SZ',
+                'name': '平安银行',
+                'institution_seats': [{
+                    'seat_name': '机构专用',
+                    'side': 'buy',
+                    'rank': 1,
+                    'buy_amount_yuan': 100.0,
+                    'sell_amount_yuan': 0.0,
+                    'net_amount_yuan': 100.0,
+                }],
+            }],
+        }
+        self.assertTrue(
+            dashboard.write_dragon_tiger_archive(
+                dashboard.iwencai_dragon_tiger_archive_dir(),
+                archive,
+            )
+        )
+        original_fetch = dashboard.fetch_dragon_tiger
+        try:
+            dashboard.fetch_dragon_tiger = lambda *_args, **_kwargs: self.fail('must not call upstream')
+            payload = dashboard.produce_iwencai_dragon_tiger_data(
+                '2026-07-15',
+                page=1,
+                limit=dashboard.IWENCAI_DRAGON_TIGER_DEFAULT_LIMIT,
+                allow_latest_snapshot=False,
+            )
+        finally:
+            dashboard.fetch_dragon_tiger = original_fetch
+
+        self.assertTrue(payload['archive'])
+        self.assertFalse(payload['stale'])
+        self.assertEqual(payload['date'], '2026-07-15')
+        self.assertFalse(payload['seat_data_complete'])
+        self.assertEqual(payload['items'][0]['seat_record_count'], 1)
+        self.assertEqual(payload['items'][0]['institution_record_count'], 1)
 
     def test_contest_routes_are_removed(self):
         get_handler = FakeHandler('/api/contest/status')

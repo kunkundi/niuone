@@ -8,6 +8,7 @@ import urllib.error
 from pathlib import Path
 
 from app.core.model_api import (
+    ModelResponseParseError,
     build_model_request,
     parse_model_response,
     request_model,
@@ -50,11 +51,25 @@ class ModelApiTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
     def test_auto_mode_preserves_legacy_chat_and_enables_known_search_models(self):
-        self.assertFalse(uses_responses_api("auto", "legacy-search-model", search_tools=True))
-        self.assertTrue(uses_responses_api("auto", "grok-4.5", search_tools=True))
-        self.assertTrue(uses_responses_api("auto", "gpt-5.6-sol", search_tools=True))
-        self.assertFalse(uses_responses_api("chat-completions", "gpt-5.6-sol", search_tools=True))
+        self.assertFalse(uses_responses_api("auto", "legacy-search-model", web_search=True))
+        self.assertTrue(uses_responses_api("auto", "grok-4.5", web_search=True))
+        self.assertTrue(uses_responses_api("auto", "gpt-5.6-sol", web_search=True))
+        self.assertFalse(uses_responses_api("chat-completions", "gpt-5.6-sol", web_search=True))
         self.assertTrue(uses_responses_api("responses", "legacy-model"))
+
+    def test_gpt_x_search_does_not_enable_responses_in_auto_mode(self):
+        request = build_model_request(
+            "https://model.example/v1",
+            "gpt-5.6-sol",
+            [{"role": "user", "content": "search X"}],
+            max_tokens=123,
+            api_mode="auto",
+            tools=[{"type": "x_search"}],
+        )
+
+        self.assertEqual(request.endpoint, "https://model.example/v1/chat/completions")
+        self.assertEqual(request.payload["max_tokens"], 123)
+        self.assertNotIn("tools", request.payload)
 
     def test_chat_request_uses_max_tokens(self):
         request = build_model_request(
@@ -138,6 +153,12 @@ class ModelApiTests(unittest.TestCase):
         self.assertEqual(parsed_sse.content, "live result")
         self.assertIn("search_events=1", parsed_sse.detail)
 
+    def test_parse_failures_use_dedicated_exception(self):
+        for raw in ("", "<html>gateway error</html>", "[]"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(ModelResponseParseError):
+                    parse_model_response(raw)
+
     def test_unknown_responses_model_retries_without_unsupported_output_limit(self):
         request = build_model_request(
             "https://model.example/v1",
@@ -163,6 +184,30 @@ class ModelApiTests(unittest.TestCase):
         self.assertEqual(len(payloads), 2)
         self.assertIn("max_output_tokens", payloads[0])
         self.assertNotIn("max_output_tokens", payloads[1])
+
+    def test_invalid_output_limit_value_does_not_retry_without_parameter(self):
+        request = build_model_request(
+            "https://model.example/v1",
+            "gateway-model",
+            [{"role": "user", "content": "hello"}],
+            max_tokens=500,
+            api_mode="responses",
+        )
+        payloads: list[dict] = []
+
+        def opener(req, timeout=0):
+            payloads.append(json.loads(req.data.decode("utf-8")))
+            body = io.BytesIO(
+                b'{"detail":"Invalid parameter: max_output_tokens must be at most 200"}'
+            )
+            raise urllib.error.HTTPError(req.full_url, 400, "Bad Request", {}, body)
+
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            request_model(request, "secret", timeout=3, opener=opener)
+
+        self.assertEqual(len(payloads), 1)
+        self.assertIn("max_output_tokens", payloads[0])
+        self.assertIn(b"Invalid parameter", raised.exception.read())
 
 
 if __name__ == "__main__":

@@ -70,6 +70,8 @@ This rule group references the policy, value, bottom-formation, contrarian-senti
 
 Sector Tide builds one cross-sectional snapshot from the same liquid-stock universe before scoring any stock. It then applies hard gates in the order market regime → industry tide → within-sector stock strength. Industry strength is a mandatory gate rather than a score bonus.
 
+Each scan reads only the exact Dragon-Tiger archive for the prior A-share trading day. Main-list net flow, all top-five buy/sell seats, and institution-seat net flow are used as confirmation; incomplete same-day data and older/latest fallbacks are never used. The industry overlay is capped at ±2.5 points and the stock overlay at ±0.35, so their combined effect on the ten-point candidate score cannot exceed ±0.45. A stock that is absent from the list stays neutral. Missing archives or incomplete seat data fall back to the available main list or a neutral value. A positive overlay is suppressed when the stock is up more than 7% that day or sits over 1.5 ATR above EMA20, while negative risk evidence remains active. This is a candidate-ranking feature for historical validation, not proof of higher future win rates.
+
 - **Main-theme Leader**: available only in offensive or rotation regimes, requires a leading industry and a stock in the top 20% of its industry, and accepts only a breakout or a low-volume EMA20 pullback. Its 8% single-name limit is an absolute ceiling; dynamic risk determines the actual size.
 - **Early Rotation**: requires an improving industry and a stock in its top 30%. It rejects a one-day gain above 7% and an extension above 1.5 ATR from EMA20. Its 6% limit is an absolute ceiling.
 - **Freeze Recovery**: available only after defense has cleared, requires one of the first industries and stocks to recover, and exits if recovery is not confirmed by T+2. Its 4% limit is an absolute ceiling; the recovery risk budget determines the actual size.
@@ -110,10 +112,11 @@ Industry score weights and tide thresholds are:
 | 20-day new-high ratio | 10% |
 | Industry flow; volume participation when missing | 10% |
 | Industry turnover-liquidity percentile | 5% |
+| Prior-trading-day Dragon-Tiger confirmation | Capped ±2.5-point overlay outside the base score |
 
 An industry needs at least three valid members, and each stock needs at least 55 daily bars. `leading` requires an industry score ≥75 and a 20-day relative-strength percentile ≥70. `improving` requires a score ≥65, rank acceleration ≥15, and a 5-day relative-strength percentile ≥65. A score <45 or 20-day relative-strength percentile <35 is `lagging`; every other case is `weakening`.
 
-The entry-score thresholds for Main-theme Leader, Early Rotation, and Freeze Recovery are 8.0, 8.2, and 8.5; their minimum within-industry strength percentiles are 80, 70, and 70. Candidate-cache records must carry the market regime, industry tide, structural stop, gap reserve, effective loss distance, and all applicable risk budgets. The execution layer recalculates risk using the live simulated fill price and shared registered parameters; it does not trust model-supplied risk numbers.
+The entry-score thresholds for Main-theme Leader, Early Rotation, and Freeze Recovery are 8.0, 8.2, and 8.5; their minimum within-industry strength percentiles are 80, 70, and 70. Candidate-cache records must carry the market regime, industry tide, Dragon-Tiger archive date/availability/capped adjustment, structural stop, gap reserve, effective loss distance, and all applicable risk budgets. The execution layer recalculates risk using the live simulated fill price and shared registered parameters; it does not trust model-supplied risk numbers.
 
 The primary implementation files are `app/strategies/scoring/sector_tide.py`, `app/strategies/sector_tide_risk.py`, and `app/trading/practice_trader.py`. Run `python3 -m unittest -v tests.test_sector_tide_strategy` for the focused regression suite and `./scripts/validate.sh` for full validation.
 

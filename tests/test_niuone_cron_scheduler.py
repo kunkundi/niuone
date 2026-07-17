@@ -107,6 +107,16 @@ class NiuoneCronSchedulerTests(unittest.TestCase):
         self.assertEqual(scheduler.normalize_job_expr(job, "08:00"), "0 8 * * 1-5")
         self.assertTrue(scheduler.job_enabled(job, {}))
 
+    def test_iwencai_dragon_tiger_runs_at_18_on_weekdays_when_enabled(self):
+        scheduler = load_scheduler_module()
+        job = next(job for job in scheduler.JOBS if job.env_name == "IWENCAI_DRAGON_TIGER_CRON")
+
+        self.assertEqual(job.default_expr, "0 18 * * 1-5")
+        self.assertEqual(job.command, ("iwencai_dragon_tiger_snapshot.py",))
+        self.assertEqual(scheduler.normalize_job_expr(job, "18:00"), "0 18 * * 1-5")
+        self.assertFalse(scheduler.job_enabled(job, {}))
+        self.assertTrue(scheduler.job_enabled(job, {"IWENCAI_ENABLED": "1"}))
+
     def test_time_exit_job_uses_hhmm_setting(self):
         scheduler = load_scheduler_module()
         b3_job = next(job for job in scheduler.JOBS if job.env_name == "DASHBOARD_B3_EXIT_TIME")

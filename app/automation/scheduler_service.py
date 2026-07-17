@@ -45,6 +45,7 @@ STOP = False
 
 
 JOBS = (
+    Job("IWENCAI_DRAGON_TIGER_CRON", "0 18 * * 1-5", "6a72470cc5e1", "交易日龙虎榜快照", ("iwencai_dragon_tiger_snapshot.py",), 120),
     Job("DASHBOARD_US_MARKET_SUMMARY_CRON", "0 8 * * 1-5", "98f0c8a12d3e", "隔夜美股盘面总结", ("us_market_summary.py", "--store"), 180),
     Job("DASHBOARD_MARKET_AUCTION_CRON", "25 9 * * 1-5", "8453b3f28cd3", "A股竞价盘前总结", ("a_share_auction_summary.py",), 180),
     Job("DASHBOARD_MARKET_MIDDAY_CRON", "40 11 * * 1-5", "192abba7eeb5", "A股午盘总结", ("a_share_midday_summary.py",), 180),
@@ -100,6 +101,9 @@ def us_features_enabled(env_values: dict[str, str] | None = None) -> bool:
 def job_enabled(job: Job, env_values: dict[str, str]) -> bool:
     if job.env_name == "DASHBOARD_US_RATING_CRON":
         return us_features_enabled(env_values)
+    if job.env_name == "IWENCAI_DRAGON_TIGER_CRON":
+        raw = env_values.get("IWENCAI_ENABLED") or os.environ.get("IWENCAI_ENABLED") or "0"
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
     return True
 
 

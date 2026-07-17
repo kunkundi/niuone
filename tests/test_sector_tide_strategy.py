@@ -122,6 +122,203 @@ class SectorTideStrategyTests(unittest.TestCase):
         self.assertTrue(all(row["eligible_data"] for row in context["sectors"].values()))
         self.assertTrue(all(row["flow_source"] == "volume_participation_fallback" for row in context["sectors"].values()))
 
+    def test_context_uses_prior_day_dragon_tiger_as_bounded_confirmation(self):
+        prepared = []
+        for sector_index, industry in enumerate(("半导体", "银行", "汽车", "医药")):
+            for member_index in range(3):
+                code = f"{600000 + sector_index * 10 + member_index:06d}"
+                prepared.append({
+                    "code": code,
+                    "name": f"测试{code}",
+                    "industry": industry,
+                    "quote": {"amount": 1.5e9},
+                    "rows": make_rows(code, industry, daily_step=0.05 - sector_index * 0.008),
+                })
+        snapshot = {
+            "available": True,
+            "archive": True,
+            "source": "同花顺问财",
+            "date": "2026-07-16",
+            "seat_data_complete": True,
+            "items": [{
+                "code": "600000.SH",
+                "buy_amount_yuan": 120_000_000,
+                "sell_amount_yuan": 20_000_000,
+                "net_amount_yuan": 100_000_000,
+                "net_ratio_pct": 12.0,
+                "seat_record_count": 10,
+                "seat_buy_amount_yuan": 110_000_000,
+                "seat_sell_amount_yuan": 30_000_000,
+                "seat_net_amount_yuan": 80_000_000,
+                "institution_record_count": 2,
+                "institution_buy_amount_yuan": 40_000_000,
+                "institution_sell_amount_yuan": 5_000_000,
+                "institution_net_amount_yuan": 35_000_000,
+            }, {
+                "code": "SH600010",
+                "buy_amount_yuan": 20_000_000,
+                "sell_amount_yuan": 120_000_000,
+                "net_amount_yuan": -100_000_000,
+                "net_ratio_pct": -12.0,
+                "seat_record_count": 10,
+                "seat_buy_amount_yuan": 30_000_000,
+                "seat_sell_amount_yuan": 110_000_000,
+                "seat_net_amount_yuan": -80_000_000,
+                "institution_record_count": 2,
+                "institution_buy_amount_yuan": 5_000_000,
+                "institution_sell_amount_yuan": 40_000_000,
+                "institution_net_amount_yuan": -35_000_000,
+            }],
+        }
+
+        context = build_sector_tide_context(prepared, dragon_tiger_snapshot=snapshot)
+
+        self.assertEqual(context["version"], 3)
+        self.assertTrue(context["dragon_tiger"]["available"])
+        self.assertEqual(context["dragon_tiger"]["as_of_date"], "2026-07-16")
+        self.assertEqual(context["dragon_tiger"]["matched_stock_count"], 2)
+        self.assertEqual(context["stocks"]["600000"]["dragon_tiger_signal"], "positive")
+        self.assertEqual(context["stocks"]["600010"]["dragon_tiger_signal"], "negative")
+        self.assertGreater(context["stocks"]["600000"]["dragon_tiger_adjustment"], 0)
+        self.assertLess(context["stocks"]["600010"]["dragon_tiger_adjustment"], 0)
+        self.assertLessEqual(abs(context["stocks"]["600000"]["dragon_tiger_adjustment"]), 0.35)
+        self.assertLessEqual(abs(context["sectors"]["半导体"]["dragon_tiger_adjustment"]), 2.5)
+        self.assertGreater(context["sectors"]["半导体"]["score"], context["sectors"]["半导体"]["base_score"])
+        self.assertLess(context["sectors"]["银行"]["score"], context["sectors"]["银行"]["base_score"])
+
+    def test_missing_dragon_tiger_archive_is_neutral(self):
+        prepared = []
+        for member_index in range(3):
+            code = f"{600000 + member_index:06d}"
+            prepared.append({
+                "code": code,
+                "name": f"测试{code}",
+                "industry": "半导体",
+                "quote": {"amount": 1.5e9},
+                "rows": make_rows(code, "半导体"),
+            })
+
+        context = build_sector_tide_context(
+            prepared,
+            dragon_tiger_snapshot={
+                "available": False,
+                "date": "2026-07-16",
+                "requested_date": "2026-07-16",
+                "items": [],
+                "error": "archive_missing",
+            },
+        )
+
+        self.assertFalse(context["dragon_tiger"]["available"])
+        self.assertEqual(context["dragon_tiger"]["error"], "archive_missing")
+        self.assertEqual(context["sectors"]["半导体"]["dragon_tiger_adjustment"], 0)
+        self.assertEqual(context["sectors"]["半导体"]["score"], context["sectors"]["半导体"]["base_score"])
+        self.assertTrue(all(not stock["dragon_tiger_listed"] for stock in context["stocks"].values()))
+        self.assertTrue(all(stock["dragon_tiger_adjustment"] == 0 for stock in context["stocks"].values()))
+
+    def test_partial_seat_failure_uses_main_list_without_stale_seat_bias(self):
+        prepared = []
+        for member_index in range(3):
+            code = f"{600000 + member_index:06d}"
+            prepared.append({
+                "code": code,
+                "name": f"测试{code}",
+                "industry": "半导体",
+                "quote": {"amount": 1.5e9},
+                "rows": make_rows(code, "半导体"),
+            })
+        context = build_sector_tide_context(
+            prepared,
+            dragon_tiger_snapshot={
+                "available": True,
+                "date": "2026-07-16",
+                "seat_data_complete": False,
+                "seat_error": "network_error",
+                "items": [{
+                    "code": "600000.SH",
+                    "buy_amount_yuan": 100_000_000,
+                    "sell_amount_yuan": 20_000_000,
+                    "net_amount_yuan": 80_000_000,
+                    "seat_record_count": 10,
+                    "seat_buy_amount_yuan": 0,
+                    "seat_sell_amount_yuan": 200_000_000,
+                    "seat_net_amount_yuan": -200_000_000,
+                }],
+            },
+        )
+
+        stock = context["stocks"]["600000"]
+        self.assertTrue(context["dragon_tiger"]["available"])
+        self.assertFalse(context["dragon_tiger"]["seat_data_complete"])
+        self.assertEqual(stock["dragon_tiger_confidence"], 0.7)
+        self.assertEqual(stock["dragon_tiger_signal"], "positive")
+        self.assertGreater(stock["dragon_tiger_adjustment"], 0)
+
+    def test_tide_score_applies_bounded_dragon_tiger_bonus(self):
+        rows = make_rows("600000", "半导体", daily_step=0.01)
+        context = {
+            "market": {"state": "offensive", "score": 80, "hard_stop": False, "allow_new_buys": True},
+            "dragon_tiger": {
+                "available": True,
+                "source": "同花顺问财",
+                "as_of_date": "2026-07-16",
+                "seat_data_complete": True,
+            },
+            "sectors": {
+                "半导体": {
+                    "status": "leading", "base_score": 88, "score": 90.5,
+                    "member_count": 8, "eligible_data": True,
+                    "relative_5d_pct": 3, "relative_20d_pct": 10, "rank_acceleration": 5,
+                    "breadth20": 90, "flow_net_yi": None, "flow_source": "volume_participation_fallback",
+                    "dragon_tiger_score": 85, "dragon_tiger_adjustment": 2.5,
+                    "dragon_tiger_listed_count": 2,
+                }
+            },
+            "stocks": {
+                "600000": {
+                    "sector_relative_rank": 95, "market_relative_rank": 92,
+                    "dragon_tiger_listed": True, "dragon_tiger_score": 85,
+                    "dragon_tiger_signal": "positive", "dragon_tiger_confidence": 1.0,
+                    "dragon_tiger_adjustment": 0.35,
+                    "dragon_tiger_net_amount_yuan": 100_000_000,
+                }
+            },
+        }
+
+        result = score_tide_leader(rows, context)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["dragon_tiger_as_of_date"], "2026-07-16")
+        self.assertTrue(result["dragon_tiger_listed"])
+        self.assertFalse(result["dragon_tiger_positive_suppressed"])
+        self.assertGreater(result["dragon_tiger_adjustment"], 0)
+        self.assertLessEqual(result["dragon_tiger_adjustment"], 0.45)
+        self.assertGreater(result["score"], result["score_before_dragon_tiger"])
+
+        overextended = [dict(row) for row in rows]
+        prior_close = overextended[-2]["close"]
+        overextended[-1].update({
+            "open": prior_close * 1.02,
+            "close": prior_close * 1.10,
+            "high": prior_close * 1.105,
+            "low": prior_close * 1.015,
+            "volume": 1600.0,
+        })
+        enrich_rows(overextended)
+        overextended[-1].update({
+            "symbol_code": "600000",
+            "stock_name": "测试600000",
+            "industry": "半导体",
+            "quote_amount": 1.5e9,
+        })
+
+        suppressed = score_tide_leader(overextended, context)
+
+        self.assertIsNotNone(suppressed)
+        self.assertTrue(suppressed["dragon_tiger_positive_suppressed"])
+        self.assertEqual(suppressed["dragon_tiger_adjustment"], 0)
+        self.assertEqual(suppressed["score"], round(suppressed["score_before_dragon_tiger"], 1))
+
     def test_tide_scorer_consumes_shared_context(self):
         rows = make_rows("600000", "半导体")
         context = {

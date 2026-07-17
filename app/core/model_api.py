@@ -20,6 +20,10 @@ from typing import Any, Callable, Iterable
 UrlOpen = Callable[..., Any]
 
 
+class ModelResponseParseError(ValueError):
+    """The model response could not be decoded as supported JSON or SSE."""
+
+
 @dataclass(frozen=True)
 class ModelRequest:
     """A fully constructed model request before authentication is attached."""
@@ -51,7 +55,7 @@ def uses_responses_api(
     mode: str | None,
     model: str,
     *,
-    search_tools: bool = False,
+    web_search: bool = False,
 ) -> bool:
     """Choose an API without changing legacy models in zero-config installs."""
 
@@ -67,7 +71,7 @@ def uses_responses_api(
     # OpenAI-compatible GPT-5 search tools are exposed through Responses.  Do
     # not switch unknown legacy aliases automatically because some gateways
     # implement their own search-capable Chat endpoint.
-    return search_tools and model_name.startswith("gpt-5")
+    return web_search and model_name.startswith("gpt-5")
 
 
 def _supports_responses_output_limit(model: str) -> bool:
@@ -96,10 +100,14 @@ def build_model_request(
     """Build a Chat or Responses request with mode-appropriate parameters."""
 
     tool_list = [dict(tool) for tool in (tools or [])]
+    has_web_search = any(
+        str(tool.get("type") or "").strip().lower() == "web_search"
+        for tool in tool_list
+    )
     use_responses = uses_responses_api(
         api_mode,
         model,
-        search_tools=bool(tool_list),
+        web_search=has_web_search,
     )
     payload = dict(extra_payload or {})
     payload["model"] = model
@@ -272,7 +280,7 @@ def parse_model_response(raw: str, content_type: str = "") -> ParsedModelRespons
     """Parse Chat/Responses JSON or SSE, including gateways that force SSE."""
 
     if not (raw or "").strip():
-        raise ValueError("empty model response")
+        raise ModelResponseParseError("empty model response")
     looks_like_sse = "text/event-stream" in str(content_type or "").lower() or any(
         line.lstrip().startswith("data:") for line in raw.splitlines()
     )
@@ -281,9 +289,9 @@ def parse_model_response(raw: str, content_type: str = "") -> ParsedModelRespons
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ValueError("model returned neither JSON nor SSE") from exc
+        raise ModelResponseParseError("model returned neither JSON nor SSE") from exc
     if not isinstance(data, dict):
-        raise ValueError("model returned a non-object JSON response")
+        raise ModelResponseParseError("model returned a non-object JSON response")
     return _parse_json_response(data)
 
 
@@ -326,9 +334,15 @@ def _request_once(
 
 def _unsupported_output_limit(error_body: str) -> bool:
     text = str(error_body or "").lower()
-    return "max_output_tokens" in text and bool(
-        re.search(r"unsupported|unknown|not supported|unrecognized|invalid parameter", text)
+    if "max_output_tokens" not in text:
+        return False
+    unsupported_patterns = (
+        r"unsupported\s+(?:request\s+)?(?:parameter|argument|field)",
+        r"(?:unknown|unrecognized)\s+(?:request\s+)?(?:parameter|argument|field)",
+        r"(?:parameter|argument|field)[^\n]{0,120}\bnot\s+supported\b",
+        r"max_output_tokens[^\n]{0,120}\bnot\s+supported\b",
     )
+    return any(re.search(pattern, text) for pattern in unsupported_patterns)
 
 
 def request_model(
@@ -359,8 +373,13 @@ def request_model(
         if not _unsupported_output_limit(error_body):
             # Preserve the response body for module-specific diagnostics after
             # inspecting it for the narrow compatibility fallback.
-            exc.fp = io.BytesIO(error_body.encode("utf-8"))
-            raise
+            raise urllib.error.HTTPError(
+                exc.url,
+                exc.code,
+                exc.msg,
+                exc.hdrs,
+                io.BytesIO(error_body.encode("utf-8")),
+            ) from exc
         fallback_payload = dict(request.payload)
         fallback_payload.pop("max_output_tokens", None)
         fallback = ModelRequest(request.endpoint, fallback_payload, request.api_mode)
