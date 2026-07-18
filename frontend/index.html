@@ -4,7 +4,18 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>牛牛1号</title>
-  <link rel="stylesheet" href="/static/dashboard.css?v=34">
+  <script>
+    (() => {
+      const storageKey = 'niuone-dashboard-theme-v1';
+      let theme = '';
+      try { theme = localStorage.getItem(storageKey) || ''; } catch (error) {}
+      if (theme !== 'light' && theme !== 'dark') {
+        theme = window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/dashboard.css?v=39">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%AE%3C/text%3E%3C/svg%3E">
 
 </head>
@@ -26,6 +37,19 @@
       <a class="version-status" id="versionStatus" data-state="checking" href="https://hub.docker.com/r/kunkundi/niuone" target="_blank" rel="noopener noreferrer" title="正在检查 Docker Hub 最新版本" aria-label="正在检查 Docker Hub 最新版本">
         <span>版本</span><b id="versionValue">--</b>
       </a>
+      <button type="button" class="theme-toggle" id="themeToggle" onclick="toggleDashboardTheme()" title="切换页面主题" aria-label="切换页面主题" aria-pressed="false">
+        <span class="theme-icon theme-icon-moon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="M20.5 14.3A8.5 8.5 0 0 1 9.7 3.5a8.5 8.5 0 1 0 10.8 10.8Z"/>
+          </svg>
+        </span>
+        <span class="theme-icon theme-icon-sun" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <circle cx="12" cy="12" r="3.75"/>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/>
+          </svg>
+        </span>
+      </button>
       <a class="settings-link" href="/admin" title="进入设置页" aria-label="进入设置页">设置</a>
       <div class="refresh-pill" title="最后刷新"><span>最后刷新</span><b id="updated">--</b></div>
     </div>
@@ -36,6 +60,6 @@
   <section id="feed" class="feed"><div class="loading">加载中…</div></section>
 </main>
 
-<script src="/static/dashboard.js?v=45" defer></script>
+<script src="/static/dashboard.js?v=47" defer></script>
 </body>
 </html>

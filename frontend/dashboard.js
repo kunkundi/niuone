@@ -1,3 +1,42 @@
+const DASHBOARD_THEME_STORAGE_KEY = 'niuone-dashboard-theme-v1';
+const dashboardThemeMediaQuery = typeof window.matchMedia === 'function'
+  ? window.matchMedia('(prefers-color-scheme: dark)')
+  : null;
+function storedDashboardTheme() {
+  try {
+    const theme = localStorage.getItem(DASHBOARD_THEME_STORAGE_KEY) || '';
+    return theme === 'light' || theme === 'dark' ? theme : '';
+  } catch (error) {
+    return '';
+  }
+}
+function currentDashboardTheme() {
+  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+}
+function syncDashboardThemeToggle() {
+  const toggle = document.getElementById('themeToggle');
+  if (!toggle) return;
+  const dark = currentDashboardTheme() === 'dark';
+  const label = dark ? '切换为浅色主题' : '切换为深色主题';
+  toggle.title = label;
+  toggle.setAttribute('aria-label', label);
+  toggle.setAttribute('aria-pressed', dark ? 'true' : 'false');
+}
+function setDashboardTheme(theme, persist = false) {
+  const normalized = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = normalized;
+  if (persist) {
+    try { localStorage.setItem(DASHBOARD_THEME_STORAGE_KEY, normalized); } catch (error) {}
+  }
+  syncDashboardThemeToggle();
+}
+function toggleDashboardTheme() {
+  setDashboardTheme(currentDashboardTheme() === 'dark' ? 'light' : 'dark', true);
+}
+dashboardThemeMediaQuery?.addEventListener?.('change', event => {
+  if (!storedDashboardTheme()) setDashboardTheme(event.matches ? 'dark' : 'light');
+});
+
 let data = {records: [], platforms: [], chats: [], categories: {}};
 let indicesData = {};
 let sectorData = {};
@@ -2144,9 +2183,9 @@ function renderPracticeCurve(history, dailyHistory, initialCash=1000000, benchma
           </linearGradient>
           <filter id="practiceGlow" x="-20%" y="-60%" width="140%" height="220%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
         </defs>
-        ${gridYs.map(gy => `<line x1="${left}" x2="${w-right}" y1="${gy.toFixed(1)}" y2="${gy.toFixed(1)}" stroke="rgba(255,255,255,.07)" stroke-dasharray="4 6"/>`).join('')}
-        ${timeTicks.map(t => `<line x1="${t.x.toFixed(1)}" x2="${t.x.toFixed(1)}" y1="${top}" y2="${h-bottom}" stroke="rgba(255,255,255,.045)"/>`).join('')}
-        ${zeroAxisInView ? `<line x1="${left}" x2="${w-right}" y1="${baseY.toFixed(1)}" y2="${baseY.toFixed(1)}" stroke="rgba(226,232,240,.46)" stroke-width="1.2" stroke-dasharray="7 5"/>` : ''}
+        ${gridYs.map(gy => `<line x1="${left}" x2="${w-right}" y1="${gy.toFixed(1)}" y2="${gy.toFixed(1)}" stroke="var(--chart-grid)" stroke-dasharray="4 6"/>`).join('')}
+        ${timeTicks.map(t => `<line x1="${t.x.toFixed(1)}" x2="${t.x.toFixed(1)}" y1="${top}" y2="${h-bottom}" stroke="var(--chart-grid-soft)"/>`).join('')}
+        ${zeroAxisInView ? `<line x1="${left}" x2="${w-right}" y1="${baseY.toFixed(1)}" y2="${baseY.toFixed(1)}" stroke="var(--chart-zero)" stroke-width="1.2" stroke-dasharray="7 5"/>` : ''}
         ${hasCurveSegment ? `<path d="${area}" fill="url(#practiceFill)"/>` : ''}
         ${benchmarkPaths.map(b => `<path d="${b.d}" fill="none" stroke="${b.color}" stroke-width="1.5" opacity=".58" vector-effect="non-scaling-stroke"><title>${b.name} ${Number.isFinite(b.lastPct) ? fmtNumber(b.lastPct) + '%' : ''}</title></path>`).join('')}
         ${hasCurveSegment ? `<path d="${line}" fill="none" stroke="${markerColor}" stroke-width="2.2" vector-effect="non-scaling-stroke" filter="url(#practiceGlow)"/>` : ''}
@@ -2284,7 +2323,7 @@ function renderPracticeCalendarDayCurve(date) {
   return `<div class="practice-calendar-day-curve" data-practice-calendar-curve>${head}
     <div class="practice-calendar-day-curve-chart">
       <svg class="practice-calendar-day-curve-svg" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(date)} 当日收益曲线">
-        <line x1="${left}" y1="${zeroY}" x2="${w - right}" y2="${zeroY}" stroke="rgba(203,213,225,.32)" stroke-width="1" stroke-dasharray="4 5"></line>
+        <line x1="${left}" y1="${zeroY}" x2="${w - right}" y2="${zeroY}" stroke="var(--chart-zero)" stroke-width="1" stroke-dasharray="4 5"></line>
         <path d="${areaPath}" fill="${fill}"></path>
         <path d="${path}" fill="none" stroke="${stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
         <circle cx="${markerX}" cy="${markerY}" r="4" fill="#f8fafc" stroke="${stroke}" stroke-width="2"></circle>
@@ -2429,7 +2468,7 @@ function renderPracticeMarketSummary() {
     ? '正在读取今日盘面扫描'
     : (scanCount ? `复盘资料：${sourceCountText}` : '今日暂无A股盘面扫描');
   const action = `<div class="practice-market-summary-action">
-    <button type="button" class="practice-market-summary-btn" onclick="triggerPracticeMarketSummary()" ${generating ? 'disabled aria-busy="true"' : ''}>${generating ? '⏳ ' : '✨ '}${esc(buttonText)}</button>
+    <button type="button" class="practice-market-summary-btn" onclick="triggerPracticeMarketSummary()" ${generating ? 'disabled aria-busy="true"' : ''}>${generating ? '处理中 · ' : ''}${esc(buttonText)}</button>
     <span>${esc(statusText)}${d.stale ? ' · 有新增扫描，建议重新生成' : ''}</span>
   </div>`;
   const error = d.error ? `<div class="practice-market-summary-error">${esc(d.error)}</div>` : '';
@@ -2573,7 +2612,7 @@ function renderPracticePanel() {
       : '';
     return `<div class="position-card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <span style="font-weight:700;font-size:16px;color:#f8fafc">${esc(x.code)} ${esc(x.name||'')}</span>
+        <span style="font-weight:700;font-size:16px;color:var(--text)">${esc(x.code)} ${esc(x.name||'')}</span>
       </div>
       <div class="position-metrics">
         <div class="position-metric"><div class="position-label">成本/现价</div><div class="position-value combo">${costPriceText}</div></div>
@@ -2620,8 +2659,8 @@ function renderPracticePanel() {
       : '';
     return `<div class="position-card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px">
-        <span style="font-weight:700;font-size:16px;color:#f8fafc">${esc(x.code)} ${esc(x.name||'')}</span>
-        <span style="font-size:13px;color:#94a3b8">${esc(x.shares)}股 · ${esc((x.last_sell_time||'').slice(11,16))}</span>
+        <span style="font-weight:700;font-size:16px;color:var(--text)">${esc(x.code)} ${esc(x.name||'')}</span>
+        <span style="font-size:13px;color:var(--muted)">${esc(x.shares)}股 · ${esc((x.last_sell_time||'').slice(11,16))}</span>
       </div>
       <div class="position-metrics">
         <div class="position-metric"><div class="position-label">卖出/现价</div><div class="position-value combo">${priceText}</div></div>
@@ -2653,7 +2692,7 @@ function renderPracticePanel() {
   const ruleMeta = [`模型：${esc(decisionModel || missingModelLabel)}`, quoteNote].filter(Boolean).join('｜');
   const manualCycle = practiceManualCycleData || {};
   const manualRunning = !!manualCycle.running;
-  const manualButtonText = manualRunning ? (manualCycle.stage_label || '本轮执行中…') : '手动触发选股及买卖策略';
+  const manualButtonText = manualRunning ? (manualCycle.stage_label || '本轮执行中…') : '手动运行选股与交易策略';
   const marketContext = p.market_decision_context || {};
   const marketGuidance = Array.isArray(marketContext.guidance_lines) ? marketContext.guidance_lines.slice(0, 2) : [];
   const marketEvaluation = marketContext.available || marketContext.tone_label
@@ -2662,14 +2701,14 @@ function renderPracticePanel() {
   return `<section class="sector-cloud" style="margin-bottom:18px">
     <div class="practice-account-head">
       <h3>模拟账户</h3>
-      <button type="button" class="practice-manual-cycle-btn" onclick="triggerPracticeManualCycle()" ${manualRunning ? 'disabled aria-busy="true"' : ''}>${manualRunning ? '⏳ ' : '▶ '}${esc(manualButtonText)}</button>
+      <button type="button" class="practice-manual-cycle-btn" onclick="triggerPracticeManualCycle()" ${manualRunning ? 'disabled aria-busy="true"' : ''}>${manualRunning ? '处理中 · ' : ''}${esc(manualButtonText)}</button>
     </div>
     ${marketEvaluation}
     ${renderPracticeMarketSummary()}
     ${manualCycle.error ? `<div class="practice-manual-cycle-error">本轮执行失败：${esc(manualCycle.error)}</div>` : ''}
-    ${p.trading_paused ? `<div style=\"background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.35);border-radius:12px;padding:10px 14px;margin:10px 0;display:flex;justify-content:space-between;align-items:center\">
-      <span style=\"color:#fbbf24;font-size:13px\">⏸️ 新开仓已暂停：${esc(p.pause_reason||'风控触发')}（${esc((p.pause_since||'').slice(11,16))}起，卖出风控继续运行）</span>
-      <button onclick=\"actionFetch('/api/niuniu_practice/resume').then(r=>r.json()).then(d=>{if(d.resumed)location.reload()})\" style=\"background:rgba(52,211,153,.18);color:#34d399;border:1px solid rgba(52,211,153,.35);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600\">🔄 强制恢复交易</button>
+    ${p.trading_paused ? `<div style=\"background:var(--yellow-soft);border:1px solid var(--yellow-border);border-radius:8px;padding:10px 14px;margin:10px 0;display:flex;justify-content:space-between;align-items:center\">
+      <span style=\"color:var(--yellow-text);font-size:13px\">新开仓已暂停：${esc(p.pause_reason||'风控触发')}（${esc((p.pause_since||'').slice(11,16))}起，卖出风控继续运行）</span>
+      <button onclick=\"actionFetch('/api/niuniu_practice/resume').then(r=>r.json()).then(d=>{if(d.resumed)location.reload()})\" style=\"background:var(--green-soft);color:var(--green-text);border:1px solid var(--green-border);border-radius:7px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600\">恢复交易</button>
     </div>` : ''}
     <div class="practice-stats" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0">
       <div class="inline-field"><div class="inline-label">初始资金</div><div class="inline-value">${fmtAmount(p.initial_cash)}</div></div>
@@ -2770,14 +2809,14 @@ function renderIndicesPanel() {
     const netCls = Number(mf.net_flow_yi) > 0 ? 'up' : Number(mf.net_flow_yi) < 0 ? 'down' : 'flat';
     const sign = Number(mf.net_flow_yi) > 0 ? '+' : '';
     return `<div class="sector-cloud"><h3>大盘资金流向</h3><div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:10px">
-      <div style="flex:1;min-width:120px;text-align:center;padding:8px 12px;background:#111;border-radius:8px"><div style="font-size:12px;color:#999">总流入</div><div style="font-size:18px;color:#e74c3c;font-weight:bold">${fmtAmount(mf.total_inflow)}</div><div style="font-size:11px;color:#666">${fmtNumber(mf.total_inflow_yi, 0)}亿</div></div>
-      <div style="flex:1;min-width:120px;text-align:center;padding:8px 12px;background:#111;border-radius:8px"><div style="font-size:12px;color:#999">总流出</div><div style="font-size:18px;color:#2ecc71;font-weight:bold">${fmtAmount(mf.total_outflow)}</div><div style="font-size:11px;color:#666">${fmtNumber(mf.total_outflow_yi, 0)}亿</div></div>
-      <div style="flex:1;min-width:120px;text-align:center;padding:8px 12px;background:#111;border-radius:8px"><div style="font-size:12px;color:#999">净流入</div><div style="font-size:18px;color:${netCls === 'up' ? '#e74c3c' : '#2ecc71'};font-weight:bold">${sign}${fmtAmount(mf.net_flow)}</div><div style="font-size:11px;color:#666">${sign}${fmtNumber(mf.net_flow_yi, 0)}亿</div></div>
+      <div style="flex:1;min-width:120px;text-align:center;padding:8px 12px;background:var(--panel2);border:1px solid var(--line);border-radius:7px"><div style="font-size:12px;color:var(--muted)">总流入</div><div style="font-size:18px;color:var(--red);font-weight:bold">${fmtAmount(mf.total_inflow)}</div><div style="font-size:11px;color:var(--muted)">${fmtNumber(mf.total_inflow_yi, 0)}亿</div></div>
+      <div style="flex:1;min-width:120px;text-align:center;padding:8px 12px;background:var(--panel2);border:1px solid var(--line);border-radius:7px"><div style="font-size:12px;color:var(--muted)">总流出</div><div style="font-size:18px;color:var(--green);font-weight:bold">${fmtAmount(mf.total_outflow)}</div><div style="font-size:11px;color:var(--muted)">${fmtNumber(mf.total_outflow_yi, 0)}亿</div></div>
+      <div style="flex:1;min-width:120px;text-align:center;padding:8px 12px;background:var(--panel2);border:1px solid var(--line);border-radius:7px"><div style="font-size:12px;color:var(--muted)">净流入</div><div style="font-size:18px;color:${netCls === 'up' ? 'var(--red)' : 'var(--green)'};font-weight:bold">${sign}${fmtAmount(mf.net_flow)}</div><div style="font-size:11px;color:var(--muted)">${sign}${fmtNumber(mf.net_flow_yi, 0)}亿</div></div>
     </div></div>`;
   }
   function renderIndexGroup(title, list) {
     if (!list || !list.length) return '';
-    return `<div style="margin-bottom:18px"><h3 style="margin:0 0 10px;color:#c7d2fe;font-size:15px">${title}</h3><section class="market-strip">${list.map(item => `
+    return `<div style="margin-bottom:18px"><h3 style="margin:0 0 10px;color:var(--text);font-size:15px">${title}</h3><section class="market-strip">${list.map(item => `
       <article class="index-card ${trendClass(item)}">
         <div class="index-name">${esc(item.name)}</div>
         <div class="index-price">${fmtNumber(item.price)}</div>
@@ -3027,13 +3066,13 @@ function renderPracticePage() {
   const running = !!d.running;
   const cooldownRemaining = Number(d.cooldown_remaining_seconds || 0);
   const cooling = !running && cooldownRemaining > 0;
-  const statusText = running ? `⏳ 计算中${d.started_at ? ' · 开始 ' + esc(d.started_at.slice(11)) : ''}` : `🕐 扫描时间: ${esc(d.generated_at || '--')} · 高流动性主板扫描 ${esc(d.count || items.length)} 只入选`;
+  const statusText = running ? `计算中${d.started_at ? ' · 开始 ' + esc(d.started_at.slice(11)) : ''}` : `扫描时间：${esc(d.generated_at || '--')} · 高流动性主板扫描 ${esc(d.count || items.length)} 只入选`;
   const header = `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;color:var(--muted);font-size:13px;flex-wrap:wrap">
     <span>${statusText}</span>
   </div>`;
   let html = renderPracticePanel() + header;
   if (running) {
-    html += `<div class="empty" style="border-color:rgba(124,92,255,.35);color:#c4b5fd;background:rgba(124,92,255,.08)">⏳ 多战法正在计算中，完成后页面会自动刷新；当前下方仍显示上一版缓存结果。</div>`;
+    html += `<div class="empty" style="border-color:var(--accent-border);color:var(--accent-text);background:var(--accent-soft)">多战法正在计算中，完成后页面会自动刷新；当前下方仍显示上一版缓存结果。</div>`;
   }
   if (err) {
     html += `<div class="empty" style="color:#f87171">⚠️ ${esc(err)}</div>`;
@@ -3069,9 +3108,9 @@ function renderPracticePage() {
       else tierCounts.low++;
     }
     html += `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px">
-      <span style="padding:4px 10px;border-radius:999px;background:rgba(52,211,153,.15);color:#34d399;border:1px solid rgba(52,211,153,.3);font-size:12px">🥇 试仓 ${tierCounts.high}只</span>
-      <span style="padding:4px 10px;border-radius:999px;background:rgba(251,191,36,.15);color:#fbbf24;border:1px solid rgba(251,191,36,.3);font-size:12px">🥈 等确认 ${tierCounts.mid}只</span>
-      <span style="padding:4px 10px;border-radius:999px;background:rgba(148,163,184,.12);color:#94a3b8;border:1px solid rgba(148,163,184,.2);font-size:12px">👀 仅观察 ${tierCounts.low}只</span>
+      <span style="padding:4px 9px;border-radius:6px;background:var(--green-soft);color:var(--green-text);border:1px solid var(--green-border);font-size:12px">试仓 ${tierCounts.high}只</span>
+      <span style="padding:4px 9px;border-radius:6px;background:var(--yellow-soft);color:var(--yellow-text);border:1px solid var(--yellow-border);font-size:12px">等确认 ${tierCounts.mid}只</span>
+      <span style="padding:4px 9px;border-radius:6px;background:var(--panel2);color:var(--muted);border:1px solid var(--line);font-size:12px">仅观察 ${tierCounts.low}只</span>
     </div>`;
     const distribution = d.strategy_distribution || {};
     const distHtml = Object.entries(distribution).filter(([_, count]) => Number(count) > 0).map(([name, count]) => {
@@ -3104,41 +3143,41 @@ function renderPracticePage() {
       const tradeDiscipline = [item.position_hint, item.time_stop].filter(Boolean).join(' · ');
       const tradeReady = !!item.actionable && !hardBlockers.length && finalScore >= entryThreshold;
       const industryLabel = item.industry || item.sector || item.board_label || STOCK_BOARD_LABELS[item.board] || '';
-      const groupBadgeBase = 'display:inline-flex;align-items:center;flex:0 0 auto;white-space:nowrap;line-height:1;background:rgba(52,211,153,.15);color:#34d399;padding:6px 10px;border-radius:999px;font-size:11px;font-weight:600';
+      const groupBadgeBase = 'display:inline-flex;align-items:center;flex:0 0 auto;white-space:nowrap;line-height:1;background:var(--green-soft);color:var(--green-text);border:1px solid var(--green-border);padding:6px 9px;border-radius:6px;font-size:11px;font-weight:600';
       if (tradeReady) groupBadge = `<span style="${groupBadgeBase}">交易达标</span>`;
-      else if (hardBlockers.length) groupBadge = `<span style="${groupBadgeBase};background:rgba(251,191,36,.15);color:#fbbf24">硬过滤</span>`;
-      else if (finalScore >= entryThreshold - 1.5) groupBadge = `<span style="${groupBadgeBase};background:rgba(251,191,36,.15);color:#fbbf24">等确认</span>`;
-      else groupBadge = `<span style="${groupBadgeBase};background:rgba(148,163,184,.12);color:#94a3b8">仅观察</span>`;
-      html += `<div style="background:rgba(16,19,26,.86);border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:0 10px 36px rgba(0,0,0,.18)">
+      else if (hardBlockers.length) groupBadge = `<span style="${groupBadgeBase};background:var(--yellow-soft);color:var(--yellow-text);border-color:var(--yellow-border)">硬过滤</span>`;
+      else if (finalScore >= entryThreshold - 1.5) groupBadge = `<span style="${groupBadgeBase};background:var(--yellow-soft);color:var(--yellow-text);border-color:var(--yellow-border)">等确认</span>`;
+      else groupBadge = `<span style="${groupBadgeBase};background:var(--panel2);color:var(--muted);border-color:var(--line)">仅观察</span>`;
+      html += `<div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px">
           <div style="min-width:0;flex:1 1 auto">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0">
-              <span style="font-weight:780;font-size:17px;color:#f8fafc">${esc(item.code)} ${esc(item.name)}</span>
+              <span style="font-weight:780;font-size:17px;color:var(--text)">${esc(item.code)} ${esc(item.name)}</span>
               <span style="display:inline-flex;align-items:center;white-space:nowrap;padding:2px 8px;border-radius:999px;background:${sm.color}22;color:${sm.color};font-size:12px;border:1px solid ${sm.color}44">${esc(sm.label)}</span>
             </div>
-            ${industryLabel ? `<div style="margin-top:8px"><span style="display:inline-flex;align-items:center;max-width:100%;white-space:nowrap;padding:2px 8px;border-radius:999px;background:rgba(124,92,255,.15);color:#c4b5fd;font-size:12px">${esc(industryLabel)}</span></div>` : ''}
+            ${industryLabel ? `<div style="margin-top:8px"><span style="display:inline-flex;align-items:center;max-width:100%;white-space:nowrap;padding:2px 8px;border-radius:6px;background:var(--accent-soft);color:var(--accent-text);font-size:12px">${esc(industryLabel)}</span></div>` : ''}
           </div>
           ${groupBadge}
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-          <div style="background:rgba(2,6,23,.42);border:1px solid rgba(148,163,184,.10);border-radius:12px;padding:8px 10px;flex:1;min-width:100px">
-            <div style="color:#8da0b8;font-size:11px">价格 / 涨跌</div>
-            <div style="color:#eef2ff;font-size:14px;font-weight:600">${fmtNumber(item.price)} <span class="index-change ${chgCls}" style="font-size:13px">${esc(chg)}</span></div>
+          <div style="background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:8px 10px;flex:1;min-width:100px">
+            <div style="color:var(--muted);font-size:11px">价格 / 涨跌</div>
+            <div style="color:var(--text);font-size:14px;font-weight:600">${fmtNumber(item.price)} <span class="index-change ${chgCls}" style="font-size:13px">${esc(chg)}</span></div>
           </div>
-          <div style="background:rgba(2,6,23,.42);border:1px solid rgba(148,163,184,.10);border-radius:12px;padding:8px 10px;flex:1;min-width:100px">
-            <div style="color:#8da0b8;font-size:11px">${esc(sm.label)}评分</div>
-            <div style="color:#eef2ff;font-size:14px;font-weight:600">${item.best_score||item.score}/${item.score_total||10} · 基准≥${entryThreshold}</div>
+          <div style="background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:8px 10px;flex:1;min-width:100px">
+            <div style="color:var(--muted);font-size:11px">${esc(sm.label)}评分</div>
+            <div style="color:var(--text);font-size:14px;font-weight:600">${item.best_score||item.score}/${item.score_total||10} · 基准≥${entryThreshold}</div>
           </div>
-          <div style="background:rgba(2,6,23,.42);border:1px solid rgba(148,163,184,.10);border-radius:12px;padding:8px 10px;flex:1;min-width:100px">
-            <div style="color:#8da0b8;font-size:11px">${isSectorTide ? 'EMA20 / 距EMA20' : 'BBI / 距BBI'}</div>
-            <div style="color:#eef2ff;font-size:14px;font-weight:600">${fmtNumber(isSectorTide ? item.ema20 : item.bbi)} / ${esc(distStr)}</div>
+          <div style="background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:8px 10px;flex:1;min-width:100px">
+            <div style="color:var(--muted);font-size:11px">${isSectorTide ? 'EMA20 / 距EMA20' : 'BBI / 距BBI'}</div>
+            <div style="color:var(--text);font-size:14px;font-weight:600">${fmtNumber(isSectorTide ? item.ema20 : item.bbi)} / ${esc(distStr)}</div>
           </div>
-          <div style="background:rgba(2,6,23,.42);border:1px solid rgba(148,163,184,.10);border-radius:12px;padding:8px 10px;flex:1;min-width:100px">
-            <div style="color:#8da0b8;font-size:11px">成交额</div>
-            <div style="color:#eef2ff;font-size:14px;font-weight:600">${item.amount_yi != null ? item.amount_yi + '亿' : '--'}</div>
+          <div style="background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:8px 10px;flex:1;min-width:100px">
+            <div style="color:var(--muted);font-size:11px">成交额</div>
+            <div style="color:var(--text);font-size:14px;font-weight:600">${item.amount_yi != null ? item.amount_yi + '亿' : '--'}</div>
           </div>
         </div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;color:#94a3b8;font-size:12px">
+        <div style="display:flex;flex-wrap:wrap;gap:6px;color:var(--muted);font-size:12px">
           ${isSectorTide
             ? `<span>市场 ${esc(item.market_regime || '--')} ${fmtNumber(item.market_score)}</span><span>行业潮位 ${esc(tideStatusNames[item.sector_status] || item.sector_status || '--')} / ${fmtNumber(item.sector_score)}</span><span>板块内排名 ${fmtNumber(item.stock_sector_rank)}</span><span>结构止损 ${fmtNumber(item.stop_price)} (${fmtNumber(item.stop_distance_pct)}%)</span><span>跳空缓冲 ${fmtNumber(item.gap_buffer_pct)}%</span><span>有效损失 ${fmtNumber(item.effective_loss_distance_pct)}%</span><span>单笔预算 ${fmtNumber(item.per_trade_risk_budget_pct)}%</span><span>动态仓位上限 ${fmtNumber(item.max_position_pct_by_risk)}%</span>`
             : `<span>BBI上行 ${bbiUp}</span><span>站上BBI ${aboveBbi}</span><span>${esc(jInfo)}</span>`}
@@ -3202,7 +3241,7 @@ function renderUsRatingDay(records) {
   const dayRecords = groups.get(day) || [];
   return `<div class="sector-cloud" style="margin-bottom:14px">
     <div class="rating-day-pager" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-      <span style="font-weight:700;color:#c7d2fe">${esc(day)}</span>
+      <span style="font-weight:700;color:var(--text)">${esc(day)}</span>
       <div class="rating-day-actions" style="display:flex;gap:8px">
 ${ratingDayButtons(days)}
       </div>
@@ -3412,7 +3451,7 @@ function renderUsRatingDay(records) {
   const dayRecords = groups.get(day) || [];
   return `<div class="sector-cloud" style="margin-bottom:14px">
     <div class="rating-day-pager" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-      <span style="font-weight:700;color:#c7d2fe">${esc(day)}</span>
+      <span style="font-weight:700;color:var(--text)">${esc(day)}</span>
       <div class="rating-day-actions" style="display:flex;gap:8px">
 ${ratingDayButtons(days, true)}
       </div>
@@ -4799,6 +4838,7 @@ async function loadDashboardBootstrap() {
 }
 
 async function startDashboard() {
+  syncDashboardThemeToggle();
   restoreViewState();
   loadVersionStatus();
   const categoryBeforeBootstrap = activeCategory;
