@@ -37,6 +37,16 @@ dashboardThemeMediaQuery?.addEventListener?.('change', event => {
   if (!storedDashboardTheme()) setDashboardTheme(event.matches ? 'dark' : 'light');
 });
 
+function dismissComplianceDialog() {
+  const backdrop = document.getElementById('complianceDialog');
+  if (!backdrop || backdrop.hidden) return;
+  backdrop.hidden = true;
+  document.body.classList.remove('compliance-dialog-open');
+}
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') dismissComplianceDialog();
+});
+
 let data = {records: [], platforms: [], chats: [], categories: {}};
 let indicesData = {};
 let sectorData = {};

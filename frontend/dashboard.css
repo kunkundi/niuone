@@ -3,12 +3,22 @@
     * { box-sizing: border-box; }
     html { -webkit-text-size-adjust: 100%; }
     body { margin:0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); overflow-x:hidden; }
+    body.compliance-dialog-open { overflow:hidden; }
     body.x-image-viewer-open { overflow:hidden; }
-    .compliance-notice { display:grid; gap:6px; padding:10px max(clamp(16px, 4vw, 42px), calc((100vw - 1440px) / 2)); border-bottom:1px solid #eadfbd; background:#fffdf5; color:#5f5745; font-size:12px; line-height:1.55; }
-    .compliance-row { display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap; }
-    .compliance-badge { flex:0 0 auto; border:1px solid #d9c98e; background:#fff8dc; color:#755b00; border-radius:5px; padding:2px 7px; font-weight:750; line-height:1.45; white-space:nowrap; }
+    .compliance-dialog-backdrop { position:fixed; inset:0; z-index:100; display:grid; place-items:center; padding:20px; background:rgba(15,23,42,.56); }
+    .compliance-dialog-backdrop[hidden] { display:none; }
+    .compliance-dialog { width:min(640px, 100%); max-height:calc(100vh - 40px); overflow:auto; border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--text); box-shadow:0 18px 48px rgba(15,23,42,.22); }
+    .compliance-dialog-head { padding:18px 20px 14px; border-bottom:1px solid var(--line); }
+    .compliance-dialog-head h2 { margin:0; font-size:18px; font-weight:760; letter-spacing:-.01em; }
+    .compliance-dialog-body { display:grid; gap:10px; padding:18px 20px; }
+    .compliance-row { display:grid; gap:8px; padding:14px; border:1px solid var(--line); border-radius:8px; background:var(--panel2); font-size:13px; line-height:1.65; }
+    .compliance-badge { justify-self:start; border:1px solid #d9c98e; background:#fff8dc; color:#755b00; border-radius:5px; padding:2px 7px; font-weight:750; line-height:1.45; white-space:nowrap; }
     .compliance-badge.risk { border-color:#e6b7b1; background:#fff4f2; color:#9b3029; }
-    .compliance-text { min-width:0; flex:1 1 300px; overflow-wrap:anywhere; }
+    .compliance-text { min-width:0; color:var(--muted); overflow-wrap:anywhere; }
+    .compliance-dialog-actions { display:flex; justify-content:flex-end; padding:0 20px 18px; }
+    .compliance-dialog-close { min-width:84px; border:1px solid var(--text); border-radius:7px; padding:8px 16px; background:var(--text); color:var(--panel); font-weight:700; }
+    .compliance-dialog-close:hover { opacity:.86; }
+    .compliance-dialog-close:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
     header { position:sticky; top:0; z-index:2; background:rgba(255,255,255,.97); border-bottom:1px solid var(--line); padding:16px max(clamp(16px, 4vw, 42px), calc((100vw - 1440px) / 2)); }
     .header-row { display:flex; align-items:center; justify-content:space-between; gap:14px; }
     .header-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
@@ -616,9 +626,15 @@
     .practice-curve { height:120px; width:100%; margin-top:8px; }
     @media (max-width: 720px) {
       body { background:var(--bg); }
-      .compliance-notice { padding:9px 12px; font-size:11px; gap:5px; }
-      .compliance-row { gap:6px; }
-      .compliance-badge { padding:1px 7px; }
+      .compliance-dialog-backdrop { align-items:end; padding:12px; }
+      .compliance-dialog { width:100%; max-height:calc(100vh - 24px); border-radius:10px; }
+      .compliance-dialog-head { padding:16px 16px 12px; }
+      .compliance-dialog-head h2 { font-size:17px; }
+      .compliance-dialog-body { gap:8px; padding:14px 16px; }
+      .compliance-row { gap:7px; padding:12px; font-size:12px; }
+      .compliance-badge { justify-self:start; padding:1px 7px; }
+      .compliance-dialog-actions { padding:0 16px 16px; }
+      .compliance-dialog-close { width:100%; }
       header { position:static; padding:8px 9px 7px; backdrop-filter:none; background:rgba(6,7,10,.98); }
       .header-row { gap:8px; }
       .header-actions { gap:5px; }
@@ -1367,12 +1383,8 @@
     /* ---- dark dashboard theme ---- */
     html[data-theme="dark"] body { background:var(--bg); color:var(--text); }
     html[data-theme="dark"] body * { text-shadow:none; }
-    html[data-theme="dark"] .compliance-notice {
-      border-color:#303744;
-      background:#10141b;
-      color:#c5ceda;
-      box-shadow:none;
-    }
+    html[data-theme="dark"] .compliance-dialog-backdrop { background:rgba(0,0,0,.7); }
+    html[data-theme="dark"] .compliance-dialog { box-shadow:0 18px 48px rgba(0,0,0,.45); }
     html[data-theme="dark"] .compliance-badge {
       border-color:#6b5724;
       background:#29220f;

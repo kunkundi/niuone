@@ -15,15 +15,25 @@
       document.documentElement.dataset.theme = theme;
     })();
   </script>
-  <link rel="stylesheet" href="/static/dashboard.css?v=39">
+  <link rel="stylesheet" href="/static/dashboard.css?v=40">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%AE%3C/text%3E%3C/svg%3E">
 
 </head>
-<body>
-<section class="compliance-notice" aria-label="非荐股和入市风险提示">
-  <div class="compliance-row"><span class="compliance-badge">非荐股提示</span><span class="compliance-text">本页面仅用于个人研究、模拟交易和信息展示，不构成证券、期货投资咨询、投资建议、荐股服务或任何买卖依据；不承诺收益，不代客理财，不收取荐股费用。</span></div>
-  <div class="compliance-row"><span class="compliance-badge risk">入市风险提示</span><span class="compliance-text">证券、期货等投资存在本金损失风险，市场有涨有跌；请通过正规持牌机构独立判断、自主决策、风险自担。投资有风险，入市需谨慎。</span></div>
-</section>
+<body class="compliance-dialog-open">
+<div class="compliance-dialog-backdrop" id="complianceDialog" role="presentation">
+  <section class="compliance-dialog" role="dialog" aria-modal="true" aria-labelledby="complianceDialogTitle" aria-describedby="complianceDialogContent">
+    <div class="compliance-dialog-head">
+      <h2 id="complianceDialogTitle">使用与风险提示</h2>
+    </div>
+    <div class="compliance-dialog-body" id="complianceDialogContent">
+      <div class="compliance-row"><span class="compliance-badge">非荐股提示</span><span class="compliance-text">本页面仅用于个人研究、模拟交易和信息展示，不构成证券、期货投资咨询、投资建议、荐股服务或任何买卖依据；不承诺收益，不代客理财，不收取荐股费用。</span></div>
+      <div class="compliance-row"><span class="compliance-badge risk">入市风险提示</span><span class="compliance-text">证券、期货等投资存在本金损失风险，市场有涨有跌；请通过正规持牌机构独立判断、自主决策、风险自担。投资有风险，入市需谨慎。</span></div>
+    </div>
+    <div class="compliance-dialog-actions">
+      <button type="button" class="compliance-dialog-close" id="complianceDialogClose" onclick="dismissComplianceDialog()" autofocus>关闭</button>
+    </div>
+  </section>
+</div>
 <header>
   <div class="header-row">
     <h1>牛牛1号</h1>
@@ -60,6 +70,6 @@
   <section id="feed" class="feed"><div class="loading">加载中…</div></section>
 </main>
 
-<script src="/static/dashboard.js?v=47" defer></script>
+<script src="/static/dashboard.js?v=48" defer></script>
 </body>
 </html>
