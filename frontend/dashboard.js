@@ -2196,7 +2196,7 @@ function renderPracticeCurve(history, dailyHistory, initialCash=1000000, benchma
             <stop offset="0%" stop-color="${markerColor}" stop-opacity="0.30"/>
             <stop offset="100%" stop-color="${markerColor}" stop-opacity="0.02"/>
           </linearGradient>
-          <filter id="practiceGlow" x="-20%" y="-60%" width="140%" height="220%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          <filter id="practiceGlow" filterUnits="userSpaceOnUse" x="-20" y="-20" width="${w + 40}" height="${h + 40}"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
         </defs>
         ${gridYs.map(gy => `<line x1="${left}" x2="${w-right}" y1="${gy.toFixed(1)}" y2="${gy.toFixed(1)}" stroke="var(--chart-grid)" stroke-dasharray="4 6"/>`).join('')}
         ${timeTicks.map(t => `<line x1="${t.x.toFixed(1)}" x2="${t.x.toFixed(1)}" y1="${top}" y2="${h-bottom}" stroke="var(--chart-grid-soft)"/>`).join('')}

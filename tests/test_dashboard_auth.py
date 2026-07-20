@@ -2112,6 +2112,14 @@ process.stdout.write(JSON.stringify({
         self.assertIn('time: `${latestDay} 09:30:00`', DASHBOARD_FRONTEND)
         self.assertIn('const intradayBaseLabel = hasIntradayOpenBase', DASHBOARD_FRONTEND)
 
+    def test_index_template_flat_zero_curve_uses_non_degenerate_glow_region(self):
+        self.assertIn(
+            '<filter id="practiceGlow" filterUnits="userSpaceOnUse"',
+            DASHBOARD_FRONTEND,
+        )
+        self.assertIn('x="-20" y="-20" width="${w + 40}" height="${h + 40}"', DASHBOARD_FRONTEND)
+        self.assertNotIn('<filter id="practiceGlow" x="-20%"', DASHBOARD_FRONTEND)
+
     def test_configured_admin_password_issues_secure_session_and_unlocks_settings(self):
         dashboard.ADMIN_PASSWORD = '管理员密码'
 
