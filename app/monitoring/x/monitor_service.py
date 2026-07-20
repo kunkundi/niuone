@@ -52,6 +52,7 @@ if __package__ == "app":
         parse_iso,
         parse_post_time,
         pending_is_already_latest,
+        post_time_is_implausible,
         sent_context_key,
         should_retry_sent_context,
     )
@@ -91,6 +92,7 @@ else:
         parse_iso,
         parse_post_time,
         pending_is_already_latest,
+        post_time_is_implausible,
         sent_context_key,
         should_retry_sent_context,
     )
@@ -821,19 +823,24 @@ def normalize_item_post_times(items):
     return [
         (display_name, normalize_post_time(post, post_id), post_id, handle)
         for display_name, post, post_id, handle in items
+        if not post_time_is_implausible(post.get("time"), post_id)
     ]
 
 
 def normalize_monitor_state_times(state):
-    """Repair persisted X state times without changing post identity or content."""
+    """Repair persisted X state times and discard impossible future cursors."""
     changed = 0
 
     def normalize_latest(values):
         nonlocal changed
         if not isinstance(values, dict):
             return
-        for value in values.values():
+        for handle, value in list(values.items()):
             if not isinstance(value, dict):
+                continue
+            if post_time_is_implausible(value.get("time"), value.get("post_id")):
+                values.pop(handle, None)
+                changed += 1
                 continue
             normalized = normalize_post_time(value, value.get("post_id"))
             if normalized.get("time") != value.get("time"):
@@ -849,11 +856,16 @@ def normalize_monitor_state_times(state):
         queue = state.get(queue_name)
         if not isinstance(queue, list):
             continue
+        valid_entries = []
         for entry in queue:
             if not isinstance(entry, dict):
+                valid_entries.append(entry)
                 continue
             post = entry.get("post") if isinstance(entry.get("post"), dict) else {}
             post_id = entry.get("post_id") or post.get("post_id")
+            if post_time_is_implausible(post.get("time") or entry.get("time"), post_id):
+                changed += 1
+                continue
             normalized_post = normalize_post_time(post, post_id)
             if post and normalized_post != post:
                 entry["post"] = normalized_post
@@ -863,6 +875,7 @@ def normalize_monitor_state_times(state):
                 post_id,
             )
             if not post_time:
+                valid_entries.append(entry)
                 continue
             time_text = post_time.strftime("%Y-%m-%d %H:%M:%S")
             if entry.get("time") != time_text:
@@ -873,6 +886,8 @@ def normalize_monitor_state_times(state):
                 if abs(float(entry.get("timestamp") or 0) - timestamp) >= 1:
                     entry["timestamp"] = timestamp
                     changed += 1
+            valid_entries.append(entry)
+        queue[:] = valid_entries
     return changed
 
 
@@ -972,6 +987,8 @@ def write_direct_x_alerts_to_db(send_items):
     messages = []
     now = datetime.now(timezone.utc)
     for idx, (display_name, post, post_id, handle) in enumerate(send_items, 1):
+        if post_time_is_implausible(post.get("time"), post_id):
+            continue
         post = normalize_post_time(post, post_id)
         post_time = canonical_post_time(post.get("time"), post_id)
         if post_time:
@@ -1492,6 +1509,7 @@ def main():
             normalize_post_time(post, post.get("post_id"))
             for post in (account.get("posts") or [])
             if isinstance(post, dict)
+            and not post_time_is_implausible(post.get("time"), post.get("post_id"))
         ]
         account_seen = set(seen.get(handle, []))
         latest_value = latest.get(handle) or {}

@@ -545,6 +545,61 @@ print(json.dumps({{
             self.assertEqual(data['metadata_time'], '2026-07-16 23:21:00')
             self.assertEqual(data['state_changes'], 1)
 
+    def test_future_numeric_post_id_is_not_stored_and_is_removed_from_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
+            env.pop('DASHBOARD_X_WATCHLIST_STATE', None)
+            code = f"""
+import importlib.util, json, sys
+from datetime import datetime, timedelta, timezone
+sys.path[:0] = [{str(COMPAT)!r}, {str(SRC)!r}]
+spec = importlib.util.spec_from_file_location('x_watchlist_monitor_under_test', {str(COMPAT / 'x_watchlist_monitor.py')!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+future_utc = datetime.now(timezone.utc) + timedelta(days=365)
+post_id = str((int(future_utc.timestamp() * 1000) - 1288834974657) << 22)
+post = {{
+  'post_id': post_id,
+  'time': datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S'),
+  'chinese_text': '不应入库的未来推文 ID',
+  'conversation_type': 'original',
+  'media': [],
+}}
+count = m.write_direct_x_alerts_to_db([('测试账号', post, post_id, 'tester')])
+state = {{
+  'latest': {{'tester': {{'post_id': post_id, 'time': post['time']}}}},
+  'pending_delivery': {{'latest': {{'tester': {{'post_id': post_id, 'time': post['time']}}}}}},
+  'sent_missing_context': [{{'post_id': post_id, 'time': post['time'], 'post': post}}],
+  'held_for_context': [{{'post_id': post_id, 'time': post['time'], 'post': post}}],
+}}
+changes = m.normalize_monitor_state_times(state)
+con = m.push_history.connect()
+try:
+    row_count = con.execute('SELECT COUNT(*) FROM dashboard_messages').fetchone()[0]
+finally:
+    con.close()
+print(json.dumps({{
+  'count': count,
+  'row_count': row_count,
+  'changes': changes,
+  'latest': state['latest'],
+  'pending_latest': state['pending_delivery']['latest'],
+  'sent_missing_context': state['sent_missing_context'],
+  'held_for_context': state['held_for_context'],
+}}, ensure_ascii=False))
+"""
+            out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
+            data = json.loads(out)
+            self.assertEqual(data['count'], 0)
+            self.assertEqual(data['row_count'], 0)
+            self.assertEqual(data['changes'], 4)
+            self.assertEqual(data['latest'], {})
+            self.assertEqual(data['pending_latest'], {})
+            self.assertEqual(data['sent_missing_context'], [])
+            self.assertEqual(data['held_for_context'], [])
+
     def test_database_failure_does_not_advance_seen_or_latest(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()

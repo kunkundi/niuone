@@ -10,6 +10,8 @@ from .content import has_recovered_context
 
 CN_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
 X_SNOWFLAKE_EPOCH_MS = 1288834974657
+X_SNOWFLAKE_ID_RE = re.compile(r"\d{15,20}")
+MAX_X_POST_FUTURE_SKEW = timedelta(minutes=10)
 
 
 def parse_iso(value: str | None) -> datetime | None:
@@ -46,42 +48,85 @@ def parse_post_time(value: object) -> datetime | None:
     return parsed
 
 
-def x_snowflake_post_time(post_id: object) -> datetime | None:
+def current_cn_wall_time(now: datetime | None = None) -> datetime:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        return current
+    return current.astimezone(CN_TZ).replace(tzinfo=None)
+
+
+def x_snowflake_post_time(post_id: object, *, now: datetime | None = None) -> datetime | None:
     """Return the authoritative Beijing wall time encoded by a modern X post ID."""
     text = str(post_id or "").strip()
-    if not re.fullmatch(r"\d{15,20}", text):
+    if not X_SNOWFLAKE_ID_RE.fullmatch(text):
         return None
     try:
         timestamp_ms = (int(text) >> 22) + X_SNOWFLAKE_EPOCH_MS
         parsed = datetime.fromtimestamp(timestamp_ms / 1000, timezone.utc)
     except (OverflowError, OSError, ValueError):
         return None
-    if parsed.year < 2010 or parsed.year > 2200:
+    if parsed.year < 2010:
         return None
-    return parsed.astimezone(CN_TZ).replace(tzinfo=None)
+    post_time = parsed.astimezone(CN_TZ).replace(tzinfo=None)
+    if post_time > current_cn_wall_time(now) + MAX_X_POST_FUTURE_SKEW:
+        return None
+    return post_time
 
 
-def canonical_post_time(value: object, post_id: object = None) -> datetime | None:
-    """Prefer an X Snowflake timestamp, falling back to a normalized model time."""
-    return x_snowflake_post_time(post_id) or parse_post_time(value)
+def post_time_is_implausible(
+    value: object,
+    post_id: object = None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Return whether an ID/time pair cannot represent an already-published X post."""
+    post_id_text = str(post_id or "").strip()
+    if X_SNOWFLAKE_ID_RE.fullmatch(post_id_text):
+        return x_snowflake_post_time(post_id_text, now=now) is None
+    parsed = parse_post_time(value)
+    return bool(parsed and parsed > current_cn_wall_time(now) + MAX_X_POST_FUTURE_SKEW)
 
 
-def normalize_post_time(post: dict[str, Any], post_id: object = None) -> dict[str, Any]:
+def canonical_post_time(
+    value: object,
+    post_id: object = None,
+    *,
+    now: datetime | None = None,
+) -> datetime | None:
+    """Prefer a plausible X Snowflake, or a plausible model time for nonnumeric IDs."""
+    post_id_text = str(post_id or "").strip()
+    if X_SNOWFLAKE_ID_RE.fullmatch(post_id_text):
+        return x_snowflake_post_time(post_id_text, now=now)
+    post_time = parse_post_time(value)
+    if post_time and not post_time_is_implausible(value, post_id, now=now):
+        return post_time
+    return None
+
+
+def normalize_post_time(
+    post: dict[str, Any],
+    post_id: object = None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     """Return a post copy whose time is a timezone-free Beijing wall time string."""
     normalized = dict(post)
     resolved_id = post_id or normalized.get("post_id")
-    post_time = canonical_post_time(normalized.get("time"), resolved_id)
+    post_time = canonical_post_time(normalized.get("time"), resolved_id, now=now)
     if post_time:
         normalized["time"] = post_time.strftime("%Y-%m-%d %H:%M:%S")
     return normalized
 
 
 def is_newer_post(post: dict[str, Any], latest_value: dict[str, Any] | None, post_id: object) -> bool:
+    resolved_id = post_id or post.get("post_id")
+    if post_time_is_implausible(post.get("time"), resolved_id):
+        return False
     latest_time = canonical_post_time(
         (latest_value or {}).get("time"),
         (latest_value or {}).get("post_id"),
     )
-    post_time = canonical_post_time(post.get("time"), post_id or post.get("post_id"))
+    post_time = canonical_post_time(post.get("time"), resolved_id)
     if latest_time and post_time:
         return post_time > latest_time
     latest_id = str((latest_value or {}).get("post_id") or "").strip()
@@ -91,13 +136,18 @@ def is_newer_post(post: dict[str, Any], latest_value: dict[str, Any] | None, pos
 def choose_latest_value(existing_latest: dict[str, Any] | None, posts: list[dict[str, Any]], display_name: str) -> dict[str, Any]:
     newest_post = None
     newest_time = None
-    for post in posts or []:
+    usable_posts = [
+        post
+        for post in (posts or [])
+        if not post_time_is_implausible(post.get("time"), post.get("post_id"))
+    ]
+    for post in usable_posts:
         post_time = canonical_post_time(post.get("time"), post.get("post_id"))
         if post_time and (newest_time is None or post_time > newest_time):
             newest_post = post
             newest_time = post_time
-    if newest_post is None and posts:
-        newest_post = posts[0]
+    if newest_post is None and usable_posts:
+        newest_post = usable_posts[0]
     if newest_post is None:
         return existing_latest or {}
 
@@ -135,6 +185,8 @@ def merge_seen_ids(seen: dict[str, list[str]], pending_seen_ids: dict[str, list[
 
 def merge_latest(latest: dict[str, dict[str, Any]], pending_latest: dict[str, dict[str, Any]] | None) -> None:
     for handle, value in (pending_latest or {}).items():
+        if post_time_is_implausible((value or {}).get("time"), (value or {}).get("post_id")):
+            continue
         current = latest.get(handle) or {}
         current_time = canonical_post_time(current.get("time"), current.get("post_id"))
         value_time = canonical_post_time((value or {}).get("time"), (value or {}).get("post_id"))

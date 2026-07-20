@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import unittest
 
 from app.monitoring.x.state import (
     X_SNOWFLAKE_EPOCH_MS,
+    canonical_post_time,
     choose_latest_value,
+    is_newer_post,
     normalize_post_time,
     parse_post_time,
+    post_time_is_implausible,
+    x_snowflake_post_time,
 )
 
 
@@ -41,6 +45,31 @@ class XMonitoringStateTests(unittest.TestCase):
         )
         self.assertEqual(result["post_id"], new_id)
         self.assertEqual(result["time"], "2026-07-16 23:30:00")
+
+    def test_future_snowflake_is_rejected_instead_of_overriding_model_time(self):
+        now = datetime(2026, 7, 20, 8, tzinfo=timezone.utc)
+        future_id = snowflake_id(datetime(2065, 12, 14, 22, 59, 6, tzinfo=timezone.utc))
+
+        self.assertIsNone(x_snowflake_post_time(future_id, now=now))
+        self.assertIsNone(canonical_post_time("2026-07-20 16:00:00", future_id, now=now))
+        self.assertTrue(post_time_is_implausible("2026-07-20 16:00:00", future_id, now=now))
+
+    def test_future_snowflake_cannot_advance_latest_cursor(self):
+        now = datetime.now(timezone.utc)
+        current_id = snowflake_id(now - timedelta(minutes=30))
+        future_id = snowflake_id(now + timedelta(days=365))
+        latest = {
+            "post_id": current_id,
+            "time": (now - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S"),
+            "display_name": "测试",
+        }
+        future_post = {
+            "post_id": future_id,
+            "time": now.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        self.assertFalse(is_newer_post(future_post, latest, future_id))
+        self.assertEqual(choose_latest_value(latest, [future_post], "测试"), latest)
 
 
 if __name__ == "__main__":
