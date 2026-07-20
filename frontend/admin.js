@@ -1,7 +1,52 @@
+const ADMIN_THEME_STORAGE_KEY = 'niuone-dashboard-theme-v1';
+const adminThemeMediaQuery = typeof window.matchMedia === 'function'
+  ? window.matchMedia('(prefers-color-scheme: dark)')
+  : null;
+function storedAdminTheme() {
+  try {
+    const theme = localStorage.getItem(ADMIN_THEME_STORAGE_KEY) || '';
+    return theme === 'light' || theme === 'dark' ? theme : '';
+  } catch (error) {
+    return '';
+  }
+}
+function currentAdminTheme() {
+  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+}
+function syncAdminThemeToggle() {
+  const toggle = document.getElementById('adminThemeToggle');
+  if (!toggle) return;
+  const dark = currentAdminTheme() === 'dark';
+  const label = dark ? '切换为浅色主题' : '切换为深色主题';
+  toggle.title = label;
+  toggle.setAttribute('aria-label', label);
+  toggle.setAttribute('aria-pressed', dark ? 'true' : 'false');
+}
+function setAdminTheme(theme, persist = false) {
+  const normalized = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = normalized;
+  if (persist) {
+    try { localStorage.setItem(ADMIN_THEME_STORAGE_KEY, normalized); } catch (error) {}
+  }
+  syncAdminThemeToggle();
+}
+function toggleAdminTheme() {
+  setAdminTheme(currentAdminTheme() === 'dark' ? 'light' : 'dark', true);
+}
+adminThemeMediaQuery?.addEventListener?.('change', function(event) {
+  if (!storedAdminTheme()) setAdminTheme(event.matches ? 'dark' : 'light');
+});
+window.addEventListener('storage', function(event) {
+  if (event.key === ADMIN_THEME_STORAGE_KEY && (event.newValue === 'light' || event.newValue === 'dark')) {
+    setAdminTheme(event.newValue);
+  }
+});
+
 let adminConfig = null;
 const adminApp = document.getElementById('adminApp');
 const adminPageTitle = document.getElementById('adminPageTitle');
 const adminHeaderActions = document.getElementById('adminHeaderActions');
+syncAdminThemeToggle();
 
 function escapeHtml(value) {
   return String(value == null ? '' : value).replace(/[&<>"']/g, function(char) {
@@ -21,7 +66,7 @@ function settingsGroupSlug() {
 function setAdminHeader(title) {
   adminPageTitle.textContent = title;
   document.title = '牛牛1号';
-  adminHeaderActions.innerHTML = "<a class='toplink' href='/'>返回首页</a>";
+  syncAdminThemeToggle();
 }
 
 function renderAdminLogin(errorMessage) {

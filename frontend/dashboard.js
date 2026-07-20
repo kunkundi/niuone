@@ -36,6 +36,11 @@ function toggleDashboardTheme() {
 dashboardThemeMediaQuery?.addEventListener?.('change', event => {
   if (!storedDashboardTheme()) setDashboardTheme(event.matches ? 'dark' : 'light');
 });
+window.addEventListener('storage', event => {
+  if (event.key === DASHBOARD_THEME_STORAGE_KEY && (event.newValue === 'light' || event.newValue === 'dark')) {
+    setDashboardTheme(event.newValue);
+  }
+});
 
 function dismissComplianceDialog() {
   const backdrop = document.getElementById('complianceDialog');

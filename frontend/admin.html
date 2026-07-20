@@ -1,10 +1,27 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>牛牛1号</title>
-<link rel="stylesheet" href="/static/admin.css?v=8">
+<script>
+  (() => {
+    const storageKey = 'niuone-dashboard-theme-v1';
+    let theme = '';
+    try { theme = localStorage.getItem(storageKey) || ''; } catch (error) {}
+    if (theme !== 'light' && theme !== 'dark') {
+      theme = window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    document.documentElement.dataset.theme = theme;
+  })();
+</script>
+<link rel="stylesheet" href="/static/admin.css?v=10">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%AE%3C/text%3E%3C/svg%3E">
 </head><body>
-<header class="admin-header"><div class="admin-header-inner"><div><div class="eyebrow">牛牛1号 · 设置</div><h1 id="adminPageTitle">设置</h1></div><div class="admin-header-actions" id="adminHeaderActions"><a class="toplink" href="/">返回首页</a></div></div></header>
+<header class="admin-header"><div class="admin-header-inner"><div><div class="eyebrow">牛牛1号 · 设置</div><h1 id="adminPageTitle">设置</h1></div><div class="admin-header-actions" id="adminHeaderActions">
+  <button type="button" class="admin-theme-toggle" id="adminThemeToggle" onclick="toggleAdminTheme()" title="切换页面主题" aria-label="切换页面主题" aria-pressed="false">
+    <span class="theme-icon theme-icon-moon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M20.5 14.3A8.5 8.5 0 0 1 9.7 3.5a8.5 8.5 0 1 0 10.8 10.8Z"/></svg></span>
+    <span class="theme-icon theme-icon-sun" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="3.75"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/></svg></span>
+  </button>
+  <a class="toplink" href="/">返回首页</a>
+</div></div></header>
 <main class="admin-main" id="adminApp" aria-live="polite"><div class="admin-loading">设置加载中…</div></main>
-<script src="/static/admin.js?v=18" defer></script>
+<script src="/static/admin.js?v=19" defer></script>
 </body></html>
