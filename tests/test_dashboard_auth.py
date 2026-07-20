@@ -180,7 +180,7 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(admin_js.wfile.getvalue(), (FRONTEND / 'admin.js').read_bytes())
         self.assertEqual(versioned_dashboard_js.wfile.getvalue(), (FRONTEND / 'dashboard.js').read_bytes())
         self.assertIn('<link rel="stylesheet" href="/static/dashboard.css?v=72">', DASHBOARD_FRONTEND)
-        self.assertIn('<script src="/static/dashboard.js?v=85" defer></script>', DASHBOARD_FRONTEND)
+        self.assertIn('<script src="/static/dashboard.js?v=86" defer></script>', DASHBOARD_FRONTEND)
         self.assertIn('id="themeToggle"', DASHBOARD_FRONTEND)
         self.assertIn('class="theme-icon theme-icon-moon"', DASHBOARD_FRONTEND)
         self.assertIn('class="theme-icon theme-icon-sun"', DASHBOARD_FRONTEND)

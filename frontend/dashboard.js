@@ -3399,12 +3399,7 @@ function parseRatingReport(content) {
   const lines = rawLines.map(line => line.replace(/\s+$/g, ''));
   const stockHeaderRe = /^(?:[-*]\s+|#{2,4}\s*\d+[）.)]?\s*|\d+[）.)]\s*)\*{0,2}[A-Z][A-Z0-9.]{0,8}\s*(?:\/|（|\()\s*[A-Z]/;
   const boldStockRe = /^\*{1,2}\s*(?:\d+[）.)]\s*)?[A-Z][A-Z0-9.]{2,8}\s*(?:[/(（]|\/\s*[A-Z])/;
-  const firstStockIdx = lines.findIndex(line => stockHeaderRe.test(line.trim()) || boldStockRe.test(line.trim()));
-  if (firstStockIdx < 0) return null;
-  const intro = lines.slice(0, firstStockIdx).join('\n').replace(/^-{3,}\s*$/gm, '').trim();
-  const title = (intro.split('\n').map(x => x.trim()).filter(Boolean)[0] || '机构买入评级').replace(/^标题[:：]\s*/, '');
-  const summary = intro.split('\n').map(x => x.trim()).filter(Boolean).slice(1).join('\n\n');
-  const items = []; let current = null;
+  const plainStockRe = /^([A-Z][A-Z0-9.]{1,8})\s*\/\s*([A-Z][^：:*]{1,100})$/;
   const fieldMap = [
     ['analyst', /^[-–—\s*]*(?:\*\*)?机构\/分析师(?:\*\*)?[:：](.*)$/],
     ['action', /^[-–—\s*]*(?:\*\*)?评级动作(?:\*\*)?[:：](.*)$/],
@@ -3413,13 +3408,34 @@ function parseRatingReport(content) {
     ['risk', /^[-–—\s*]*(?:\*\*)?风险点(?:\*\*)?[:：](.*)$/],
     ['type', /^[-–—\s*]*(?:\*\*)?适合关注类型(?:\*\*)?[:：](.*)$/]
   ];
+  function nextNonemptyLine(index) {
+    for (let next = index + 1; next < lines.length; next++) {
+      const value = lines[next].trim();
+      if (value) return value;
+    }
+    return '';
+  }
+  function isPlainStockHeader(line, index) {
+    return plainStockRe.test(line.trim()) && fieldMap[0][1].test(nextNonemptyLine(index));
+  }
+  const firstStockIdx = lines.findIndex((line, index) => {
+    const value = line.trim();
+    return stockHeaderRe.test(value) || boldStockRe.test(value) || isPlainStockHeader(value, index);
+  });
+  if (firstStockIdx < 0) return null;
+  const intro = lines.slice(0, firstStockIdx).join('\n').replace(/^-{3,}\s*$/gm, '').trim();
+  const title = (intro.split('\n').map(x => x.trim()).filter(Boolean)[0] || '机构买入评级').replace(/^标题[:：]\s*/, '');
+  const summary = intro.split('\n').map(x => x.trim()).filter(Boolean).slice(1).join('\n\n');
+  const items = []; let current = null;
   let activeKey = '';
-  function parseStockHeader(line) {
+  function parseStockHeader(line, index) {
     let numberedBoldMatch = line.match(/^(?:[-*]\s+|#{2,4}\s*\d+[）.)]?\s*|\d+[）.)]\s*)\*{1,2}\s*([A-Z][A-Z0-9.]{1,8})\s*[（(]\s*([^)）]+?)\s*[)）]\s*\*{0,2}\s*(?:[—–-]\s*(.*))?$/);
     if (!numberedBoldMatch) { numberedBoldMatch = line.match(/^(?:[-*]\s+|#{2,4}\s*\d+[）.)]?\s*|\d+[）.)]\s*)\*{1,2}\s*([A-Z][A-Z0-9.]{1,8})\s*\/\s*([^*：:]+?)\s*\*{0,2}\s*(?:[—–-]\s*(.*))?$/); }
     if (numberedBoldMatch) { return {name: numberedBoldMatch[1].toUpperCase() + ' / ' + cleanRatingValue(numberedBoldMatch[2] || ''), inline: cleanRatingValue(numberedBoldMatch[3] || '')}; }
     const oldMatch = line.match(/^(?:[-*]\s+|#{2,4}\s*\d+[）.)]?\s*|\d+[）.)]\s*)\*{0,2}([A-Z][A-Z0-9.]{0,8}\s*\/\s*[A-Z][^：:]+?)(?:\*{0,2})\s*(?:[:：](.*))?$/);
     if (oldMatch) return {name: cleanRatingValue(oldMatch[1]), inline: cleanRatingValue(oldMatch[2] || '')};
+    const plainMatch = isPlainStockHeader(line, index) ? line.match(plainStockRe) : null;
+    if (plainMatch) return {name: plainMatch[1].toUpperCase() + ' / ' + cleanRatingValue(plainMatch[2]), inline: ''};
     let boldMatch = line.match(/^\*{1,2}\s*(?:\d+[）.)]\s*)?([A-Z][A-Z0-9.]{2,8})\s*\/\s*([^：:]+?)(?:\s*\*{1,2}|\s*[:：]|$)/);
     if (!boldMatch) { boldMatch = line.match(/^\*{1,2}\s*(?:\d+[）.)]\s*)?([A-Z][A-Z0-9.]{2,8})\s*[（(]\s*([^)）]+?)\s*[)）]/); }
     if (boldMatch) {
@@ -3429,10 +3445,11 @@ function parseRatingReport(content) {
     }
     return null;
   }
-  for (const raw of lines.slice(firstStockIdx)) {
+  for (let index = firstStockIdx; index < lines.length; index++) {
+    const raw = lines[index];
     const line = raw.trim();
     if (!line || /^-{3,}$/.test(line)) continue;
-    const parsed = parseStockHeader(line);
+    const parsed = parseStockHeader(line, index);
     if (parsed) {
       const candidateName = parsed.name;
       if (/报道|来源|链接|检索|摘要/.test(candidateName)) continue;
