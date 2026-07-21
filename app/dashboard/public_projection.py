@@ -69,13 +69,43 @@ CANDIDATE_FIELDS = (
     "name",
     "strategy",
     "strategies",
+    "best_strategy",
     "score",
+    "best_score",
+    "score_total",
+    "score_basis",
+    "entry_threshold",
+    "actionable",
     "price",
     "change_pct",
+    "amount_yi",
     "industry",
     "sector",
+    "board",
+    "board_label",
     "reason",
     "rank",
+    "distance_pct",
+    "bbi",
+    "bbi_upward",
+    "above_bbi",
+    "min_j_10d",
+    "j_recovering",
+    "j_oversold",
+    "ema20",
+    "market_regime",
+    "market_score",
+    "sector_status",
+    "sector_score",
+    "stock_sector_rank",
+    "stop_price",
+    "stop_distance_pct",
+    "gap_buffer_pct",
+    "effective_loss_distance_pct",
+    "per_trade_risk_budget_pct",
+    "max_position_pct_by_risk",
+    "position_hint",
+    "time_stop",
 )
 MESSAGE_FIELDS = ("id", "created_at", "time", "category", "platform", "title", "content", "summary")
 BENCHMARK_FIELDS = ("symbol", "name", "base", "count")
@@ -141,8 +171,37 @@ def _candidate_rows(source: Any, *, limit: int = 24) -> list[dict[str, Any]]:
         strategies = item.get("strategies") if isinstance(item, Mapping) else None
         if isinstance(strategies, list):
             row["strategies"] = [_public_scalar(value) for value in strategies[:8]]
+        for key in ("hard_blockers", "risk_flags"):
+            values = item.get(key) if isinstance(item, Mapping) else None
+            if isinstance(values, list):
+                row[key] = [_public_scalar(value) for value in values[:12]]
         if row:
             result.append(row)
+    return result
+
+
+def _candidate_strategy_meta(source: Any, *, limit: int = 30) -> dict[str, dict[str, Any]]:
+    if not isinstance(source, Mapping):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for raw_key, raw_meta in list(source.items())[:limit]:
+        key = str(raw_key or "").strip()
+        if not key or not isinstance(raw_meta, Mapping):
+            continue
+        meta = _copy_fields(raw_meta, ("label", "color"))
+        if meta:
+            result[key] = meta
+    return result
+
+
+def _candidate_strategy_distribution(source: Any, *, limit: int = 30) -> dict[str, int]:
+    if not isinstance(source, Mapping):
+        return {}
+    result: dict[str, int] = {}
+    for raw_key, raw_count in list(source.items())[:limit]:
+        key = str(raw_key or "").strip()
+        if key:
+            result[key] = max(0, _public_int(raw_count))
     return result
 
 
@@ -208,6 +267,13 @@ def build_public_sections(
         "schema_version": PUBLIC_SCHEMA_VERSION,
         "count": _public_int(candidates.get("count"), candidate_default_count),
         "items": _candidate_rows(candidate_items),
+        "running": bool(candidates.get("running")),
+        "started_at": _public_scalar(candidates.get("started_at") or ""),
+        "generated_at": _public_scalar(candidates.get("generated_at") or ""),
+        "strategy_meta": _candidate_strategy_meta(candidates.get("strategy_meta")),
+        "strategy_distribution": _candidate_strategy_distribution(
+            candidates.get("strategy_distribution")
+        ),
     }
     benchmark_section = {
         "schema_version": PUBLIC_SCHEMA_VERSION,

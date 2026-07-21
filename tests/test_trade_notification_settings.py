@@ -18,7 +18,14 @@ if str(SRC) not in sys.path:
 import niuone_dashboard as dashboard  # noqa: E402
 import notifications  # noqa: E402
 
-ADMIN_JS = (ROOT / "frontend" / "admin.js").read_text(encoding="utf-8")
+ADMIN_VUE = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in (
+        ROOT / "web" / "src" / "components" / "AdminEnvInput.vue",
+        ROOT / "web" / "src" / "components" / "AdminNotificationSettings.vue",
+        ROOT / "web" / "src" / "components" / "AdminSettingsGroup.vue",
+    )
+)
 
 
 NOTIFICATION_ENV_NAMES = [
@@ -72,9 +79,9 @@ class TradeNotificationSettingsTests(unittest.TestCase):
         ):
             self.assertIn(label, {item["label"] for item in items.values()})
 
-        self.assertIn("data-notification-channels", ADMIN_JS)
-        self.assertIn("data-notification-channel-picker", ADMIN_JS)
-        self.assertIn("data-notification-channel-add", ADMIN_JS)
+        self.assertIn("data-notification-channels", ADMIN_VUE)
+        self.assertIn("data-notification-channel-picker", ADMIN_VUE)
+        self.assertIn("data-notification-channel-add", ADMIN_VUE)
         self.assertEqual(
             {channel["id"] for channel in payload["notification_channels"]},
             {"feishu", "dingtalk", "wecom", "telegram"},
@@ -92,8 +99,9 @@ class TradeNotificationSettingsTests(unittest.TestCase):
             )
         for name in NOTIFICATION_ENV_NAMES:
             self.assertIn(name, items)
-        self.assertIn("(configured ? '' : ' hidden')", ADMIN_JS)
-        self.assertIn("(configured ? '' : ' disabled')", ADMIN_JS)
+        self.assertIn('v-show="added[channel.id]"', ADMIN_VUE)
+        self.assertIn(':hidden="added[channel.id]"', ADMIN_VUE)
+        self.assertIn(':disabled="added[channel.id]"', ADMIN_VUE)
 
     def test_enabled_channel_is_rendered_as_an_active_configuration_card(self):
         dashboard.write_env_file_values(
@@ -116,41 +124,27 @@ class TradeNotificationSettingsTests(unittest.TestCase):
         self.assertEqual(item["effective"], "1")
         self.assertEqual(item["source"], "process env")
 
-    def test_add_remove_interaction_hooks_are_embedded(self):
-        page = ADMIN_JS
-
-        self.assertIn("function setNotificationChannelVisibility", page)
-        self.assertIn("function setNotificationChannelActivation", page)
-        self.assertIn("function setNotificationChannelRemoved", page)
-        self.assertIn("function syncNotificationChannelSettings", page)
-        self.assertIn("target.closest('[data-notification-channel-activation]')", page)
-        self.assertIn("target.closest('[data-notification-channel-add]')", page)
-        self.assertIn("target.closest('[data-notification-channel-remove]')", page)
-        self.assertIn("target.closest('[data-notification-channel-test]')", page)
-        self.assertIn("function notificationTestBody", page)
+    def test_add_remove_interaction_hooks_are_owned_by_vue_components(self):
+        page = ADMIN_VUE
+        self.assertIn('function channelConfigured(channel)', page)
+        self.assertIn('async function addChannel()', page)
+        self.assertIn('async function toggleChannel(channelId)', page)
+        self.assertIn('async function removeChannel(channelId)', page)
+        self.assertIn('function applySavedConfig(updatedConfig)', page)
+        self.assertIn('defineExpose({ applySavedConfig })', page)
+        self.assertIn('@click.stop="addChannel"', page)
+        self.assertIn('@click.stop="toggleChannel(channel.id)"', page)
+        self.assertIn('@click.stop="removeChannel(channel.id)"', page)
+        self.assertIn("@click.stop=\"emit('test-channel', channel.id)\"", page)
+        self.assertIn('async function runNotificationTest(channelId)', page)
         self.assertIn("fetch('/api/admin/notifications/test'", page)
-        self.assertIn("body: notificationTestBody(testCard)", page)
-        self.assertIn("status.textContent = message || ''", page)
-        self.assertIn("function applyEnvConfigState", page)
-        self.assertIn("applyEnvConfigState(form, payload.config)", page)
-        self.assertIn("function clearRemovedNotificationChannelFields", page)
-        self.assertIn("if (!removedInput || removedInput.value !== '1') return;", page)
-        self.assertIn("field.value = '';", page)
-        self.assertIn("clearRemovedNotificationChannelFields(form);", page)
-        self.assertIn("enabledInput.disabled = !active", page)
-        self.assertIn("fields.disabled = !active", page)
-        self.assertIn("role='switch'", page)
-        self.assertIn("button.setAttribute('aria-checked', active ? 'true' : 'false');", page)
-        self.assertIn("state.textContent = active ? '已启用' : '已关闭';", page)
-        self.assertIn("测试通知不受渠道开关影响", page)
-        self.assertIn("setNotificationChannelRemoved(notificationCard, true);", page)
-        self.assertIn("resetEnvSaveIfDirty(notificationAddButton.closest('form'))", page)
-
-        apply_state_at = page.index("applyEnvConfigState(form, payload.config);")
-        clear_removed_at = page.index("clearRemovedNotificationChannelFields(form);", apply_state_at)
-        sync_channels_at = page.index("syncNotificationChannelSettings();", clear_removed_at)
-        self.assertLess(apply_state_at, clear_removed_at)
-        self.assertLess(clear_removed_at, sync_channels_at)
+        self.assertIn('body.set(`env__${name}`', page)
+        self.assertIn('data-notification-channel-activation', page)
+        self.assertIn('role="switch"', page)
+        self.assertIn(':aria-checked="String(Boolean(active[channel.id]))"', page)
+        self.assertIn("active[channel.id] ? '已启用' : '已关闭'", page)
+        self.assertIn('测试通知不受渠道开关影响', page)
+        self.assertIn('notification_remove__${channel.id}', page)
 
     def test_notification_test_uses_unsaved_values_and_saved_secret_fallbacks(self):
         saved_webhook = "https://open.feishu.cn/open-apis/bot/v2/hook/saved-feishu-hook"
@@ -357,8 +351,8 @@ class TradeNotificationSettingsTests(unittest.TestCase):
         self.assertEqual(items["DASHBOARD_TELEGRAM_CHAT_ID"]["current_state"], "未设置")
         self.assertEqual(items["DASHBOARD_TELEGRAM_BOT_TOKEN"]["file_value"], "")
         self.assertEqual(items["DASHBOARD_TELEGRAM_CHAT_ID"]["file_value"], "")
-        self.assertIn("placeholder='" , ADMIN_JS)
-        self.assertIn("(configured ? '' : ' hidden')", ADMIN_JS)
+        self.assertIn(':placeholder="item.file_state', ADMIN_VUE)
+        self.assertIn('v-show="added[channel.id]"', ADMIN_VUE)
 
     def test_configured_telegram_chat_id_uses_presence_state_in_payload_and_page(self):
         chat_id = "-1001234567890"
@@ -379,8 +373,8 @@ class TradeNotificationSettingsTests(unittest.TestCase):
         self.assertEqual(item["current_state"], "已设置")
         self.assertNotEqual(item["current_state"], chat_id)
 
-        self.assertIn("function renderNotificationField(item, compact)", ADMIN_JS)
-        self.assertIn("item.current_state", ADMIN_JS)
+        self.assertIn('<AdminEnvInput :item="fieldItem(name)"', ADMIN_VUE)
+        self.assertIn("currentState(name) || '未设置'", ADMIN_VUE)
 
     def test_notification_secrets_are_never_returned_or_rendered(self):
         secrets = {
@@ -394,7 +388,7 @@ class TradeNotificationSettingsTests(unittest.TestCase):
         dashboard.write_env_file_values(secrets, self.env_path)
 
         payload = dashboard.build_admin_config_payload()
-        page = ADMIN_JS
+        page = ADMIN_VUE
         items = {item["name"]: item for item in payload["items"]}
         for name, secret in secrets.items():
             self.assertTrue(items[name]["secret"])
@@ -403,9 +397,10 @@ class TradeNotificationSettingsTests(unittest.TestCase):
             self.assertEqual(items[name]["current_state"], "已设置")
             self.assertNotIn(secret, repr(payload))
             self.assertNotIn(secret, page)
-        self.assertIn("type='password' name='", page)
-        self.assertIn("data-env-current='", page)
-        self.assertIn("current_state", page)
+        self.assertIn('type="password"', page)
+        self.assertIn(':name="fieldName"', page)
+        self.assertIn(':data-env-current="name"', page)
+        self.assertIn('currentState(name)', page)
 
     def test_blank_or_whitespace_secret_preserves_existing_value(self):
         secret_name = "DASHBOARD_FEISHU_WEBHOOK_URL"

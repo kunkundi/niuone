@@ -14,13 +14,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ContainerDeploymentTests(unittest.TestCase):
-    def test_image_packages_native_frontend_assets(self):
+    def test_image_builds_vue_assets_and_packages_the_fastapi_runtime(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+        self.assertIn("FROM node:24-bookworm-slim AS web-builder", dockerfile)
+        self.assertIn("pnpm install --frozen-lockfile", dockerfile)
+        self.assertIn("RUN pnpm run build", dockerfile)
         self.assertIn("COPY app/ ./app/", dockerfile)
         self.assertIn("COPY frontend/ ./frontend/", dockerfile)
+        self.assertIn("COPY --from=web-builder /build/web/dist ./web/dist", dockerfile)
         self.assertIn("!frontend/", dockerignore)
         self.assertIn("!frontend/**", dockerignore)
+        self.assertIn("!web/package.json", dockerignore)
+        self.assertIn("!web/pnpm-lock.yaml", dockerignore)
+        self.assertIn("!web/src/**", dockerignore)
         self.assertIn("ARG NIUONE_VERSION=dev", dockerfile)
         self.assertIn("NIUONE_VERSION=${NIUONE_VERSION}", dockerfile)
 

@@ -32,4 +32,5 @@ echo "  root:           $ROOT"
 echo "  dashboard home: $DASHBOARD_HOME"
 echo "  listen:         http://$HOST:$PORT"
 
+"$ROOT/scripts/build-frontend.sh"
 exec "$PYTHON_BIN" "$ROOT/app/entrypoints/niuone_dashboard.py" --host "$HOST" --port "$PORT"

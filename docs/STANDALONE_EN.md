@@ -22,6 +22,7 @@ On the first run, the script automatically:
 - Creates `.local-data/`
 - Creates `.local-data/.venv`
 - Installs `requirements.txt`
+- Builds the Vue 3/Vite frontend under `web/` from locked dependencies
 - Generates `.local-data/dashboard.env`
 - Initializes the log, database, and task output directories under `.local-data/runtime/`
 
@@ -45,7 +46,7 @@ Windows:
 run.bat --port 8877
 ```
 
-The public page and complete settings UI use one Dashboard process and port, at `8787/` and `8787/admin` by default. The settings page may be accessed through the domain, while configuration and action APIs still require an administrator session. See [Dashboard Incremental Delivery and Deployment](DASHBOARD_V2_EN.md) for snapshot and CDN guidance.
+The public page and complete settings UI use one FastAPI/Uvicorn process and port, at `8787/` and `8787/admin` by default. Vite's port `5173` is only for local hot reload and is not part of production deployment. The settings page may be accessed through the domain, while configuration and action APIs still require an administrator session. See [Dashboard Incremental Delivery and Deployment](DASHBOARD_V2_EN.md) for snapshot and CDN guidance.
 
 ## Isolated Startup
 
@@ -62,7 +63,7 @@ Visit:
 http://127.0.0.1:8877/
 ```
 
-`scripts/run_standalone.sh` does not create a virtual environment automatically. It is intended for development or validation environments where dependencies are already installed.
+`scripts/run_standalone.sh` does not create a Python virtual environment, but it builds the Vue frontend when needed. It is intended for development or validation environments where Python, Node.js, and dependencies are already available.
 
 On Windows, PowerShell can run an isolated instance using a temporary data directory:
 

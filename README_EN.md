@@ -39,18 +39,18 @@ The main README does not cover specific research methods or experimental strateg
 
 When contributing or extending the application, see the [app module architecture](docs/APP_ARCHITECTURE.md) for domain boundaries and compatibility-entrypoint conventions.
 
-The Dashboard keeps its existing page layout and uses same-origin incremental snapshots to reduce public traffic. Trading, market requests, and record computation remain server-side. See [Dashboard Incremental Delivery and Deployment](docs/DASHBOARD_V2_EN.md) for architecture, caching, and CDN/cloud/Tunnel deployment guidance.
+The Dashboard has migrated to Vue 3 + Vite and FastAPI/Uvicorn while preserving its existing page layout. Same-origin incremental snapshots reduce public traffic, and trading, market requests, and record computation remain server-side. The public page, `/admin`, and every API share one production port. See [Dashboard Incremental Delivery and Deployment](docs/DASHBOARD_V2_EN.md) for architecture, caching, and CDN/cloud/Tunnel deployment guidance.
 
 ## System Requirements
 
 | Dependency | Requirement | Purpose |
 |---|---|---|
 | Python | 3.11+ | Run services, task scripts, and local tools |
+| Node.js | 22.12+ | Build the Vue 3/Vite frontend; not needed in the runtime container image |
+| pnpm | 11.15.1 (the launcher may invoke it through npx) | Install locked frontend dependencies and build the app |
 | Git | Latest stable release recommended | Download and update the project |
 | Browser | A modern browser such as Chrome, Edge, Safari, or Firefox | Access the local workspace |
-| Network | Access to PyPI is required on the first run | Install Python dependencies |
-
-Node.js 18+ is also required when contributing or running the full validation suite, as it checks the Dashboard JavaScript.
+| Network | PyPI and npm registry access are required on the first run | Install Python and frontend dependencies |
 
 ## Quick Start
 
@@ -91,8 +91,9 @@ On the first run, NiuOne automatically:
 1. Creates the private `.local-data/` runtime directory;
 2. Creates a Python virtual environment at `.local-data/.venv/`;
 3. Installs the dependencies in `requirements.txt`;
-4. Generates `.local-data/dashboard.env`;
-5. Initializes the runtime directory and starts the local dashboard.
+4. Installs and builds the Vue frontend from `web/pnpm-lock.yaml`;
+5. Generates `.local-data/dashboard.env`;
+6. Initializes the runtime directory and starts the FastAPI dashboard.
 
 ### Common Startup Options
 
@@ -337,6 +338,8 @@ For platform-specific status, restart, uninstall, and unattended-operation instr
 ├── scripts/                # Validation, deployment, and standalone-task scripts
 ├── tests/                  # Automated tests
 ├── tools/                  # Local maintenance tools
+├── web/                    # Vue 3 components, Vite configuration, and dependency lock
+├── frontend/               # Migration CSS and legacy controller assets
 ├── dashboard.env.example   # Example configuration
 ├── run.sh                  # One-command startup for macOS / Linux
 ├── run.bat                 # One-command startup for Windows
@@ -360,7 +363,7 @@ Development validation:
 ./scripts/validate.sh
 ```
 
-The validation script checks the Python, JavaScript, Shell, and Windows BAT entry points and runs the automated tests under `tests/`.
+The validation script builds the Vue production app, checks the Python, JavaScript, Shell, and Windows BAT entry points, and runs the automated tests under `tests/`.
 
 ## Frequently Asked Questions
 

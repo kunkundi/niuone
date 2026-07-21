@@ -64,12 +64,20 @@ class UsRatingsLazyLoadingTests(unittest.TestCase):
         self.assertEqual(payload["items"]["AAPL"]["industry"], "软件")
 
     def test_frontend_loads_profiles_only_when_a_rating_row_expands(self):
-        source = (ROOT / "frontend" / "dashboard.js").read_text(encoding="utf-8")
+        data_source = (
+            ROOT / "web" / "src" / "composables" / "useUsRatingsData.js"
+        ).read_text(encoding="utf-8")
+        panel_source = (
+            ROOT / "web" / "src" / "components" / "UsRatingsPanel.vue"
+        ).read_text(encoding="utf-8")
+        card_source = (
+            ROOT / "web" / "src" / "components" / "us-ratings" / "UsRatingCard.vue"
+        ).read_text(encoding="utf-8")
 
-        self.assertIn("requestIdleCallback", source)
-        self.assertIn("/api/us_profiles?symbols=", source)
-        self.assertIn("loadUsProfiles([ticker])", source)
-        self.assertIn("toggleRatingDetail('${rowId}','${ticker}')", source)
+        self.assertIn("kind === 'quotes' ? '/api/us_quotes' : '/api/us_profiles'", data_source)
+        self.assertIn("watch(selectedRecords, records => loadQuotesForRecords(records)", panel_source)
+        self.assertIn("if (opening) props.loadProfile(row.ticker)", card_source)
+        self.assertNotIn("loadProfile", panel_source.split("watch(selectedRecords", 1)[1].split("onMounted", 1)[0])
 
 
 if __name__ == "__main__":

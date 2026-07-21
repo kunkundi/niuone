@@ -23,6 +23,25 @@ class PublicProjectionTests(unittest.TestCase):
                 "total": 1,
                 "records": [{"id": 1, "content": "公开摘要", "raw_payload": "secret"}],
             },
+            candidates={
+                "generated_at": "2026-07-21 10:00:00",
+                "running": True,
+                "strategy_meta": {
+                    "trend_pullback": {
+                        "label": "趋势回踩",
+                        "color": "#60a5fa",
+                        "private_rule": "secret",
+                    }
+                },
+                "strategy_distribution": {"trend_pullback": 2},
+                "items": [{
+                    "code": "600000",
+                    "best_strategy": "trend_pullback",
+                    "best_score": 8.5,
+                    "hard_blockers": ["停牌"],
+                    "private_note": "secret",
+                }],
+            },
         )
 
         self.assertEqual(sections["metadata"]["schema_version"], PUBLIC_SCHEMA_VERSION)
@@ -34,6 +53,18 @@ class PublicProjectionTests(unittest.TestCase):
         self.assertNotIn("dashboard_home", sections["messages"])
         self.assertNotIn("db_path", sections["messages"])
         self.assertNotIn("raw_payload", sections["messages"]["records"][0])
+        self.assertTrue(sections["candidates"]["running"])
+        self.assertEqual(sections["candidates"]["items"][0]["best_score"], 8.5)
+        self.assertEqual(sections["candidates"]["items"][0]["hard_blockers"], ["停牌"])
+        self.assertNotIn("private_note", sections["candidates"]["items"][0])
+        self.assertEqual(
+            sections["candidates"]["strategy_meta"]["trend_pullback"],
+            {"label": "趋势回踩", "color": "#60a5fa"},
+        )
+        self.assertEqual(
+            sections["candidates"]["strategy_distribution"],
+            {"trend_pullback": 2},
+        )
         self.assertNotIn("generated_at", sections["messages"])
         serialized = repr(sections)
         self.assertNotIn("/private/runtime", serialized)

@@ -136,6 +136,9 @@ if "%SKIP_INSTALL%"=="1" (
     if errorlevel 1 exit /b 1
 )
 
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\build-frontend.ps1" -Root "%ROOT%"
+if errorlevel 1 exit /b 1
+
 set "URL=http://%DASHBOARD_HOST%:%DASHBOARD_PORT%/"
 set "DASHBOARD_ENV_FILE=%ENV_FILE%"
 set "PYTHONDONTWRITEBYTECODE=1"

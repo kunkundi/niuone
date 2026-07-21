@@ -38,4 +38,5 @@ export DASHBOARD_PORTFOLIO_STATE="${DASHBOARD_PORTFOLIO_STATE:-$DASHBOARD_HOME/c
 export DASHBOARD_TRADER_SCRIPT="${DASHBOARD_TRADER_SCRIPT:-$BASE/app/entrypoints/niuniu_practice_trader.py}"
 export DASHBOARD_PUBLIC_PROJECTION_ENABLED="${DASHBOARD_PUBLIC_PROJECTION_ENABLED:-1}"
 mkdir -p "$DASHBOARD_HOME/cron/output" "$DASHBOARD_HOME/logs"
+"$BASE/scripts/build-frontend.sh"
 exec "$PYTHON_BIN" "$BASE/app/entrypoints/niuone_dashboard.py" --host "$DASHBOARD_HOST" --port "$DASHBOARD_PORT"

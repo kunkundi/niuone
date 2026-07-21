@@ -22,6 +22,7 @@ cd /path/to/NiuOne
 - 创建 `.local-data/`
 - 创建 `.local-data/.venv`
 - 安装 `requirements.txt`
+- 使用锁定依赖构建 `web/` 下的 Vue 3/Vite 前端
 - 生成 `.local-data/dashboard.env`
 - 初始化 `.local-data/runtime/` 下的日志、数据库和任务输出目录
 
@@ -45,7 +46,7 @@ Windows：
 run.bat --port 8877
 ```
 
-公开页面和完整设置页使用同一个 Dashboard 进程与端口；默认分别位于 `8787/` 和 `8787/admin`。设置页可以通过域名访问，但配置与操作 API 仍需要管理员密码会话。增量快照和 CDN 配置详见 [Dashboard 增量展示与部署](DASHBOARD_V2.md)。
+公开页面和完整设置页使用同一个 FastAPI/Uvicorn 进程与端口；默认分别位于 `8787/` 和 `8787/admin`。Vue 开发服务器 `5173` 仅用于本机热更新，不参与生产部署。设置页可以通过域名访问，但配置与操作 API 仍需要管理员密码会话。增量快照和 CDN 配置详见 [Dashboard 增量展示与部署](DASHBOARD_V2.md)。
 
 ## 隔离启动
 
@@ -62,7 +63,7 @@ DASHBOARD_HOME=/tmp/niuone-smoke DASHBOARD_PORT=8877 ./scripts/run_standalone.sh
 http://127.0.0.1:8877/
 ```
 
-`scripts/run_standalone.sh` 不会自动创建虚拟环境，适合在已安装依赖的开发或验证环境中使用。
+`scripts/run_standalone.sh` 不会自动创建 Python 虚拟环境，但会在需要时构建 Vue 前端，适合在已安装 Python、Node.js 与依赖的开发或验证环境中使用。
 
 Windows PowerShell 可以通过临时数据目录运行隔离实例：
 

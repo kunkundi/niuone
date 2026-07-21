@@ -121,9 +121,10 @@ NIUONE_VERSION=v1.2.3
 - `requirements.txt`
 - `app/`
 - `frontend/`
+- `web/` 中的 Vue/Vite 源码、配置和依赖锁
 - `scripts/docker-entrypoint.sh`
 
-测试文件、Git 历史、本地运行数据和仓库中的其他文件不会打入镜像。运行配置、数据库、日志和凭据应保存在容器的 `/data` volume 中。
+Docker 使用 Node.js 24 构建阶段安装锁定的 pnpm 依赖并生成 `web/dist/`，随后只把构建产物复制进 Python 运行镜像。测试文件、Git 历史、Node.js、前端依赖、本地运行数据和仓库中的其他文件不会打入最终镜像。运行配置、数据库、日志和凭据应保存在容器的 `/data` volume 中。
 
 ## 8. 发布验证
 

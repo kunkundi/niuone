@@ -69,7 +69,7 @@ http://127.0.0.1:8787/
 
 The administrator password is saved to `.local-data/dashboard.env`. Treat both the password and the bootstrap administrator key as sensitive credentials; do not commit them or copy them into public contexts.
 
-Public deployments continue to run `./run-dashboard.sh`: the public page and password-protected `/admin` share port `8787`. The server publishes content-addressed snapshots every 15 seconds; the browser checks a lightweight version pointer and fetches data only for changed sections. See [Dashboard Incremental Delivery and Deployment](DASHBOARD_V2_EN.md) for caching and reverse-proxy guidance.
+Public deployments continue to run `./run-dashboard.sh`: FastAPI/Uvicorn serves the Vue public page, password-protected `/admin`, and every API on port `8787`, with no second production port. The server publishes content-addressed snapshots every 15 seconds; the browser checks a lightweight version pointer and fetches data only for changed sections. See [Dashboard Incremental Delivery and Deployment](DASHBOARD_V2_EN.md) for caching and reverse-proxy guidance.
 
 ## 3. Model Configuration
 
@@ -167,7 +167,7 @@ See the [Strategy Research Guide](strategies/README_EN.md#34-sector-tide) for Se
 The validation covers:
 
 1. Python syntax checks
-2. Syntax checks for embedded frontend JavaScript
+2. Vue/Vite production build and frontend JavaScript syntax checks
 3. Syntax checks for Shell startup scripts
 4. Windows BAT entry-point checks
 5. Unit tests under `tests/`
@@ -347,7 +347,7 @@ Run:
 ./scripts/validate.sh
 ```
 
-This checks the `frontend/` JavaScript, `app/` Python, Shell/PowerShell entrypoints, and the complete unit-test suite.
+This builds the `web/` Vue application and checks migration `frontend/` JavaScript, `app/` Python, Shell/PowerShell entrypoints, and the complete unit-test suite.
 
 ### Do Not Commit Real Data
 

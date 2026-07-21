@@ -18,8 +18,19 @@ for base in ("app", "scripts", "tests"):
 PY
 
 echo "== Frontend JavaScript syntax =="
-node --check frontend/dashboard.js
-node --check frontend/admin.js
+node --check web/src/main.js
+node --check web/src/router.js
+node --check web/src/composables/useDashboardTabs.js
+node --check web/src/composables/usePublicProjection.js
+node --check web/src/composables/usePracticeData.js
+
+echo "== Vue production build =="
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "pnpm is required; install pnpm 11.15.1 before validation" >&2
+  exit 1
+fi
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web run build
 
 echo "== Shell syntax checks =="
 for script in *.sh scripts/*.sh *.command; do

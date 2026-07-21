@@ -121,9 +121,10 @@ By default, `.dockerignore` excludes the entire repository and allows only the f
 - `requirements.txt`
 - `app/`
 - `frontend/`
+- Vue/Vite source, configuration, and dependency lock under `web/`
 - `scripts/docker-entrypoint.sh`
 
-Tests, Git history, local runtime data, and other repository files are not included in the image. Runtime configuration, databases, logs, and credentials should be stored in the container's `/data` volume.
+Docker installs the locked pnpm dependencies and creates `web/dist/` in a Node.js 24 build stage, then copies only the build output into the Python runtime image. Tests, Git history, Node.js, frontend dependencies, local runtime data, and other repository files are not included in the final image. Runtime configuration, databases, logs, and credentials should be stored in the container's `/data` volume.
 
 ## 8. Release Verification
 

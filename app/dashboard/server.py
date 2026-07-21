@@ -4,39 +4,30 @@
 from __future__ import annotations
 
 import argparse
-import gzip
-import hashlib
-import hmac
 import ipaddress
 import json
 import os
 import re
 import secrets
 import shlex
-import sqlite3
 import time
 import subprocess
 import sys
 import threading
-from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-class ReusableThreadingHTTPServer(ThreadingHTTPServer):
-    allow_reuse_address = True
-    daemon_threads = True
-    request_queue_size = 128
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 import urllib.request
 
 from a_share_calendar import is_a_share_trading_day as calendar_is_a_share_trading_day, trading_day_status
 from dashboard_json_cache import read_json_cache, write_json_cache
 from dashboard import practice_payload as practice_payload_impl
 from dashboard import practice_market_summary as practice_market_summary_impl
+from dashboard import response_cache as response_cache_impl
 from dashboard import security as security_impl
+from dashboard import visit_stats as visit_stats_impl
 from dashboard.iwencai_connectivity import (
     IWENCAI_TEST_FIELD_NAMES,
     iwencai_test_metadata,
@@ -119,13 +110,6 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 ENTRYPOINT_DIR = SCRIPT_DIR / "entrypoints"
 COMPAT_DIR = SCRIPT_DIR / "compat"
-FRONTEND_DIR = PROJECT_ROOT / "frontend"
-FRONTEND_ASSETS = {
-    "/static/dashboard.css": ("dashboard.css", "text/css; charset=utf-8"),
-    "/static/dashboard.js": ("dashboard.js", "application/javascript; charset=utf-8"),
-    "/static/admin.css": ("admin.css", "text/css; charset=utf-8"),
-    "/static/admin.js": ("admin.js", "application/javascript; charset=utf-8"),
-}
 VERSION_PATTERN = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 CURRENT_VERSION = str(os.environ.get("NIUONE_VERSION") or "dev").strip() or "dev"
 DOCKER_HUB_REPOSITORY = "kunkundi/niuone"
@@ -139,16 +123,6 @@ VERSION_CHECK_MAX_PAGES = 20
 VERSION_CHECK_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 VERSION_CHECK_CACHE: dict[str, Any] = {"ts": 0.0, "ttl": 0, "payload": None}
 VERSION_CHECK_LOCK = threading.Lock()
-DASHBOARD_PAGE_PATHS = frozenset({
-    "/",
-    "/practice",
-    "/indices",
-    "/industry-flow",
-    "/dragon-tiger",
-    "/market-monitor",
-    "/x-monitor",
-    "/us-ratings",
-})
 LOCAL_DATA_DIR = get_local_data_dir(PROJECT_ROOT)
 DASHBOARD_HOME = get_dashboard_home(PROJECT_ROOT)
 PUBLIC_DATA_DIR = Path(
@@ -246,14 +220,6 @@ TRUSTED_PROXY_CIDRS = tuple(
     if value.strip()
 )
 MAX_POST_BODY_BYTES = int(os.environ.get("DASHBOARD_MAX_POST_BODY_BYTES", str(256 * 1024)) or str(256 * 1024))
-GZIP_MIN_BYTES = int(os.environ.get("DASHBOARD_GZIP_MIN_BYTES", "1024") or "1024")
-GZIP_CONTENT_TYPE_PREFIXES = (
-    "application/json",
-    "application/javascript",
-    "text/css",
-    "text/html",
-    "text/plain",
-)
 B1_CACHE_MAX_AGE = 720
 B1_SCAN_TIMEOUT_SECONDS = int(os.environ.get("DASHBOARD_B1_SCAN_TIMEOUT_SECONDS", "360") or "360")
 B1_SCHEDULE_TIMES = tuple(
@@ -335,8 +301,6 @@ API_CACHE_MAX_ENTRIES = int(os.environ.get("DASHBOARD_API_CACHE_MAX_ENTRIES", "2
 API_STALE_WHILE_REFRESH_SECONDS = int(
     os.environ.get("DASHBOARD_API_STALE_WHILE_REFRESH_SECONDS", "300") or "300"
 )
-FRONTEND_FILE_CACHE: dict[str, dict[str, Any]] = {}
-FRONTEND_FILE_CACHE_LOCK = threading.RLock()
 X_MEDIA_CACHE: dict[str, dict[str, Any]] = {}
 X_MEDIA_CACHE_LOCK = threading.RLock()
 X_MEDIA_CACHE_MAX_ENTRIES = int(os.environ.get("DASHBOARD_X_MEDIA_CACHE_MAX_ENTRIES", "96") or "96")
@@ -738,268 +702,91 @@ def hash_token(token: str) -> str:
 
 def get_or_create_admin_token() -> str:
     """Return the local bootstrap credential used to protect admin sessions."""
-    with ADMIN_TOKEN_LOCK:
-        if ADMIN_TOKEN_FILE.is_symlink():
-            raise RuntimeError(f"admin token file must not be a symlink: {ADMIN_TOKEN_FILE}")
-        if ADMIN_TOKEN_FILE.exists():
-            token = ADMIN_TOKEN_FILE.read_text(encoding="utf-8").strip()
-            if token:
-                try:
-                    ADMIN_TOKEN_FILE.chmod(0o600)
-                except OSError:
-                    pass
-                return token
-        ADMIN_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        token = "na_" + secrets.token_urlsafe(36)
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(str(ADMIN_TOKEN_FILE), flags, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(token + "\n")
-        try:
-            ADMIN_TOKEN_FILE.chmod(0o600)
-        except OSError:
-            pass
-        return token
+    return security_impl.load_or_create_admin_token(ADMIN_TOKEN_FILE, ADMIN_TOKEN_LOCK)
 
 
 def admin_session_signing_key() -> bytes:
-    bootstrap_token = get_or_create_admin_token().encode("utf-8")
-    credential_fingerprint = hashlib.sha256(ADMIN_PASSWORD.encode("utf-8")).digest()
-    return hmac.new(
-        bootstrap_token,
-        b"niuone-admin-session-v1\0" + credential_fingerprint,
-        hashlib.sha256,
-    ).digest()
+    return security_impl.derive_admin_session_signing_key(
+        get_or_create_admin_token(),
+        ADMIN_PASSWORD,
+    )
 
 
 def new_admin_session(now: float | None = None) -> str:
-    issued_at = int(time.time() if now is None else now)
-    payload = f"{issued_at}.{secrets.token_urlsafe(18)}"
-    signature = hmac.new(admin_session_signing_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    return f"ad_{payload}.{signature}"
+    return security_impl.create_admin_session(admin_session_signing_key(), now)
 
 
 def validate_admin_session(cookie_value: str, now: float | None = None) -> bool:
-    raw = str(cookie_value or "")
-    if not raw.startswith("ad_"):
-        return False
-    try:
-        issued_text, nonce, signature = raw[3:].split(".", 2)
-        issued_at = int(issued_text)
-    except (TypeError, ValueError):
-        return False
-    if not nonce or not re.fullmatch(r"[A-Za-z0-9_-]{16,80}", nonce):
-        return False
-    if not re.fullmatch(r"[0-9a-f]{64}", signature):
-        return False
-    current = int(time.time() if now is None else now)
-    ttl = max(60, ADMIN_SESSION_TTL_SECONDS)
-    if issued_at > current + 60 or current - issued_at > ttl:
-        return False
-    payload = f"{issued_at}.{nonce}"
-    expected = hmac.new(admin_session_signing_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    return secrets.compare_digest(signature, expected)
+    return security_impl.validate_admin_session(
+        cookie_value,
+        admin_session_signing_key(),
+        ttl_seconds=ADMIN_SESSION_TTL_SECONDS,
+        now=now,
+    )
 
 
 def verify_admin_credential(value: str) -> bool:
-    expected = ADMIN_PASSWORD or get_or_create_admin_token()
-    supplied = str(value or "")
-    return bool(supplied) and secrets.compare_digest(
-        supplied.encode("utf-8"),
-        expected.encode("utf-8"),
+    return security_impl.verify_admin_credential(
+        value,
+        ADMIN_PASSWORD or get_or_create_admin_token(),
     )
 
 
 def check_rate_limit(scope: str, key: str, limit: int, window: int | None = None) -> tuple[bool, int]:
-    if not RATE_LIMIT_ENABLED or limit <= 0:
-        return True, 0
-    window = window or RATE_LIMIT_WINDOW_SECONDS
-    now = time.time()
-    bucket_key = (scope, key or "unknown")
-    with RATE_LIMIT_LOCK:
-        started_at, count = RATE_LIMIT_BUCKETS.get(bucket_key, (now, 0))
-        if now - started_at >= window:
-            started_at, count = now, 0
-        if count >= limit:
-            return False, max(1, int(window - (now - started_at)))
-        RATE_LIMIT_BUCKETS[bucket_key] = (started_at, count + 1)
-        if len(RATE_LIMIT_BUCKETS) > 10000:
-            cutoff = now - window * 3
-            for old_key, (old_started, _) in list(RATE_LIMIT_BUCKETS.items()):
-                if old_started < cutoff:
-                    RATE_LIMIT_BUCKETS.pop(old_key, None)
-    return True, 0
+    return security_impl.consume_rate_limit(
+        scope,
+        key,
+        limit,
+        enabled=RATE_LIMIT_ENABLED,
+        default_window=RATE_LIMIT_WINDOW_SECONDS,
+        buckets=RATE_LIMIT_BUCKETS,
+        lock=RATE_LIMIT_LOCK,
+        window=window,
+    )
 
 
 def visit_stats_init_signature() -> tuple[Any, ...]:
-    try:
-        stats_stat = STATS_DB.stat()
-        stats_marker: tuple[int, int] | None = (stats_stat.st_dev, stats_stat.st_ino)
-    except OSError:
-        stats_marker = None
-    try:
-        legacy_stat = LEGACY_STATS_DB.stat()
-        legacy_marker: tuple[int, int, int, int] | None = (
-            legacy_stat.st_dev,
-            legacy_stat.st_ino,
-            legacy_stat.st_mtime_ns,
-            legacy_stat.st_size,
-        )
-    except OSError:
-        legacy_marker = None
-    return (str(STATS_DB.resolve()), stats_marker, str(LEGACY_STATS_DB.resolve()), legacy_marker)
+    return visit_stats_impl.database_signature(STATS_DB, LEGACY_STATS_DB)
 
 
 def ensure_stats_db() -> None:
     global VISIT_STATS_INIT_SIGNATURE
-    STATS_DB.parent.mkdir(parents=True, exist_ok=True)
-    signature = visit_stats_init_signature()
-    if VISIT_STATS_INIT_SIGNATURE == signature and STATS_DB.exists():
-        return
-    with VISIT_STATS_LOCK:
-        signature = visit_stats_init_signature()
-        if VISIT_STATS_INIT_SIGNATURE == signature and STATS_DB.exists():
-            return
-        with closing(sqlite3.connect(STATS_DB, timeout=5.0)) as con:
-            con.execute("PRAGMA journal_mode=WAL")
-            con.execute("PRAGMA synchronous=NORMAL")
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS visit_stats (
-                    key TEXT PRIMARY KEY,
-                    value INTEGER NOT NULL DEFAULT 0,
-                    updated_at REAL NOT NULL
-                )
-            """)
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS unique_visitors (
-                    visitor_hash TEXT PRIMARY KEY,
-                    first_seen_at REAL NOT NULL,
-                    last_seen_at REAL NOT NULL
-                )
-            """)
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS stats_migrations (
-                    key TEXT PRIMARY KEY,
-                    completed_at REAL NOT NULL
-                )
-            """)
-            migration_ready = migrate_legacy_visit_stats(con)
-            now = _now_ts()
-            unique_count = int(con.execute("SELECT COUNT(*) FROM unique_visitors").fetchone()[0] or 0)
-            con.execute(
-                "INSERT INTO visit_stats(key,value,updated_at) VALUES('home_unique',?,?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-                (unique_count, now),
-            )
-            con.commit()
-        VISIT_STATS_INIT_SIGNATURE = visit_stats_init_signature() if migration_ready else None
+    VISIT_STATS_INIT_SIGNATURE = visit_stats_impl.ensure_database(
+        stats_db=STATS_DB,
+        legacy_stats_db=LEGACY_STATS_DB,
+        initialized_signature=VISIT_STATS_INIT_SIGNATURE,
+        lock=VISIT_STATS_LOCK,
+        migrate_legacy=migrate_legacy_visit_stats,
+        now=_now_ts,
+    )
 
 
-def sqlite_table_exists(con: sqlite3.Connection, table: str) -> bool:
-    return con.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (table,),
-    ).fetchone() is not None
+def sqlite_table_exists(con: Any, table: str) -> bool:
+    return visit_stats_impl.sqlite_table_exists(con, table)
 
 
-def migrate_legacy_visit_stats(con: sqlite3.Connection) -> bool:
+def migrate_legacy_visit_stats(con: Any) -> bool:
     """Move visit counters out of the retired dashboard user database once."""
-    if LEGACY_STATS_DB == STATS_DB or not LEGACY_STATS_DB.exists():
-        return True
-    if con.execute(
-        "SELECT 1 FROM stats_migrations WHERE key=?",
-        (LEGACY_STATS_MIGRATION_KEY,),
-    ).fetchone():
-        return True
-
-    try:
-        with closing(sqlite3.connect(LEGACY_STATS_DB)) as legacy:
-            has_visit_stats = sqlite_table_exists(legacy, "visit_stats")
-            has_unique_visitors = sqlite_table_exists(legacy, "unique_visitors")
-            if not has_visit_stats and not has_unique_visitors:
-                return True
-
-            legacy_views = 0
-            legacy_updated_at = 0.0
-            if has_visit_stats:
-                visit_row = legacy.execute(
-                    "SELECT value, updated_at FROM visit_stats WHERE key='home_views'"
-                ).fetchone()
-                if visit_row:
-                    legacy_views = int(visit_row[0] or 0)
-                    legacy_updated_at = float(visit_row[1] or 0.0)
-
-            legacy_visitors = []
-            if has_unique_visitors:
-                legacy_visitors = legacy.execute(
-                    "SELECT visitor_hash, first_seen_at, last_seen_at FROM unique_visitors"
-                ).fetchall()
-    except sqlite3.Error as exc:
-        print(f"访问统计迁移跳过：无法读取旧统计库 {LEGACY_STATS_DB}: {exc}", file=sys.stderr)
-        return False
-
-    current_row = con.execute(
-        "SELECT value, updated_at FROM visit_stats WHERE key='home_views'"
-    ).fetchone()
-    current_views = int(current_row[0] or 0) if current_row else 0
-    current_updated_at = float(current_row[1] or 0.0) if current_row else 0.0
-    if legacy_views > current_views:
-        migrated_views = legacy_views + current_views
-    else:
-        migrated_views = current_views
-    if migrated_views or current_row:
-        con.execute(
-            "INSERT INTO visit_stats(key,value,updated_at) VALUES('home_views',?,?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-            (migrated_views, max(legacy_updated_at, current_updated_at, _now_ts())),
-        )
-
-    con.executemany(
-        "INSERT INTO unique_visitors(visitor_hash,first_seen_at,last_seen_at) VALUES(?,?,?) "
-        "ON CONFLICT(visitor_hash) DO UPDATE SET "
-        "first_seen_at=MIN(unique_visitors.first_seen_at,excluded.first_seen_at), "
-        "last_seen_at=MAX(unique_visitors.last_seen_at,excluded.last_seen_at)",
-        legacy_visitors,
+    return visit_stats_impl.migrate_legacy_database(
+        con,
+        stats_db=STATS_DB,
+        legacy_stats_db=LEGACY_STATS_DB,
+        migration_key=LEGACY_STATS_MIGRATION_KEY,
+        now=_now_ts,
+        warn=lambda message: print(message, file=sys.stderr),
     )
-    con.execute(
-        "INSERT OR REPLACE INTO stats_migrations(key,completed_at) VALUES(?,?)",
-        (LEGACY_STATS_MIGRATION_KEY, _now_ts()),
-    )
-    return True
 
 
 def increment_visit_count(visitor_id: str) -> dict[str, int]:
     """Count page views for the main dashboard only; API polling is excluded."""
-    ensure_stats_db()
-    now = _now_ts()
-    visitor_hash = hash_token(visitor_id)
-    with VISIT_STATS_LOCK:
-        with closing(sqlite3.connect(STATS_DB, timeout=5.0)) as con:
-            con.execute("PRAGMA synchronous=NORMAL")
-            con.execute("INSERT OR IGNORE INTO visit_stats(key,value,updated_at) VALUES('home_views',0,?)", (now,))
-            con.execute("UPDATE visit_stats SET value=value+1, updated_at=? WHERE key='home_views'", (now,))
-            inserted = con.execute(
-                "INSERT OR IGNORE INTO unique_visitors(visitor_hash,first_seen_at,last_seen_at) VALUES(?,?,?)",
-                (visitor_hash, now, now),
-            ).rowcount
-            if not inserted:
-                con.execute(
-                    "UPDATE unique_visitors SET last_seen_at=? WHERE visitor_hash=?",
-                    (now, visitor_hash),
-                )
-            con.execute(
-                "INSERT OR IGNORE INTO visit_stats(key,value,updated_at) VALUES('home_unique',0,?)",
-                (now,),
-            )
-            if inserted:
-                con.execute(
-                    "UPDATE visit_stats SET value=value+1, updated_at=? WHERE key='home_unique'",
-                    (now,),
-                )
-            visit_row = con.execute("SELECT value FROM visit_stats WHERE key='home_views'").fetchone()
-            unique_row = con.execute("SELECT value FROM visit_stats WHERE key='home_unique'").fetchone()
-            con.commit()
-    return {"visits": int(visit_row[0] if visit_row else 0), "unique": int(unique_row[0] if unique_row else 0)}
+    return visit_stats_impl.increment_visit_count(
+        visitor_id,
+        stats_db=STATS_DB,
+        lock=VISIT_STATS_LOCK,
+        ensure_initialized=ensure_stats_db,
+        hash_visitor=hash_token,
+        now=_now_ts,
+    )
 
 
 def parse_request_cookies(header: str | None) -> dict[str, str]:
@@ -2484,104 +2271,42 @@ def generate_practice_market_summary() -> dict[str, Any]:
 
 
 def _store_api_cache_payload(cache_key: str, payload: bytes, generation: int) -> bool:
-    with API_RESPONSE_LOCK:
-        # A producer can still be running when a settings update invalidates
-        # its key. Do not let that obsolete result repopulate the cache.
-        if API_CACHE_KEY_GENERATIONS.get(cache_key, 0) != generation:
-            return False
-        API_RESPONSE_CACHE[cache_key] = {"ts": time.time(), "payload": payload}
-        if len(API_RESPONSE_CACHE) > API_CACHE_MAX_ENTRIES:
-            oldest = sorted(API_RESPONSE_CACHE.items(), key=lambda item: float(item[1].get("ts") or 0))
-            for old_key, _ in oldest[:max(1, len(API_RESPONSE_CACHE) - API_CACHE_MAX_ENTRIES)]:
-                API_RESPONSE_CACHE.pop(old_key, None)
-                old_lock = API_CACHE_KEY_LOCKS.get(old_key)
-                if old_lock is None or not old_lock.locked():
-                    API_CACHE_KEY_LOCKS.pop(old_key, None)
-        return True
+    return response_cache_impl.store_payload(
+        cache_key,
+        payload,
+        generation,
+        entries=API_RESPONSE_CACHE,
+        entries_lock=API_RESPONSE_LOCK,
+        key_locks=API_CACHE_KEY_LOCKS,
+        generations=API_CACHE_KEY_GENERATIONS,
+        max_entries=API_CACHE_MAX_ENTRIES,
+    )
 
 
 def _refresh_api_cache(cache_key: str, producer, generation: int, key_lock: threading.Lock) -> None:
-    try:
-        result = producer()
-        payload = json.dumps(result, ensure_ascii=False).encode("utf-8")
-        _store_api_cache_payload(cache_key, payload, generation)
-    except Exception as exc:
-        print(f"dashboard cache refresh failed for {cache_key}: {type(exc).__name__}: {exc}", file=sys.stderr)
-    finally:
-        key_lock.release()
+    response_cache_impl.refresh_payload(
+        cache_key,
+        producer,
+        generation,
+        key_lock,
+        store=_store_api_cache_payload,
+        warn=lambda message: print(message, file=sys.stderr),
+    )
 
 
 def cache_get_json(cache_key: str, ttl: int, producer) -> tuple[bytes, bool]:
-    now = time.time()
-    with API_RESPONSE_LOCK:
-        cached = API_RESPONSE_CACHE.get(cache_key)
-        cache_age = now - float(cached.get("ts") or 0) if cached else None
-        if cached and cache_age is not None and cache_age < ttl:
-            return cached["payload"], True
-        key_lock = API_CACHE_KEY_LOCKS.setdefault(cache_key, threading.Lock())
-        generation = API_CACHE_KEY_GENERATIONS.get(cache_key, 0)
-
-    # Once a key has produced a usable response, serve the slightly stale value
-    # immediately and refresh it once in the background. Slow quote providers no
-    # longer hold every viewer on the TTL boundary.
-    if cached and cache_age is not None and cache_age < ttl + API_STALE_WHILE_REFRESH_SECONDS:
-        if key_lock.acquire(blocking=False):
-            try:
-                threading.Thread(
-                    target=_refresh_api_cache,
-                    args=(cache_key, producer, generation, key_lock),
-                    name=f"dashboard-cache-{cache_key[:32]}",
-                    daemon=True,
-                ).start()
-            except Exception:
-                key_lock.release()
-                raise
-        return cached["payload"], True
-
-    with key_lock:
-        now = time.time()
-        with API_RESPONSE_LOCK:
-            cached = API_RESPONSE_CACHE.get(cache_key)
-            if cached and now - float(cached.get("ts") or 0) < ttl:
-                return cached["payload"], True
-            generation = API_CACHE_KEY_GENERATIONS.get(cache_key, 0)
-        result = producer()
-        payload = json.dumps(result, ensure_ascii=False).encode("utf-8")
-        _store_api_cache_payload(cache_key, payload, generation)
-        return payload, False
-
-
-def frontend_file_cache_entry(filename: str) -> dict[str, Any]:
-    path = FRONTEND_DIR / filename
-    stat_before = path.stat()
-    signature = (stat_before.st_mtime_ns, stat_before.st_size)
-    with FRONTEND_FILE_CACHE_LOCK:
-        cached = FRONTEND_FILE_CACHE.get(filename)
-        if cached and cached.get("signature") == signature:
-            return cached
-
-    payload = path.read_bytes()
-    stat_after = path.stat()
-    signature_after = (stat_after.st_mtime_ns, stat_after.st_size)
-    # If the asset was replaced while it was being read, read the new version
-    # once more and cache only that result.
-    if signature_after != signature:
-        payload = path.read_bytes()
-        stat_after = path.stat()
-        signature_after = (stat_after.st_mtime_ns, stat_after.st_size)
-    signature = signature_after
-    compressed = gzip.compress(payload, compresslevel=5) if len(payload) >= GZIP_MIN_BYTES else None
-    if compressed is not None and len(compressed) >= len(payload):
-        compressed = None
-    entry = {
-        "signature": signature,
-        "payload": payload,
-        "gzip_payload": compressed,
-        "etag": '"' + hashlib.sha256(payload).hexdigest()[:20] + '"',
-    }
-    with FRONTEND_FILE_CACHE_LOCK:
-        FRONTEND_FILE_CACHE[filename] = entry
-    return entry
+    return response_cache_impl.get_json(
+        cache_key,
+        ttl,
+        producer,
+        entries=API_RESPONSE_CACHE,
+        entries_lock=API_RESPONSE_LOCK,
+        key_locks=API_CACHE_KEY_LOCKS,
+        generations=API_CACHE_KEY_GENERATIONS,
+        stale_while_refresh_seconds=API_STALE_WHILE_REFRESH_SECONDS,
+        store=_store_api_cache_payload,
+        refresh=_refresh_api_cache,
+    )
 
 
 def seed_api_cache_from_json_file(cache_key: str, path: Path, ttl: int, transform=None) -> bool:
@@ -2591,57 +2316,38 @@ def seed_api_cache_from_json_file(cache_key: str, path: Path, ttl: int, transfor
     useful data immediately while ``cache_get_json`` refreshes it in the
     background through the normal producer.
     """
-    with API_RESPONSE_LOCK:
-        if cache_key in API_RESPONSE_CACHE:
-            return False
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return False
-        data = dict(data)
-        if transform is not None:
-            data = transform(data)
-        if not isinstance(data, dict):
-            return False
-        data["stale_cache"] = True
-        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
-    except (OSError, ValueError, TypeError):
-        return False
-
-    with API_RESPONSE_LOCK:
-        if cache_key in API_RESPONSE_CACHE:
-            return False
-        API_RESPONSE_CACHE[cache_key] = {
-            "ts": time.time() - max(0, ttl) - 0.001,
-            "payload": payload,
-        }
-    return True
+    return response_cache_impl.seed_from_json_file(
+        cache_key,
+        path,
+        ttl,
+        entries=API_RESPONSE_CACHE,
+        entries_lock=API_RESPONSE_LOCK,
+        transform=transform,
+    )
 
 
 def invalidate_api_cache(*cache_keys: str) -> None:
-    with API_RESPONSE_LOCK:
-        for cache_key in cache_keys:
-            API_RESPONSE_CACHE.pop(cache_key, None)
-            API_CACHE_KEY_GENERATIONS[cache_key] = API_CACHE_KEY_GENERATIONS.get(cache_key, 0) + 1
+    response_cache_impl.invalidate(
+        cache_keys,
+        entries=API_RESPONSE_CACHE,
+        entries_lock=API_RESPONSE_LOCK,
+        generations=API_CACHE_KEY_GENERATIONS,
+    )
 
 
 def invalidate_api_cache_prefix(prefix: str) -> None:
     """Invalidate every in-process cache entry under one bounded API family."""
-
-    with API_RESPONSE_LOCK:
-        cache_keys = [key for key in API_RESPONSE_CACHE if key.startswith(prefix)]
-        for cache_key in cache_keys:
-            API_RESPONSE_CACHE.pop(cache_key, None)
-            API_CACHE_KEY_GENERATIONS[cache_key] = API_CACHE_KEY_GENERATIONS.get(cache_key, 0) + 1
+    response_cache_impl.invalidate_prefix(
+        prefix,
+        entries=API_RESPONSE_CACHE,
+        entries_lock=API_RESPONSE_LOCK,
+        generations=API_CACHE_KEY_GENERATIONS,
+    )
 
 
 def cached_json_data(cache_key: str, ttl: int, producer, fallback: dict[str, Any]) -> dict[str, Any]:
     payload, _ = cache_get_json(cache_key, ttl, producer)
-    try:
-        data = json.loads(payload.decode("utf-8", "ignore"))
-        return data if isinstance(data, dict) else dict(fallback)
-    except Exception as exc:
-        return {**fallback, "error": str(exc)}
+    return response_cache_impl.decode_json_data(payload, fallback)
 
 
 def iwencai_dragon_tiger_archive_dir() -> Path:
@@ -2817,10 +2523,6 @@ def sanitize_symbols(raw_symbols: str) -> list[str]:
         if len(symbols) >= 80:
             break
     return symbols
-
-
-class RequestTooLarge(ValueError):
-    pass
 
 
 def is_truthy_header(value: str | None) -> bool:
@@ -4361,6 +4063,18 @@ def get_version_status() -> dict[str, Any]:
         VERSION_CHECK_CACHE.update({"ts": now, "ttl": ttl, "payload": payload})
         return dict(payload)
 
+
+def get_self_optimize_status() -> dict[str, Any]:
+    from self_optimizer import get_status
+
+    return get_status()
+
+def apply_self_optimization() -> dict[str, Any]:
+    from self_optimizer import apply_optimization
+
+    return apply_optimization()
+
+
 def admin_setting_group_env_names(group_slug: str) -> set[str]:
     group = ADMIN_SETTING_GROUP_BY_SLUG.get(str(group_slug or ""))
     if not group:
@@ -4380,970 +4094,6 @@ def public_snapshot_publisher() -> Any:
 
         PUBLIC_SNAPSHOT_PUBLISHER = SnapshotPublisher(PUBLIC_DATA_DIR)
     return PUBLIC_SNAPSHOT_PUBLISHER
-
-
-class Handler(BaseHTTPRequestHandler):
-    server_version = "NiuOneDashboard"
-    sys_version = ""
-
-    def remote_ip(self) -> str:
-        return self.client_address[0] if self.client_address else ""
-
-    def request_from_trusted_proxy(self) -> bool:
-        return is_trusted_proxy_ip(self.remote_ip())
-
-    def client_ip(self) -> str:
-        if self.request_from_trusted_proxy():
-            forwarded = first_forwarded_ip(self.headers.get("CF-Connecting-IP"), self.headers.get("X-Forwarded-For"))
-            if forwarded:
-                return forwarded
-        return self.remote_ip()
-
-    def is_secure_request(self) -> bool:
-        if not self.request_from_trusted_proxy():
-            return False
-        if is_truthy_header(self.headers.get("X-Forwarded-Proto")):
-            return True
-        cf_visitor = self.headers.get("CF-Visitor") or ""
-        return '"scheme":"https"' in cf_visitor.replace(" ", "").lower()
-
-    def request_visitor_id(self) -> tuple[str, bool]:
-        visitor_id = parse_request_cookies(self.headers.get("Cookie")).get(VISITOR_COOKIE_NAME, "").strip()
-        if re.fullmatch(r"nvst_[A-Za-z0-9_-]{20,80}", visitor_id or ""):
-            return visitor_id, False
-        return "nvst_" + secrets.token_urlsafe(24), True
-
-    def admin_session_valid(self) -> bool:
-        cookie_value = parse_request_cookies(self.headers.get("Cookie")).get(ADMIN_SESSION_COOKIE_NAME, "")
-        return validate_admin_session(cookie_value)
-
-    def current_user(self) -> dict[str, Any] | None:
-        if not self.admin_session_valid():
-            return None
-        return {"role": "admin", "nickname": "local"}
-
-    def send_security_headers(self) -> None:
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
-        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'")
-        if self.is_secure_request():
-            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-
-    def end_headers(self) -> None:
-        self.send_security_headers()
-        try:
-            super().end_headers()
-        except (BrokenPipeError, ConnectionResetError):
-            return
-
-    def write_response(self, payload: bytes) -> None:
-        try:
-            self.wfile.write(payload)
-        except (BrokenPipeError, ConnectionResetError):
-            return
-
-    def accepts_gzip(self) -> bool:
-        accepted = str(self.headers.get("Accept-Encoding") or "")
-        return any(part.strip().split(";", 1)[0].lower() == "gzip" for part in accepted.split(","))
-
-    def maybe_gzip_payload(self, payload: bytes, content_type: str) -> tuple[bytes, bool]:
-        if len(payload) < GZIP_MIN_BYTES or not self.accepts_gzip():
-            return payload, False
-        normalized_type = content_type.split(";", 1)[0].strip().lower()
-        if normalized_type not in GZIP_CONTENT_TYPE_PREFIXES:
-            return payload, False
-        compressed = gzip.compress(payload, compresslevel=5)
-        if len(compressed) >= len(payload):
-            return payload, False
-        return compressed, True
-
-    def send_compression_headers(self, gzipped: bool, payload_len: int) -> None:
-        if gzipped:
-            self.send_header("Content-Encoding", "gzip")
-            self.send_header("Vary", "Accept-Encoding")
-        self.send_header("Content-Length", str(payload_len))
-
-    def send_json_error(self, status: int, error: str, *, allow: str | None = None) -> None:
-        self.send_response(status)
-        if allow:
-            self.send_header("Allow", allow)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.write_response(json.dumps({"error": error}, ensure_ascii=False).encode("utf-8"))
-
-    def send_method_not_allowed(self, allow: str = "POST") -> None:
-        self.send_json_error(405, "method_not_allowed", allow=allow)
-
-    def require_action_request(self) -> bool:
-        header_value = str(self.headers.get(ACTION_HEADER_NAME) or "").strip().lower()
-        if header_value not in ACTION_HEADER_VALUES:
-            self.send_json_error(403, "action_header_required")
-            return False
-        return True
-
-    def send_rate_limited(self, retry_after: int) -> None:
-        parsed = urlparse(self.path)
-        self.send_response(429)
-        self.send_header("Retry-After", str(retry_after))
-        self.send_header("Cache-Control", "no-store")
-        if parsed.path.startswith("/api/"):
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.end_headers()
-            self.write_response(json.dumps({"error": "rate_limited", "retry_after": retry_after}, ensure_ascii=False).encode("utf-8"))
-        else:
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.end_headers()
-            self.write_response(b"rate limited")
-
-    def enforce_rate_limit(self, scope: str, key: str, limit: int) -> bool:
-        ok, retry_after = check_rate_limit(scope, key, limit)
-        if not ok:
-            self.send_rate_limited(retry_after)
-            return False
-        return True
-
-    def visitor_cookie_flags(self) -> str:
-        secure = "; Secure" if self.is_secure_request() else ""
-        return f"Path=/; Max-Age=31536000; SameSite=Lax{secure}"
-
-    def admin_session_cookie_flags(self) -> str:
-        secure = "; Secure" if self.is_secure_request() else ""
-        max_age = max(60, ADMIN_SESSION_TTL_SECONDS)
-        return f"Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax{secure}"
-
-    def send_frontend_file(
-        self,
-        filename: str,
-        content_type: str,
-        *,
-        cache_control: str,
-        head_only: bool = False,
-        status: int = 200,
-    ) -> None:
-        try:
-            entry = frontend_file_cache_entry(filename)
-        except OSError:
-            self.send_response(500)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            if not head_only:
-                self.write_response(b"frontend asset unavailable")
-            return
-
-        payload = entry["payload"]
-        etag = entry["etag"]
-        if self.headers.get("If-None-Match") == etag:
-            self.send_response(304)
-            self.send_header("Cache-Control", cache_control)
-            self.send_header("ETag", etag)
-            self.end_headers()
-            return
-
-        normalized_type = content_type.split(";", 1)[0].strip().lower()
-        gzip_payload = entry.get("gzip_payload")
-        gzipped = bool(
-            gzip_payload is not None
-            and self.accepts_gzip()
-            and normalized_type in GZIP_CONTENT_TYPE_PREFIXES
-        )
-        body = gzip_payload if gzipped else payload
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Cache-Control", cache_control)
-        self.send_header("ETag", etag)
-        self.send_compression_headers(gzipped, len(body))
-        self.end_headers()
-        if not head_only:
-            self.write_response(body)
-
-    def send_static_asset(self, path: str, *, head_only: bool = False) -> bool:
-        asset = FRONTEND_ASSETS.get(path)
-        if asset is None:
-            return False
-        self.send_frontend_file(
-            asset[0],
-            asset[1],
-            cache_control="public, max-age=31536000, immutable",
-            head_only=head_only,
-        )
-        return True
-
-    def send_frontend_page(self, filename: str, *, head_only: bool = False, status: int = 200) -> None:
-        self.send_frontend_file(
-            filename,
-            "text/html; charset=utf-8",
-            cache_control="no-store",
-            head_only=head_only,
-            status=status,
-        )
-
-    def send_admin_password_required(self) -> bool:
-        self.send_json_error(403, "admin_password_required")
-        return False
-
-    def require_admin(self) -> dict[str, Any] | None:
-        user = self.current_user()
-        if not user:
-            self.send_admin_password_required()
-            return None
-        return user
-
-    def read_form(self) -> dict[str, str]:
-        try:
-            length = int(self.headers.get("Content-Length", "0") or 0)
-        except ValueError:
-            length = 0
-        if length > MAX_POST_BODY_BYTES:
-            raise RequestTooLarge(f"request body too large: {length}")
-        raw = self.rfile.read(length).decode("utf-8", "ignore")
-        parsed = parse_qs(raw, keep_blank_values=True)
-        result: dict[str, str] = {}
-        for key, values in parsed.items():
-            env_name = key[len("env__"):] if key.startswith("env__") else ""
-            schema = ENV_CONFIG_BY_NAME.get(env_name, {})
-            if schema.get("kind") in {"time_list", "handle_list", "stock_universe", "strategy_multi", "strategy_single"}:
-                result[key] = ",".join(v.strip() for v in values if v.strip())
-            else:
-                result[key] = values[-1] if values else ""
-        return result
-
-    def send_payload(self, payload: bytes, *, content_type: str = "application/json; charset=utf-8",
-                     edge_ttl: int = 10, browser_ttl: int = 3, cache_hit: bool | None = None) -> None:
-        body, gzipped = self.maybe_gzip_payload(payload, content_type)
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        if edge_ttl > 0:
-            if EDGE_CACHE_ENABLED:
-                self.send_header("Cache-Control", f"public, max-age={browser_ttl}, s-maxage={edge_ttl}, stale-while-revalidate={edge_ttl * 2}")
-                self.send_header("CDN-Cache-Control", f"public, max-age={edge_ttl}, stale-while-revalidate={edge_ttl * 2}")
-            else:
-                self.send_header("Cache-Control", f"private, max-age={browser_ttl}, stale-while-revalidate={max(browser_ttl, edge_ttl)}")
-                self.send_header("CDN-Cache-Control", "no-store")
-        else:
-            self.send_header("Cache-Control", "no-store")
-        if cache_hit is not None:
-            self.send_header("X-Dashboard-Cache", "HIT" if cache_hit else "MISS")
-        self.send_compression_headers(gzipped, len(body))
-        self.end_headers()
-        self.write_response(body)
-
-    def send_json_cached(self, key: str, ttl: int, producer, *, edge_ttl: int | None = None, browser_ttl: int = 3) -> None:
-        payload, hit = cache_get_json(key, ttl, producer)
-        self.send_payload(payload, edge_ttl=edge_ttl if edge_ttl is not None else ttl, browser_ttl=min(browser_ttl, ttl), cache_hit=hit)
-
-    def send_json_uncached(self, result: dict[str, Any], *, no_store: bool = True) -> None:
-        payload = json.dumps(result, ensure_ascii=False).encode("utf-8")
-        self.send_payload(payload, edge_ttl=0 if no_store else 1)
-
-    def send_cacheable_json(
-        self,
-        result: dict[str, Any],
-        *,
-        cache_control: str,
-        etag: str | None = None,
-        head_only: bool = False,
-        status: int = 200,
-    ) -> None:
-        payload = (
-            json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
-        ).encode("utf-8")
-        resolved_etag = f'"{etag or hashlib.sha256(payload).hexdigest()}"'
-        if status == 200 and self.headers.get("If-None-Match", "").strip() == resolved_etag:
-            self.send_response(304)
-            self.send_header("Cache-Control", cache_control)
-            self.send_header("ETag", resolved_etag)
-            self.end_headers()
-            return
-        body, gzipped = self.maybe_gzip_payload(payload, "application/json")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", cache_control)
-        self.send_header("ETag", resolved_etag)
-        self.send_compression_headers(gzipped, len(body))
-        self.end_headers()
-        if not head_only:
-            self.write_response(body)
-
-    def send_public_snapshot_route(self, path: str, *, head_only: bool = False) -> bool:
-        publisher = public_snapshot_publisher()
-        if path == "/healthz":
-            latest = publisher.read_latest()
-            self.send_cacheable_json(
-                {
-                    "ok": True,
-                    "plane": "unified",
-                    "snapshot_ready": latest is not None,
-                    "revision": int((latest or {}).get("revision") or 0),
-                },
-                cache_control="no-store",
-                head_only=head_only,
-            )
-            return True
-        if path == "/api/v2/public/latest":
-            latest = publisher.read_latest()
-            if latest is None:
-                self.send_cacheable_json(
-                    {"error": "public_snapshot_not_ready"},
-                    cache_control="no-store",
-                    head_only=head_only,
-                    status=503,
-                )
-            else:
-                self.send_cacheable_json(
-                    latest,
-                    cache_control="public, max-age=5, s-maxage=5, stale-while-revalidate=30",
-                    head_only=head_only,
-                )
-            return True
-        manifest_match = re.fullmatch(r"/api/v2/public/manifests/([1-9][0-9]*)\.json", path)
-        if manifest_match:
-            manifest = publisher.read_manifest(int(manifest_match.group(1)))
-            if manifest is None:
-                self.send_json_error(404, "manifest_not_found")
-            else:
-                self.send_cacheable_json(
-                    manifest,
-                    cache_control="public, max-age=31536000, immutable",
-                    head_only=head_only,
-                )
-            return True
-        object_match = re.fullmatch(r"/api/v2/public/objects/([0-9a-f]{64})\.json", path)
-        if object_match:
-            digest = object_match.group(1)
-            value = publisher.read_object(digest)
-            if value is None:
-                self.send_json_error(404, "object_not_found")
-            else:
-                self.send_cacheable_json(
-                    value,
-                    cache_control="public, max-age=31536000, immutable",
-                    etag=digest,
-                    head_only=head_only,
-                )
-            return True
-        if path.startswith("/api/v2/public/"):
-            self.send_json_error(404, "not_found")
-            return True
-        return False
-
-    def do_HEAD(self) -> None:
-        parsed = urlparse(self.path)
-        if not self.enforce_rate_limit("ip", self.client_ip(), RATE_LIMIT_ANON):
-            return
-        if self.send_public_snapshot_route(parsed.path, head_only=True):
-            return
-        if self.send_static_asset(parsed.path, head_only=True):
-            return
-        admin_group_match = re.fullmatch(r"/admin/settings/([a-z0-9-]+)", parsed.path)
-        if admin_group_match:
-            if admin_group_match.group(1) not in ADMIN_SETTING_GROUP_BY_SLUG:
-                self.send_response(404)
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                return
-            self.send_frontend_page("admin.html", head_only=True)
-            return
-        if parsed.path == "/admin":
-            self.send_frontend_page("admin.html", head_only=True)
-            return
-        if parsed.path == "/api/admin/config":
-            authenticated = self.admin_session_valid()
-            self.send_response(200 if authenticated else 403)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            return
-        if parsed.path in {
-            "/api/admin/notifications/test",
-            "/api/admin/models/test",
-            "/api/admin/iwencai/test",
-        }:
-            self.send_method_not_allowed("POST")
-            return
-        if parsed.path == "/api/admin/session":
-            self.send_method_not_allowed("POST")
-            return
-        if parsed.path == "/api/dashboard/bootstrap":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            return
-        if parsed.path.startswith("/api/admin/"):
-            self.send_response(404)
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            return
-        if parsed.path in PRACTICE_CANDIDATES_REFRESH_API_PATHS | {PRACTICE_MANUAL_CYCLE_API_PATH, PRACTICE_MARKET_SUMMARY_API_PATH, "/api/niuniu_practice/resume", "/api/self_optimize/apply"}:
-            self.send_response(405)
-            self.send_header("Allow", "POST")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            return
-        if parsed.path in DASHBOARD_PAGE_PATHS:
-            self.send_frontend_page("index.html", head_only=True)
-            return
-        if parsed.path.startswith("/api/"):
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            return
-        self.send_response(404)
-        self.end_headers()
-
-    def do_GET(self) -> None:
-        parsed = urlparse(self.path)
-        if not self.enforce_rate_limit("ip", self.client_ip(), RATE_LIMIT_ANON):
-            return
-        if self.send_public_snapshot_route(parsed.path):
-            return
-        if self.send_static_asset(parsed.path):
-            return
-        admin_group_match = re.fullmatch(r"/admin/settings/([a-z0-9-]+)", parsed.path)
-        if admin_group_match:
-            status = 200 if admin_group_match.group(1) in ADMIN_SETTING_GROUP_BY_SLUG else 404
-            self.send_frontend_page("admin.html", status=status)
-            return
-        if parsed.path == "/admin":
-            self.send_frontend_page("admin.html")
-            return
-        if parsed.path == "/api/admin/config":
-            if not self.require_admin():
-                return
-            self.send_json_uncached(build_admin_config_payload())
-            return
-        if parsed.path in {
-            "/api/admin/notifications/test",
-            "/api/admin/models/test",
-            "/api/admin/iwencai/test",
-        }:
-            self.send_method_not_allowed("POST")
-            return
-        if parsed.path in DASHBOARD_PAGE_PATHS:
-            self.send_frontend_page("index.html")
-            return
-        if parsed.path.startswith("/api/"):
-            if not self.enforce_rate_limit("api", self.client_ip(), RATE_LIMIT_API):
-                return
-        if parsed.path == "/api/version":
-            self.send_json_uncached(get_version_status())
-            return
-        if parsed.path == "/api/dashboard/bootstrap":
-            visitor_id, new_visitor = self.request_visitor_id()
-            visit_stats = increment_visit_count(visitor_id)
-            payload = json.dumps(
-                {
-                    "visits": visit_stats["visits"],
-                    "unique": visit_stats["unique"],
-                    "us_features_enabled": us_features_enabled(),
-                },
-                ensure_ascii=False,
-            ).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            if new_visitor:
-                self.send_header("Set-Cookie", f"{VISITOR_COOKIE_NAME}={visitor_id}; {self.visitor_cookie_flags()}")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.write_response(payload)
-            return
-        if parsed.path == "/api/iwencai/dragon-tiger":
-            params = parse_qs(parsed.query)
-            raw_trade_date = params.get("date", [""])[0].strip()
-            try:
-                trade_date = normalize_iwencai_trade_date(raw_trade_date)
-                page = normalize_iwencai_page(params.get("page", ["1"])[0])
-                limit = normalize_iwencai_limit(
-                    params.get("limit", [str(IWENCAI_DRAGON_TIGER_DEFAULT_LIMIT)])[0]
-                )
-            except ValueError:
-                self.send_json_error(400, "invalid_iwencai_dragon_tiger_request")
-                return
-            allow_latest_snapshot = not raw_trade_date
-            snapshot_version = (
-                iwencai_dragon_tiger_snapshot_version(
-                    trade_date,
-                    include_latest=allow_latest_snapshot,
-                )
-                if page == 1 and limit == IWENCAI_DRAGON_TIGER_DEFAULT_LIMIT
-                else 0
-            )
-            cache_key = (
-                f"iwencai_dragon_tiger:{trade_date}:{page}:{limit}:"
-                f"{int(allow_latest_snapshot)}:{snapshot_version}"
-            )
-            ttl = API_TTLS["iwencai_dragon_tiger"]
-            self.send_json_cached(
-                cache_key,
-                ttl,
-                lambda: produce_iwencai_dragon_tiger_data(
-                    trade_date,
-                    page=page,
-                    limit=limit,
-                    allow_latest_snapshot=allow_latest_snapshot,
-                ),
-                edge_ttl=ttl,
-                browser_ttl=min(30, ttl),
-            )
-            return
-        if parsed.path == "/api/x_media":
-            params = parse_qs(parsed.query)
-            media_url = params.get("url", [""])[0].strip()
-            try:
-                body, content_type = fetch_x_media(media_url)
-            except Exception:
-                self.send_response(404)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.write_response(b"media unavailable")
-                return
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "public, max-age=604800, immutable")
-            self.end_headers()
-            self.write_response(body)
-            return
-        if parsed.path == "/api/messages":
-            params = parse_qs(parsed.query)
-            limit = clamp_limit(params.get("limit", [""])[0])
-            offset = clamp_offset(params.get("offset", [""])[0])
-            category = params.get("category", [""])[0].strip() or None
-            cache_key = f"messages:v4:{category or 'all'}:{limit}:{offset}"
-            def produce_messages():
-                return merge_records_from_db(limit=limit, category=category, offset=offset)
-            self.send_json_cached(cache_key, API_TTLS["messages"], produce_messages, edge_ttl=API_TTLS["messages"], browser_ttl=5)
-            return
-        if parsed.path in PRACTICE_CANDIDATES_API_PATHS:
-            params = parse_qs(parsed.query)
-            if params.get("force", ["0"])[0].lower() in {"1", "true", "yes"}:
-                self.send_method_not_allowed("POST")
-            else:
-                ttl = API_TTLS["practice_candidates"]
-                self.send_json_cached(PRACTICE_CANDIDATES_CACHE_KEY, ttl, load_practice_candidates_cache, edge_ttl=ttl, browser_ttl=10)
-            return
-        if parsed.path in PRACTICE_CANDIDATES_REFRESH_API_PATHS:
-            self.send_method_not_allowed("POST")
-            return
-        if parsed.path == PRACTICE_MANUAL_CYCLE_API_PATH:
-            self.send_json_uncached(practice_manual_cycle_status())
-            return
-        if parsed.path == PRACTICE_MARKET_SUMMARY_API_PATH:
-            self.send_json_uncached(get_practice_market_summary_status())
-            return
-        if parsed.path == "/api/niuniu_practice":
-            params = parse_qs(parsed.query)
-            fast = params.get("fast", ["0"])[0].lower() in {"1", "true", "yes"}
-            if fast:
-                self.send_json_cached(PRACTICE_FAST_CACHE_KEY, API_TTLS["niuniu_practice"], get_practice_payload_fast, edge_ttl=API_TTLS["niuniu_practice"], browser_ttl=10)
-            else:
-                self.send_json_cached("niuniu_practice", API_TTLS["niuniu_practice"], get_practice_payload, edge_ttl=API_TTLS["niuniu_practice"], browser_ttl=10)
-            return
-        if parsed.path == "/api/niuniu_practice/resume":
-            self.send_method_not_allowed("POST")
-            return
-        if parsed.path == "/api/self_optimize/status":
-            from self_optimizer import get_status
-            payload = json.dumps(get_status(), ensure_ascii=False).encode("utf-8")
-            self.send_payload(payload, edge_ttl=0)
-            return
-        if parsed.path == "/api/self_optimize/apply":
-            self.send_method_not_allowed("POST")
-            return
-        if parsed.path == "/api/daily_evolution":
-            report_file = CRON_OUTPUT_DIR / "daily_evolution_report.json"
-            if report_file.exists():
-                payload = report_file.read_bytes()
-            else:
-                payload = json.dumps({"error":"尚无进化报告，等待首次盘后运行"}, ensure_ascii=False).encode("utf-8")
-            self.send_payload(payload, edge_ttl=10, browser_ttl=5)
-            return
-        if parsed.path == "/api/practice_benchmarks":
-            self.send_json_cached("practice_benchmarks", API_TTLS["practice_benchmarks"], get_practice_benchmarks, edge_ttl=API_TTLS["practice_benchmarks"], browser_ttl=10)
-            return
-        if parsed.path == "/api/indices":
-            seed_api_cache_from_json_file(
-                "indices",
-                INDICES_SNAPSHOT_FILE,
-                API_TTLS["indices"],
-            )
-            self.send_json_cached("indices", API_TTLS["indices"], produce_indices_data, edge_ttl=API_TTLS["indices"], browser_ttl=15)
-            return
-        if parsed.path == "/api/sectors":
-            seed_api_cache_from_json_file(
-                "sectors",
-                CRON_OUTPUT_DIR / "sectors_dashboard_cache.json",
-                API_TTLS["sectors"],
-            )
-            self.send_json_cached(
-                "sectors",
-                API_TTLS["sectors"],
-                lambda: run_dashboard_helper(
-                    "sectors_dashboard_api.py",
-                    {
-                        "sectors": [],
-                        "items": [],
-                        "gain_top": [],
-                        "loss_top": [],
-                        "industry_gain_top": [],
-                        "industry_loss_top": [],
-                        "concept_gain_top": [],
-                        "concept_loss_top": [],
-                    },
-                    timeout=120,
-                ),
-                edge_ttl=API_TTLS["sectors"],
-                browser_ttl=15,
-            )
-            return
-        if parsed.path == "/api/hot_stocks":
-            params = parse_qs(parsed.query)
-            sort_by = (params.get("sort_by", ["amount"])[0] or "amount").strip().lower()
-            if sort_by not in {"amount", "amount_top", "turnover", "turnover_top", "volume", "volume_top", "gain", "hot"}:
-                sort_by = "amount"
-
-            def produce_hot_stocks():
-                data = run_dashboard_helper(
-                    "hot_stocks_dashboard_api.py",
-                    {"items": [], "amount_top": [], "turnover_top": [], "volume_top": [], "gain_top": []},
-                    timeout=120,
-                )
-                return apply_hot_stocks_sort(data, sort_by)
-
-            hot_stocks_cache_key = f"hot_stocks:{sort_by}"
-            seed_api_cache_from_json_file(
-                hot_stocks_cache_key,
-                CRON_OUTPUT_DIR / "hot_stocks_dashboard_cache.json",
-                API_TTLS["hot_stocks"],
-                lambda data: apply_hot_stocks_sort(data, sort_by),
-            )
-            self.send_json_cached(hot_stocks_cache_key, API_TTLS["hot_stocks"], produce_hot_stocks, edge_ttl=API_TTLS["hot_stocks"], browser_ttl=15)
-            return
-        if parsed.path == "/api/us_quotes":
-            params = parse_qs(parsed.query)
-            symbols = sanitize_symbols(params.get("symbols", [""])[0])
-            cache_key = "us_quotes:" + ",".join(symbols)
-            self.send_json_cached(cache_key, API_TTLS["us_quotes"], lambda: fetch_us_quotes(symbols), edge_ttl=API_TTLS["us_quotes"], browser_ttl=10)
-            return
-        if parsed.path == "/api/us_profiles":
-            params = parse_qs(parsed.query)
-            symbols = sanitize_symbols(params.get("symbols", [""])[0])
-            cache_key = "us_profiles:" + ",".join(symbols)
-            ttl = API_TTLS["us_profiles"]
-            self.send_json_cached(
-                cache_key,
-                ttl,
-                lambda: fetch_us_profiles(symbols),
-                edge_ttl=ttl,
-                browser_ttl=3600,
-            )
-            return
-        if parsed.path == "/api/us_market_summary":
-            self.send_json_cached("us_market_summary", API_TTLS["us_market_summary"], produce_us_market_summary_data, edge_ttl=API_TTLS["us_market_summary"], browser_ttl=30)
-            return
-        if parsed.path == "/api/us_sectors":
-            self.send_json_cached("us_sectors", API_TTLS["us_sectors"], produce_us_sector_data, edge_ttl=API_TTLS["us_sectors"], browser_ttl=30)
-            return
-        if parsed.path == "/api/money_flow":
-            seed_api_cache_from_json_file(
-                "money_flow",
-                MONEY_FLOW_SNAPSHOT_FILE,
-                API_TTLS["money_flow"],
-            )
-            self.send_json_cached("money_flow", API_TTLS["money_flow"], produce_money_flow_data, edge_ttl=API_TTLS["money_flow"], browser_ttl=15)
-            return
-        if parsed.path == "/api/industry-flow":
-            seed_api_cache_from_json_file(
-                "money_flow",
-                MONEY_FLOW_SNAPSHOT_FILE,
-                API_TTLS["money_flow"],
-            )
-            ttl = API_TTLS["industry_flow"]
-            self.send_json_cached(
-                "industry_flow",
-                ttl,
-                produce_industry_flow_data,
-                edge_ttl=ttl,
-                browser_ttl=10,
-            )
-            return
-        if parsed.path == "/api/market_flow":
-            self.send_json_cached("market_flow", API_TTLS["market_flow"], lambda: run_dashboard_helper("market_flow_dashboard_api.py", {"total_inflow_yi": None}, timeout=30), edge_ttl=API_TTLS["market_flow"], browser_ttl=10)
-            return
-        self.send_response(404)
-        self.end_headers()
-        self.write_response(b"not found")
-
-    def do_POST(self) -> None:
-        parsed = urlparse(self.path)
-        if not self.enforce_rate_limit("ip", self.client_ip(), RATE_LIMIT_ANON):
-            return
-        if parsed.path == "/api/admin/session":
-            peer_ip = self.remote_ip()
-            client_ip = self.client_ip()
-            if not self.enforce_rate_limit("admin-login-peer", peer_ip, RATE_LIMIT_ADMIN_LOGIN):
-                return
-            if client_ip != peer_ip and not self.enforce_rate_limit("admin-login-client", client_ip, RATE_LIMIT_ADMIN_LOGIN):
-                return
-            try:
-                form = self.read_form()
-            except RequestTooLarge:
-                self.send_json_error(413, "请求过大，请重新提交")
-                return
-            authenticated = verify_admin_credential(form.get("admin_password", ""))
-            result = {"ok": authenticated}
-            if not authenticated:
-                result["error"] = "管理员凭据错误"
-            payload = json.dumps(result, ensure_ascii=False).encode("utf-8")
-            self.send_response(200 if authenticated else 403)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            if authenticated:
-                self.send_header(
-                    "Set-Cookie",
-                    f"{ADMIN_SESSION_COOKIE_NAME}={new_admin_session()}; {self.admin_session_cookie_flags()}",
-                )
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.write_response(payload)
-            return
-        legacy_force_path = parsed.path == "/api/b1_screen"
-        if parsed.path == PRACTICE_MANUAL_CYCLE_API_PATH:
-            if not self.require_admin():
-                return
-            if not self.require_action_request():
-                return
-            if not self.enforce_rate_limit("admin", self.client_ip(), RATE_LIMIT_ADMIN):
-                return
-            self.send_json_uncached(start_practice_manual_cycle())
-            return
-        if parsed.path == PRACTICE_MARKET_SUMMARY_API_PATH:
-            if not self.require_admin():
-                return
-            if not self.require_action_request():
-                return
-            if not self.enforce_rate_limit("admin", self.client_ip(), RATE_LIMIT_ADMIN):
-                return
-            result = generate_practice_market_summary()
-            if result.get("ok"):
-                self.send_json_uncached(result)
-            else:
-                self.send_json_error(409, str(result.get("error") or "盘面总结生成失败"))
-            return
-        if parsed.path in PRACTICE_CANDIDATES_REFRESH_API_PATHS or legacy_force_path:
-            params = parse_qs(parsed.query)
-            if legacy_force_path and params.get("force", ["0"])[0].lower() not in {"1", "true", "yes"}:
-                self.send_response(404)
-                self.end_headers()
-                self.write_response(b"not found")
-                return
-            if not self.require_admin():
-                return
-            if not self.require_action_request():
-                return
-            if not self.enforce_rate_limit("admin", self.client_ip(), RATE_LIMIT_ADMIN):
-                return
-            cache_data = trigger_b1_scan(force=True)
-            with API_RESPONSE_LOCK:
-                API_RESPONSE_CACHE.pop(PRACTICE_CANDIDATES_CACHE_KEY, None)
-            self.send_json_uncached(cache_data)
-            return
-        if parsed.path == "/api/niuniu_practice/resume":
-            if not self.require_admin():
-                return
-            if not self.require_action_request():
-                return
-            if not self.enforce_rate_limit("admin", self.client_ip(), RATE_LIMIT_ADMIN):
-                return
-            result = get_trader_module().resume_trading()
-            API_RESPONSE_CACHE.pop("niuniu_practice", None)
-            API_RESPONSE_CACHE.pop(PRACTICE_FAST_CACHE_KEY, None)
-            self.send_json_uncached(result)
-            return
-        if parsed.path == "/api/self_optimize/apply":
-            if not self.require_admin():
-                return
-            if not self.require_action_request():
-                return
-            if not self.enforce_rate_limit("admin", self.client_ip(), RATE_LIMIT_ADMIN):
-                return
-            from self_optimizer import apply_optimization
-            payload = json.dumps(apply_optimization(), ensure_ascii=False).encode("utf-8")
-            self.send_payload(payload, edge_ttl=0)
-            return
-        if parsed.path == "/api/admin/iwencai/test":
-            if not self.require_admin():
-                return
-            if not self.require_action_request():
-                return
-            if not self.enforce_rate_limit("admin", self.client_ip(), RATE_LIMIT_ADMIN):
-                return
-            if not self.enforce_rate_limit(
-                "iwencai-test",
-                self.client_ip(),
-                RATE_LIMIT_IWENCAI_TEST,
-            ):
-                return
-            try:
-                form = self.read_form()
-            except RequestTooLarge:
-                self.send_json_error(413, "request_too_large")
-                return
-            overrides = {
-                key[len("env__"):]: value
-                for key, value in form.items()
-                if key.startswith("env__")
-                and key[len("env__"):] in IWENCAI_TEST_FIELD_NAMES
-            }
-            self.send_json_uncached(send_iwencai_connection_test(overrides))
-            return
-        if parsed.path == "/api/admin/models/test":
-            if not self.require_admin():
-                return
-            if not self.require_action_request():
-                return
-            if not self.enforce_rate_limit("admin", self.client_ip(), RATE_LIMIT_ADMIN):
-                return
-            if not self.enforce_rate_limit(
-                "model-test",
-                self.client_ip(),
-                RATE_LIMIT_MODEL_TEST,
-            ):
-                return
-            try:
-                form = self.read_form()
-            except RequestTooLarge:
-                self.send_json_error(413, "request_too_large")
-                return
-
-            target_id = str(form.get("target") or "").strip()
-            allowed_names = model_test_override_names(target_id)
-            overrides = {
-                key[len("env__"):]: value
-                for key, value in form.items()
-                if key.startswith("env__") and key[len("env__"):] in allowed_names
-            }
-            self.send_json_uncached(send_model_connection_test(target_id, overrides))
-            return
-        if parsed.path == "/api/admin/notifications/test":
-            if not self.require_admin():
-                return
-            if not self.require_action_request():
-                return
-            if not self.enforce_rate_limit("admin", self.client_ip(), RATE_LIMIT_ADMIN):
-                return
-            if not self.enforce_rate_limit(
-                "notification-test",
-                self.client_ip(),
-                RATE_LIMIT_NOTIFICATION_TEST,
-            ):
-                return
-            try:
-                form = self.read_form()
-            except RequestTooLarge:
-                self.send_json_error(413, "request_too_large")
-                return
-
-            channel_id = str(form.get("channel") or "").strip().lower()
-            channel = NOTIFICATION_CHANNEL_BY_ID.get(channel_id)
-            allowed_names = {"DASHBOARD_NOTIFICATION_TIMEOUT_SECONDS"}
-            if channel is not None:
-                allowed_names.update(str(name) for name in channel.get("field_names", ()))
-            overrides = {
-                key[len("env__"):]: value
-                for key, value in form.items()
-                if key.startswith("env__") and key[len("env__"):] in allowed_names
-            }
-            self.send_json_uncached(send_notification_test(channel_id, overrides))
-            return
-        env_config_match = re.fullmatch(
-            r"/api/admin/config/env(?:/([a-z0-9-]+))?",
-            parsed.path,
-        )
-        if env_config_match:
-            if not self.require_admin():
-                return
-            if not self.require_action_request():
-                return
-            if not self.enforce_rate_limit("admin", self.client_ip(), RATE_LIMIT_ADMIN):
-                return
-            group_slug = env_config_match.group(1) or ""
-            group = ADMIN_SETTING_GROUP_BY_SLUG.get(group_slug) if group_slug else None
-            if group_slug and group is None:
-                self.send_json_error(404, "unknown_settings_group")
-                return
-            try:
-                form = self.read_form()
-                visible_names = (
-                    admin_setting_group_env_names(group_slug)
-                    if group_slug
-                    else set(admin_visible_env_names())
-                )
-                updates = {
-                    key[len("env__"):]: value
-                    for key, value in form.items()
-                    if key.startswith("env__") and key[len("env__"):] in visible_names
-                }
-                removed_notification_channels = {
-                    key[len("notification_remove__"):]
-                    for key, value in form.items()
-                    if key.startswith("notification_remove__")
-                    and str(value or "").strip().lower() in TRUTHY_VALUES
-                } if not group_slug or group_slug == "notifications" else set()
-                updates = normalize_business_updates(updates)
-                validate_business_updates(updates)
-                result = persist_and_sync_business_updates(
-                    updates,
-                    clear_names=removed_notification_config_names(removed_notification_channels),
-                )
-                result["reauth_required"] = "DASHBOARD_ADMIN_PASSWORD" in set(result.get("changed_names") or [])
-                if result.get("changed"):
-                    result["restart"] = {"ok": False, "skipped": "hot_applied"}
-                else:
-                    result["restart"] = {"ok": False, "skipped": "unchanged"}
-                if group is not None:
-                    result["group"] = {
-                        "slug": group_slug,
-                        "name": str(group["name"]),
-                    }
-                result["config"] = build_admin_config_payload()
-            except Exception as exc:
-                self.send_json_uncached({"ok": False, "error": str(exc)})
-                return
-            self.send_json_uncached(result)
-            return
-        if parsed.path == "/api/admin/config/yaml":
-            if not self.require_admin():
-                return
-            if not self.require_action_request():
-                return
-            if not self.enforce_rate_limit("admin", self.client_ip(), RATE_LIMIT_ADMIN):
-                return
-            try:
-                form = self.read_form()
-                result = write_yaml_config(form.get("config_yaml", ""))
-            except Exception as exc:
-                self.send_json_uncached({"ok": False, "error": str(exc)})
-                return
-            self.send_json_uncached(result)
-            return
-        self.send_response(404)
-        self.end_headers()
-        self.write_response(b"not found")
-
-    def log_message(self, fmt: str, *args: Any) -> None:
-        sanitized_args = list(args)
-        if sanitized_args and isinstance(sanitized_args[0], str):
-            sanitized_args[0] = re.sub(r"([?&]token=)[^&\s]+", r"\1[redacted]", sanitized_args[0])
-        print(f"{self.address_string()} - {fmt % tuple(sanitized_args)}")
 
 
 SINA_US_QUOTE_URL = "https://hq.sinajs.cn/list="
@@ -5485,34 +4235,12 @@ def _safe_float(v: str) -> float | None:
 
 
 def main() -> None:
-    ensure_stats_db()
-    # Complete message schema/index setup before accepting browser requests so
-    # the first uncached X page never waits on migration work while a writer is
-    # active.
-    with closing(push_history.connect()):
-        pass
-    get_or_create_admin_token()
     parser = argparse.ArgumentParser(description="NiuOne dashboard")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
     args = parser.parse_args()
-    server = ReusableThreadingHTTPServer((args.host, args.port), Handler)
-    start_b1_scheduler()
-    start_pending_decision_executor()
-    start_practice_equity_heartbeat()
-    start_industry_flow_sampler()
-    projection_service = None
-    projection_enabled = str(
-        os.environ.get("DASHBOARD_PUBLIC_PROJECTION_ENABLED", "1") or "1"
-    ).strip().lower() not in {"0", "false", "no", "off"}
-    if projection_enabled:
-        from app.dashboard.projection_service import LegacyDashboardSources, ProjectionService
-        projection_service = ProjectionService(
-            LegacyDashboardSources(sys.modules[__name__]),
-            public_snapshot_publisher(),
-            interval_seconds=float(os.environ.get("DASHBOARD_PUBLIC_REFRESH_SECONDS") or 15),
-        )
-        projection_service.start()
+    from app.dashboard.fastapi_app import run
+
     print(f"牛牛1号：http://{args.host}:{args.port}")
     if ADMIN_PASSWORD:
         print("设置页：/admin（管理员密码保护已启用）")
@@ -5520,13 +4248,7 @@ def main() -> None:
         print(f"设置页：/admin（管理员密钥：{ADMIN_TOKEN_FILE}）")
     print(f"访问统计：{STATS_DB}")
     print(f"消息历史：{push_history.DB_PATH}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        if projection_service is not None:
-            projection_service.stop()
+    run(host=args.host, port=args.port, legacy_module=sys.modules[__name__])
 
 
 if __name__ == "__main__":

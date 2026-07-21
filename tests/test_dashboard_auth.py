@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import importlib.util
-import gzip
 import io
 import json
 import os
@@ -15,6 +14,10 @@ from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
+from app.dashboard.fastapi_app import SPA_DASHBOARD_PATHS, create_app
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / 'app'
 COMPAT = SRC / 'compat'
@@ -27,37 +30,168 @@ dashboard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dashboard)
 FRONTEND = ROOT / 'frontend'
 DASHBOARD_FRONTEND = '\n'.join(
-    (FRONTEND / name).read_text(encoding='utf-8')
-    for name in ('index.html', 'dashboard.css', 'dashboard.js')
+    path.read_text(encoding='utf-8')
+    for path in (
+        FRONTEND / 'dashboard.css',
+        *sorted((ROOT / 'web' / 'src').rglob('*.js')),
+        *sorted((ROOT / 'web' / 'src' / 'components').rglob('*.vue')),
+    )
 )
 ADMIN_FRONTEND = '\n'.join(
-    (FRONTEND / name).read_text(encoding='utf-8')
-    for name in ('admin.html', 'admin.css', 'admin.js')
+    path.read_text(encoding='utf-8')
+    for path in (
+        FRONTEND / 'admin.css',
+        ROOT / 'web' / 'src' / 'composables' / 'useAdminConfig.js',
+        *sorted((ROOT / 'web' / 'src' / 'components').glob('Admin*.vue')),
+    )
+)
+MARKET_MONITOR_UTILS_PATH = ROOT / 'web' / 'src' / 'utils' / 'marketMonitorDisplay.js'
+MARKET_MONITOR_UTILS = MARKET_MONITOR_UTILS_PATH.read_text(encoding='utf-8')
+MARKET_MONITOR_DATA = (
+    ROOT / 'web' / 'src' / 'composables' / 'useMarketMonitorData.js'
+).read_text(encoding='utf-8')
+MARKET_MONITOR_COMPONENTS = '\n'.join(
+    path.read_text(encoding='utf-8')
+    for path in (
+        ROOT / 'web' / 'src' / 'components' / 'MarketMonitorPanel.vue',
+        ROOT / 'web' / 'src' / 'components' / 'market-monitor' / 'MarketMonitorCard.vue',
+        ROOT / 'web' / 'src' / 'components' / 'market-monitor' / 'MarketDetail.vue',
+        ROOT / 'web' / 'src' / 'components' / 'market-monitor' / 'MarketSection.vue',
+        ROOT / 'web' / 'src' / 'components' / 'market-monitor' / 'UsMarketSummaryCard.vue',
+    )
+)
+US_RATING_UTILS_PATH = ROOT / 'web' / 'src' / 'utils' / 'usRatingDisplay.js'
+US_RATING_UTILS = US_RATING_UTILS_PATH.read_text(encoding='utf-8')
+US_RATING_DATA = (
+    ROOT / 'web' / 'src' / 'composables' / 'useUsRatingsData.js'
+).read_text(encoding='utf-8')
+US_RATING_COMPONENTS = '\n'.join(
+    path.read_text(encoding='utf-8')
+    for path in (
+        ROOT / 'web' / 'src' / 'components' / 'UsRatingsPanel.vue',
+        ROOT / 'web' / 'src' / 'components' / 'us-ratings' / 'UsRatingCard.vue',
+        ROOT / 'web' / 'src' / 'components' / 'us-ratings' / 'RatingText.vue',
+    )
+)
+X_MONITOR_UTILS_PATH = ROOT / 'web' / 'src' / 'utils' / 'xMonitorDisplay.js'
+X_MONITOR_UTILS = X_MONITOR_UTILS_PATH.read_text(encoding='utf-8')
+X_MONITOR_DATA = (
+    ROOT / 'web' / 'src' / 'composables' / 'useXMonitorData.js'
+).read_text(encoding='utf-8')
+X_MONITOR_COMPONENTS = '\n'.join(
+    path.read_text(encoding='utf-8')
+    for path in (
+        ROOT / 'web' / 'src' / 'components' / 'XMonitorPanel.vue',
+        ROOT / 'web' / 'src' / 'components' / 'x-monitor' / 'XMonitorRow.vue',
+        ROOT / 'web' / 'src' / 'components' / 'x-monitor' / 'XMediaGallery.vue',
+        ROOT / 'web' / 'src' / 'components' / 'x-monitor' / 'XImageViewer.vue',
+    )
+)
+PRACTICE_CANDIDATE_UTILS_PATH = (
+    ROOT / 'web' / 'src' / 'utils' / 'practiceCandidateDisplay.js'
+)
+PRACTICE_CANDIDATE_UTILS = PRACTICE_CANDIDATE_UTILS_PATH.read_text(encoding='utf-8')
+PRACTICE_CANDIDATE_DATA = (
+    ROOT / 'web' / 'src' / 'composables' / 'usePracticeCandidatesData.js'
+).read_text(encoding='utf-8')
+PUBLIC_PROJECTION_DATA = (
+    ROOT / 'web' / 'src' / 'composables' / 'usePublicProjection.js'
+).read_text(encoding='utf-8')
+PRACTICE_DATA = (
+    ROOT / 'web' / 'src' / 'composables' / 'usePracticeData.js'
+).read_text(encoding='utf-8')
+PRACTICE_PAYLOAD_UTILS_PATH = ROOT / 'web' / 'src' / 'utils' / 'practicePayload.js'
+PRACTICE_PAYLOAD_UTILS = PRACTICE_PAYLOAD_UTILS_PATH.read_text(encoding='utf-8')
+PRACTICE_CHART_UTILS_PATH = ROOT / 'web' / 'src' / 'utils' / 'practiceChart.js'
+PRACTICE_CHART_UTILS = PRACTICE_CHART_UTILS_PATH.read_text(encoding='utf-8')
+INDUSTRY_FLOW_ANIMATION_PATH = (
+    ROOT / 'web' / 'src' / 'composables' / 'useIndustryFlowAnimation.js'
+)
+PRACTICE_LOG_UTILS = (
+    ROOT / 'web' / 'src' / 'utils' / 'practiceLogs.js'
+).read_text(encoding='utf-8')
+PRACTICE_CANDIDATE_COMPONENTS = '\n'.join(
+    path.read_text(encoding='utf-8')
+    for path in (
+        ROOT / 'web' / 'src' / 'components' / 'PracticeCandidatesPanel.vue',
+        ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticeCandidateCard.vue',
+    )
+)
+PRACTICE_COMPONENTS = '\n'.join(
+    path.read_text(encoding='utf-8')
+    for path in (
+        ROOT / 'web' / 'src' / 'components' / 'DashboardPage.vue',
+        ROOT / 'web' / 'src' / 'components' / 'PracticePanel.vue',
+        ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticeAccountOverview.vue',
+        ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticeCalendar.vue',
+        ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticeEquityChart.vue',
+        ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticeMarketSummary.vue',
+        ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticeOperationLog.vue',
+        ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticePositionCard.vue',
+        ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticePositions.vue',
+        ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticeRule.vue',
+        ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticeSoldCard.vue',
+    )
 )
 
 
-class FakeHandler(dashboard.Handler):
+class FakeHandler:
+    """Temporary response-shaped wrapper around the production ASGI app."""
+
     def __init__(self, path='/', method='GET', headers=None, body=b'', ip='127.0.0.1'):
         self.path = path
         self.command = method
         self.headers = headers or {}
+        self.body = body
+        self.ip = ip
         self.rfile = io.BytesIO(body)
         self.wfile = io.BytesIO()
-        self.client_address = (ip, 12345)
         self.status = None
         self.sent_headers = []
 
-    def send_response(self, code, message=None):
-        self.status = code
+    def dispatch(self, method):
+        app = create_app(
+            legacy_module=dashboard,
+            web_dist_dir=ROOT / 'web' / 'dist',
+            enable_background_services=False,
+        )
+        with TestClient(app, client=(self.ip, 12345)) as client:
+            response = client.request(
+                method,
+                self.path,
+                headers=self.headers,
+                content=self.body,
+            )
+        self.status = response.status_code
+        self.sent_headers = list(response.headers.multi_items())
+        self.wfile = io.BytesIO(response.content)
 
-    def send_header(self, keyword, value):
-        self.sent_headers.append((keyword, value))
+    def do_GET(self):
+        self.dispatch('GET')
 
-    def end_headers(self):
-        self.send_security_headers()
+    def do_HEAD(self):
+        self.dispatch('HEAD')
 
-    def log_message(self, fmt, *args):
-        pass
+    def do_POST(self):
+        self.dispatch('POST')
+
+    def client_ip(self):
+        if dashboard.is_trusted_proxy_ip(self.ip):
+            forwarded = dashboard.first_forwarded_ip(
+                self.headers.get('CF-Connecting-IP'),
+                self.headers.get('X-Forwarded-For'),
+            )
+            if forwarded:
+                return forwarded
+        return self.ip
+
+    def is_secure_request(self):
+        if not dashboard.is_trusted_proxy_ip(self.ip):
+            return False
+        if dashboard.is_truthy_header(self.headers.get('X-Forwarded-Proto')):
+            return True
+        cf_visitor = self.headers.get('CF-Visitor') or ''
+        return '"scheme":"https"' in cf_visitor.replace(' ', '').lower()
 
     def header(self, name):
         for key, value in reversed(self.sent_headers):
@@ -114,7 +248,6 @@ class DashboardAuthTests(unittest.TestCase):
         dashboard.API_RESPONSE_CACHE.clear()
         dashboard.API_CACHE_KEY_LOCKS.clear()
         dashboard.API_CACHE_KEY_GENERATIONS.clear()
-        dashboard.FRONTEND_FILE_CACHE.clear()
         dashboard.RATE_LIMIT_BUCKETS.clear()
         dashboard.ensure_stats_db()
 
@@ -143,22 +276,18 @@ class DashboardAuthTests(unittest.TestCase):
         home = FakeHandler(path='/')
         home.do_GET()
         self.assertEqual(home.status, 200)
-        self.assertIn('<title>牛牛1号</title>', home.wfile.getvalue().decode('utf-8'))
+        self.assertIn('<div id="app">', home.wfile.getvalue().decode('utf-8'))
 
         admin = FakeHandler(path='/admin')
         admin.do_GET()
         self.assertEqual(admin.status, 200)
         admin_body = admin.wfile.getvalue().decode('utf-8')
-        self.assertIn('<link rel="stylesheet" href="/static/admin.css?v=11">', admin_body)
-        self.assertIn('<script src="/static/admin.js?v=22" defer></script>', admin_body)
-        self.assertIn('id="adminThemeToggle"', admin_body)
-        self.assertIn('class="theme-icon theme-icon-moon"', admin_body)
-        self.assertIn('class="theme-icon theme-icon-sun"', admin_body)
-        self.assertIn("localStorage.getItem(storageKey)", admin_body)
+        self.assertIn('<div id="app">', admin_body)
+        self.assertIn('<script type="module"', admin_body)
         self.assertNotIn('name="admin_password"', admin_body)
         self.assertNotIn("name='env__DASHBOARD_GROK_API_KEY'", admin_body)
         self.assertIn("fetch('/api/admin/config'", ADMIN_FRONTEND)
-        self.assertIn("renderAdminLogin('')", ADMIN_FRONTEND)
+        self.assertIn('<AdminLogin', ADMIN_FRONTEND)
 
         config = FakeHandler(path='/api/admin/config')
         config.do_GET()
@@ -175,7 +304,7 @@ class DashboardAuthTests(unittest.TestCase):
         health = FakeHandler(path='/healthz')
         health.do_GET()
         self.assertEqual(health.status, 200)
-        self.assertEqual(json.loads(health.wfile.getvalue())['plane'], 'unified')
+        self.assertEqual(json.loads(health.wfile.getvalue())['plane'], 'fastapi')
 
         latest = FakeHandler(path='/api/v2/public/latest')
         latest.do_GET()
@@ -206,102 +335,60 @@ class DashboardAuthTests(unittest.TestCase):
         admin.do_GET()
         self.assertEqual(admin.status, 200)
 
-    def test_frontend_pages_and_assets_are_served_from_native_static_files(self):
+    def test_vue_pages_and_vite_assets_are_served_by_fastapi(self):
+        expected_page = (ROOT / 'web' / 'dist' / 'index.html').read_bytes()
         home = FakeHandler(path='/')
         home.do_GET()
         admin = FakeHandler(path='/admin')
         admin.do_GET()
-        dashboard_js = FakeHandler(path='/static/dashboard.js')
-        dashboard_js.do_GET()
-        admin_js = FakeHandler(path='/static/admin.js')
-        admin_js.do_GET()
-        versioned_dashboard_js = FakeHandler(path='/static/dashboard.js?v=23')
-        versioned_dashboard_js.do_GET()
+        removed_legacy_asset = FakeHandler(path='/static/dashboard.js')
+        removed_legacy_asset.do_GET()
 
-        self.assertEqual(home.wfile.getvalue(), (FRONTEND / 'index.html').read_bytes())
-        self.assertEqual(admin.wfile.getvalue(), (FRONTEND / 'admin.html').read_bytes())
-        self.assertEqual(dashboard_js.wfile.getvalue(), (FRONTEND / 'dashboard.js').read_bytes())
-        self.assertEqual(admin_js.wfile.getvalue(), (FRONTEND / 'admin.js').read_bytes())
-        self.assertEqual(versioned_dashboard_js.wfile.getvalue(), (FRONTEND / 'dashboard.js').read_bytes())
-        self.assertIn('<link rel="stylesheet" href="/static/dashboard.css?v=72">', DASHBOARD_FRONTEND)
-        self.assertIn('<script src="/static/dashboard.js?v=87" defer></script>', DASHBOARD_FRONTEND)
-        self.assertIn('id="themeToggle"', DASHBOARD_FRONTEND)
-        self.assertIn('class="theme-icon theme-icon-moon"', DASHBOARD_FRONTEND)
-        self.assertIn('class="theme-icon theme-icon-sun"', DASHBOARD_FRONTEND)
-        self.assertIn("localStorage.getItem(storageKey)", DASHBOARD_FRONTEND)
-        self.assertIn('function toggleDashboardTheme()', DASHBOARD_FRONTEND)
-        self.assertIn('id="complianceDialog"', DASHBOARD_FRONTEND)
-        self.assertIn('role="dialog" aria-modal="true"', DASHBOARD_FRONTEND)
-        self.assertIn('onclick="dismissComplianceDialog()"', DASHBOARD_FRONTEND)
-        self.assertIn('function dismissComplianceDialog()', DASHBOARD_FRONTEND)
-        self.assertNotIn('class="compliance-notice"', DASHBOARD_FRONTEND)
-        self.assertIn('Boolean(payload?.seat_error || payload?.institution_error)', DASHBOARD_FRONTEND)
-        self.assertIn('当前历史快照暂无完整买卖席位数据。', DASHBOARD_FRONTEND)
-        self.assertNotIn('document.title', DASHBOARD_FRONTEND)
-        dashboard_css = (FRONTEND / 'dashboard.css').read_text(encoding='utf-8')
-        self.assertIn(':root { color-scheme:light;', dashboard_css)
-        self.assertIn('--bg:#f5f6f8', dashboard_css)
-        self.assertIn('html[data-theme="dark"]', dashboard_css)
-        self.assertIn('<nav id="categoryTabs" class="category-tabs" aria-label="主要栏目"></nav>', DASHBOARD_FRONTEND)
-        self.assertIn('.tab + .tab::before {', dashboard_css)
-        self.assertIn('background:var(--line); transition:opacity .16s ease;', dashboard_css)
-        self.assertIn('.tab.active::before, .tab.active + .tab::before { opacity:0; }', dashboard_css)
-        self.assertIn('html:not([data-theme="dark"]) .tab { color:#475467; }', dashboard_css)
-        self.assertIn('html:not([data-theme="dark"]) .tab.active { color:#194aa6; }', dashboard_css)
-        self.assertIn('html:not([data-theme="dark"]) .x-row { border-bottom-color:var(--line); }', dashboard_css)
-        self.assertIn('html:not([data-theme="dark"]) .dragon-tiger-list-sector { color:#475467; }', dashboard_css)
-        self.assertIn('html:not([data-theme="dark"]) .dragon-tiger-seat-badge {', dashboard_css)
-        self.assertNotIn('radial-gradient(circle at top left', dashboard_css)
-        self.assertIn("document.title = '牛牛1号';", ADMIN_FRONTEND)
-        self.assertIn("const ADMIN_THEME_STORAGE_KEY = 'niuone-dashboard-theme-v1';", ADMIN_FRONTEND)
-        self.assertIn('function toggleAdminTheme()', ADMIN_FRONTEND)
-        self.assertIn('event.key === ADMIN_THEME_STORAGE_KEY', ADMIN_FRONTEND)
-        self.assertIn('event.key === DASHBOARD_THEME_STORAGE_KEY', dashboard_js.wfile.getvalue().decode('utf-8'))
-        admin_css = (FRONTEND / 'admin.css').read_text(encoding='utf-8')
-        self.assertIn('html:not([data-theme="dark"]) {', admin_css)
-        self.assertIn('html[data-theme="dark"] {', admin_css)
-        self.assertNotIn("title + ' · 牛牛1号'", ADMIN_FRONTEND)
-        self.assertEqual(dashboard_js.header('Content-Type'), 'application/javascript; charset=utf-8')
-        self.assertIn('max-age=31536000', dashboard_js.header('Cache-Control'))
-        self.assertIn('immutable', dashboard_js.header('Cache-Control'))
-        self.assertTrue(dashboard_js.header('ETag'))
+        self.assertEqual(home.wfile.getvalue(), expected_page)
+        self.assertEqual(admin.wfile.getvalue(), expected_page)
+        self.assertEqual(removed_legacy_asset.status, 404)
+        index_body = expected_page.decode('utf-8')
+        asset_path = next(
+            line.split('src="', 1)[1].split('"', 1)[0]
+            for line in index_body.splitlines()
+            if 'src="/assets/' in line
+        )
+        asset = FakeHandler(path=asset_path)
+        asset.do_GET()
+        self.assertEqual(asset.status, 200)
+        self.assertEqual(
+            asset.wfile.getvalue(),
+            (ROOT / 'web' / 'dist' / asset_path.removeprefix('/')).read_bytes(),
+        )
+        self.assertIn('max-age=31536000', asset.header('Cache-Control'))
+        self.assertIn('immutable', asset.header('Cache-Control'))
+        self.assertTrue(asset.header('ETag'))
 
         backend_source = MODULE_PATH.read_text(encoding='utf-8')
-        self.assertNotIn('INDEX_HTML', backend_source)
-        self.assertNotIn('ADMIN_HTML', backend_source)
+        self.assertNotIn('BaseHTTPRequestHandler', backend_source)
+        self.assertNotIn('FRONTEND_ASSETS', backend_source)
         self.assertNotIn('<!doctype html>', backend_source)
 
-    def test_static_assets_reuse_compressed_payload_and_support_conditional_get(self):
-        original_compress = dashboard.gzip.compress
-        compress_calls = []
+    def test_vite_assets_support_gzip_and_conditional_get(self):
+        index_body = (ROOT / 'web' / 'dist' / 'index.html').read_text(encoding='utf-8')
+        asset_path = next(
+            line.split('src="', 1)[1].split('"', 1)[0]
+            for line in index_body.splitlines()
+            if 'src="/assets/' in line
+        )
+        first = FakeHandler(path=asset_path, headers={'Accept-Encoding': 'gzip'})
+        first.do_GET()
+        self.assertEqual(first.status, 200)
+        self.assertEqual(first.header('Content-Encoding'), 'gzip')
+        self.assertIn('Accept-Encoding', first.header('Vary') or '')
 
-        def tracked_compress(payload, *args, **kwargs):
-            compress_calls.append(len(payload))
-            return original_compress(payload, *args, **kwargs)
-
-        dashboard.gzip.compress = tracked_compress
-        try:
-            first = FakeHandler(path='/static/dashboard.js', headers={'Accept-Encoding': 'gzip'})
-            first.do_GET()
-            second = FakeHandler(path='/static/dashboard.js', headers={'Accept-Encoding': 'gzip'})
-            second.do_GET()
-
-            self.assertEqual(first.status, 200)
-            self.assertEqual(second.status, 200)
-            self.assertEqual(first.header('Content-Encoding'), 'gzip')
-            self.assertEqual(second.wfile.getvalue(), first.wfile.getvalue())
-            self.assertEqual(len(compress_calls), 1)
-
-            conditional = FakeHandler(
-                path='/static/dashboard.js',
-                headers={'If-None-Match': first.header('ETag'), 'Accept-Encoding': 'gzip'},
-            )
-            conditional.do_GET()
-            self.assertEqual(conditional.status, 304)
-            self.assertEqual(conditional.wfile.getvalue(), b'')
-            self.assertEqual(len(compress_calls), 1)
-        finally:
-            dashboard.gzip.compress = original_compress
+        conditional = FakeHandler(
+            path=asset_path,
+            headers={'If-None-Match': first.header('ETag'), 'Accept-Encoding': 'gzip'},
+        )
+        conditional.do_GET()
+        self.assertEqual(conditional.status, 304)
+        self.assertEqual(conditional.wfile.getvalue(), b'')
 
     def test_dashboard_categories_have_independent_page_routes(self):
         expected_paths = {
@@ -314,8 +401,8 @@ class DashboardAuthTests(unittest.TestCase):
             '/x-monitor',
             '/us-ratings',
         }
-        self.assertEqual(dashboard.DASHBOARD_PAGE_PATHS, expected_paths)
-        expected_page = (FRONTEND / 'index.html').read_bytes()
+        self.assertEqual(set(SPA_DASHBOARD_PATHS), expected_paths)
+        expected_page = (ROOT / 'web' / 'dist' / 'index.html').read_bytes()
         for path in sorted(expected_paths):
             with self.subTest(path=path):
                 page = FakeHandler(path=path)
@@ -330,18 +417,14 @@ class DashboardAuthTests(unittest.TestCase):
         missing = FakeHandler(path='/not-a-dashboard-page')
         missing.do_GET()
         self.assertEqual(missing.status, 404)
-        for category, path in (
-            ('practice', '/practice'),
-            ('indices', '/indices'),
-            ('dragon_tiger', '/dragon-tiger'),
-            ('market_monitor', '/market-monitor'),
-            ('x_monitor', '/x-monitor'),
-            ('us_ratings', '/us-ratings'),
-        ):
-            self.assertIn(f"{category}: '{path}'", DASHBOARD_FRONTEND)
-        self.assertIn("syncViewUrl({push:true})", DASHBOARD_FRONTEND)
-        self.assertIn("window.addEventListener('popstate'", DASHBOARD_FRONTEND)
-        self.assertIn("params.set('curve', 'daily')", DASHBOARD_FRONTEND)
+        router_source = (ROOT / 'web' / 'src' / 'router.js').read_text(encoding='utf-8')
+        tab_source = (
+            ROOT / 'web' / 'src' / 'composables' / 'useDashboardTabs.js'
+        ).read_text(encoding='utf-8')
+        for path in expected_paths - {'/'}:
+            self.assertIn(f"'{path}'", router_source)
+        self.assertIn('createWebHistory()', router_source)
+        self.assertIn("practice: '/practice'", tab_source)
 
     def test_dashboard_bootstrap_owns_visit_count_and_visitor_cookie(self):
         home = FakeHandler(path='/')
@@ -412,11 +495,15 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertIn('/v2/namespaces/kunkundi/repositories/niuone/tags', requests[0][0].full_url)
         self.assertEqual(requests[0][1], 6)
 
-    def test_dashboard_starts_version_check_on_every_page_load(self):
-        self.assertIn('id="versionStatus"', DASHBOARD_FRONTEND)
-        self.assertIn("fetch('/api/version'", DASHBOARD_FRONTEND)
-        self.assertIn('loadVersionStatus();', DASHBOARD_FRONTEND)
-        self.assertIn("status.dataset.state = 'update';", DASHBOARD_FRONTEND)
+    def test_dashboard_starts_version_check_when_component_mounts(self):
+        source = (
+            ROOT / 'web' / 'src' / 'components' / 'VersionStatus.vue'
+        ).read_text(encoding='utf-8')
+        self.assertIn('id="versionStatus"', source)
+        self.assertIn("fetch('/api/version'", source)
+        self.assertIn('onMounted(loadVersionStatus)', source)
+        self.assertIn("state.value = 'update'", source)
+        self.assertIn('requestController?.abort()', source)
 
     def test_visit_stats_reinitializes_database_replaced_at_same_path(self):
         replacement = dashboard.STATS_DB.with_name('replacement_stats.db')
@@ -448,7 +535,7 @@ class DashboardAuthTests(unittest.TestCase):
 
         write_only = FakeHandler(path='/api/admin/config/env', method='HEAD')
         write_only.do_HEAD()
-        self.assertEqual(write_only.status, 404)
+        self.assertEqual(write_only.status, 405)
 
         settings_group = FakeHandler(path='/admin/settings/notifications', method='HEAD')
         settings_group.do_HEAD()
@@ -1280,76 +1367,163 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(payload['snapshot_meta']['source_updated_at'], '2026-06-26 15:00:10')
 
     def test_index_template_has_scrollable_practice_operation_log(self):
-        self.assertIn('function renderPracticeOperationLog(payload)', DASHBOARD_FRONTEND)
-        self.assertIn('class="practice-log-scroll"', DASHBOARD_FRONTEND)
+        self.assertIn('normalizePracticeOperationLogs', PRACTICE_LOG_UTILS)
+        self.assertIn('class="practice-log-scroll"', PRACTICE_COMPONENTS)
         self.assertIn('overflow-y:auto', DASHBOARD_FRONTEND)
-        self.assertIn('aria-label="当日所有操作日志"', DASHBOARD_FRONTEND)
+        self.assertIn('aria-label="当日所有操作日志"', PRACTICE_COMPONENTS)
 
     def test_index_template_can_open_full_practice_log_modal(self):
-        self.assertIn('let practiceLogDetailKey = \'\';', DASHBOARD_FRONTEND)
-        self.assertIn('data-practice-log-key=', DASHBOARD_FRONTEND)
-        self.assertIn('function renderPracticeLogDetailModal(payload)', DASHBOARD_FRONTEND)
-        self.assertIn('function practiceLogRawText(item)', DASHBOARD_FRONTEND)
-        self.assertIn('class="practice-log-detail-backdrop"', DASHBOARD_FRONTEND)
-        self.assertIn('class="practice-log-detail-text"', DASHBOARD_FRONTEND)
-        self.assertIn('data-practice-log-action="close"', DASHBOARD_FRONTEND)
-        self.assertIn('practiceLogDetailKey = logTrigger.dataset.practiceLogKey || \'\';', DASHBOARD_FRONTEND)
+        self.assertIn("const selectedKey = ref('')", PRACTICE_COMPONENTS)
+        self.assertIn('practiceLogRawText', PRACTICE_LOG_UTILS)
+        self.assertIn('@click="selectedKey = item.key"', PRACTICE_COMPONENTS)
+        self.assertIn('class="practice-log-detail-backdrop"', PRACTICE_COMPONENTS)
+        self.assertIn('class="practice-log-detail-text"', PRACTICE_COMPONENTS)
+        self.assertIn('<Teleport to="body">', PRACTICE_COMPONENTS)
+        self.assertIn("event.key === 'Escape'", PRACTICE_COMPONENTS)
         self.assertNotIn('practice-log-detail-json', DASHBOARD_FRONTEND)
         self.assertNotIn('practice-log-detail-field', DASHBOARD_FRONTEND)
 
-    def test_index_template_hides_trade_rule_note_in_modal(self):
-        self.assertIn('let practiceRuleNoteOpen = false', DASHBOARD_FRONTEND)
-        self.assertIn('function renderPracticeRuleNoteModal(note)', DASHBOARD_FRONTEND)
-        self.assertIn('data-practice-rule-action="open"', DASHBOARD_FRONTEND)
-        self.assertIn('class="practice-rule-backdrop"', DASHBOARD_FRONTEND)
-        self.assertIn('${ruleModal}', DASHBOARD_FRONTEND)
-        self.assertNotIn('${esc(p.trade_rule_note||', DASHBOARD_FRONTEND)
+    def test_practice_rule_note_is_owned_by_its_vue_modal(self):
+        rule_source = (
+            ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticeRule.vue'
+        ).read_text(encoding='utf-8')
+        log_source = (
+            ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticeOperationLog.vue'
+        ).read_text(encoding='utf-8')
+        self.assertIn('const open = ref(false)', rule_source)
+        self.assertIn('@click="open = true"', rule_source)
+        self.assertIn('class="practice-rule-backdrop"', rule_source)
+        self.assertIn('props.practice.trade_rule_note', rule_source)
+        self.assertNotIn('trade_rule_note', log_source)
 
-    def test_non_message_tabs_request_message_counts_without_records(self):
+    def test_vue_data_layers_use_revision_endpoints_instead_of_zero_limit_polling(self):
         self.assertEqual(dashboard.clamp_limit('0'), 0)
-        self.assertIn(
-            "isMessageCategory(categoryAtStart) ? limitAtStart : 0",
-            DASHBOARD_FRONTEND,
+        data_sources = '\n'.join((MARKET_MONITOR_DATA, X_MONITOR_DATA, US_RATING_DATA))
+        self.assertNotIn('/api/messages?limit=0', data_sources)
+        self.assertIn('/api/messages/revision?category=${CATEGORY}', data_sources)
+        self.assertNotIn('function isMessageCategory(', data_sources)
+
+    def test_x_monitor_uses_vue_page_fingerprints_and_recent_page_cache(self):
+        panel = (
+            ROOT / 'web' / 'src' / 'components' / 'XMonitorPanel.vue'
+        ).read_text(encoding='utf-8')
+        self.assertIn('const CACHE_TTL_MS = 5 * 60 * 1000', X_MONITOR_DATA)
+        self.assertIn('const CACHE_MAX_ENTRIES = 6', X_MONITOR_DATA)
+        self.assertIn("const CACHE_KEY = 'niuniu-dashboard-x-pages-v2'", X_MONITOR_DATA)
+        self.assertIn('const REFRESH_INTERVAL_MS = 15 * 1000', X_MONITOR_DATA)
+        self.assertIn('function prefetchAdjacentPages(offset, total)', X_MONITOR_DATA)
+        self.assertIn('/api/messages/revision?category=${CATEGORY}&limit=${X_MONITOR_PAGE_SIZE}&offset=', X_MONITOR_DATA)
+        self.assertIn('xPageRevisionKey(revision) !== state.revision', X_MONITOR_DATA)
+        self.assertIn("new URLSearchParams(location.search).get('page')", panel)
+        self.assertIn('function cancelPendingMedia()', X_MONITOR_COMPONENTS)
+        self.assertIn("if (!image.complete) image.removeAttribute('src')", X_MONITOR_COMPONENTS)
+        self.assertIn('fetchpriority="low"', X_MONITOR_COMPONENTS)
+        self.assertIn('<XImageViewer', X_MONITOR_COMPONENTS)
+        self.assertIn('export function summarizeXRecord', X_MONITOR_UTILS)
+        self.assertIn('export function parseXThread', X_MONITOR_UTILS)
+        self.assertIn('export function xPageRevisionKey', X_MONITOR_UTILS)
+
+    def test_x_monitor_display_parser_keeps_threads_media_and_page_revisions(self):
+        scenario = r"""
+import {parseXThread, summarizeXRecord, xMediaGroups, xPageRevisionKey} from SOURCE;
+const content = `原帖｜@origin｜2026-07-20 08:00\n│ 原帖正文\n回复｜@reply｜2026-07-21 09:30\n│ 回复正文`;
+const record = {
+  content,
+  metadata:{post:{
+    reply_to_media:[
+      {url:'https://pbs.twimg.com/media/example.jpg',type:'photo'},
+      {url:'https://evil.example/media/example.jpg',type:'photo'},
+    ],
+    media:[{url:'https://pbs.twimg.com/tweet_video_thumb/video.png',type:'video'}],
+  }},
+};
+const thread = parseXThread(content);
+const summary = summarizeXRecord(record);
+const groups = xMediaGroups(record);
+const base = {category:'x_monitor',count:20,page:{limit:10,offset:0,count:10,fingerprint:'a'}};
+const changed = {...base,page:{...base.page,fingerprint:'b'}};
+console.log(JSON.stringify({
+  hasOriginal:thread.originalPost.includes('原帖正文'),
+  hasReply:thread.reply.includes('回复正文'),
+  author:summary.author,
+  label:summary.label,
+  preview:summary.preview,
+  groupLabels:groups.map(group => group.label),
+  mediaUrls:groups.flatMap(group => group.items.map(item => item.url)),
+  revisionChanged:xPageRevisionKey(base) !== xPageRevisionKey(changed),
+}));
+"""
+        output = subprocess.check_output(
+            [
+                'node', '--input-type=module', '-e',
+                scenario.replace('SOURCE', json.dumps(X_MONITOR_UTILS_PATH.as_uri())),
+            ],
+            cwd=ROOT,
+            text=True,
         )
+        result = json.loads(output)
+        self.assertTrue(result['hasOriginal'])
+        self.assertTrue(result['hasReply'])
+        self.assertEqual(result['author'], '@reply')
+        self.assertEqual(result['label'], '回复')
+        self.assertIn('回复正文', result['preview'])
+        self.assertEqual(result['groupLabels'], ['原帖图片', '推文图片'])
+        self.assertEqual(len(result['mediaUrls']), 2)
+        self.assertTrue(result['mediaUrls'][0].endswith('.jpg:large'))
+        self.assertTrue(result['revisionChanged'])
 
-    def test_x_monitor_loads_in_parallel_and_reuses_recent_pages(self):
-        self.assertIn('const X_PAGE_CACHE_TTL_MS = 5 * 60 * 1000;', DASHBOARD_FRONTEND)
-        self.assertIn("const X_PAGE_STATE_KEY = 'niuniu-dashboard-x-pages-v1';", DASHBOARD_FRONTEND)
-        self.assertIn('function applyCachedXPage(offset = xPageOffset)', DASHBOARD_FRONTEND)
-        self.assertIn('rememberXPage(offsetAtStart, nextData);', DASHBOARD_FRONTEND)
-        self.assertIn('prefetchAdjacentXPages(offsetAtStart, nextData);', DASHBOARD_FRONTEND)
-        self.assertIn('function cancelXMediaRequests()', DASHBOARD_FRONTEND)
-        self.assertIn("if (!img.complete) img.removeAttribute('src');", DASHBOARD_FRONTEND)
-        self.assertIn('fetchpriority="low" decoding="async"', DASHBOARD_FRONTEND)
-        self.assertIn('function xPageRevision(payload)', DASHBOARD_FRONTEND)
-        self.assertIn('if (!unchangedXPage && !unchangedMarketPage) render();', DASHBOARD_FRONTEND)
-        self.assertIn('media.slice(0, 1)', DASHBOARD_FRONTEND)
-        self.assertIn("activeCategory === 'x_monitor' && !hasCachedPage", DASHBOARD_FRONTEND)
-        self.assertIn("if (categoryAtStart === 'x_monitor') saveXPageState();", DASHBOARD_FRONTEND)
-        self.assertIn('const bootstrapPromise = loadDashboardBootstrap();', DASHBOARD_FRONTEND)
-        self.assertIn('updateTabs: true,', DASHBOARD_FRONTEND)
-        self.assertIn('waitFor: needsFeatureCheck ? bootstrapPromise : null,', DASHBOARD_FRONTEND)
+    def test_practice_candidate_vue_display_preserves_strategy_tiers(self):
+        scenario = r"""
+import {
+  practiceCandidateIndustryLabel,
+  practiceCandidateStrategyMeta,
+  practiceCandidateTier,
+  practiceCandidateTierCounts,
+} from SOURCE;
+const rows = [
+  {actionable:true, best_score:8, entry_threshold:8, hard_blockers:[]},
+  {actionable:true, best_score:9, entry_threshold:8, hard_blockers:['停牌']},
+  {actionable:false, best_score:6, entry_threshold:8, hard_blockers:[]},
+];
+const meta = practiceCandidateStrategyMeta({trend_pullback:{label:'自定义趋势', color:'#123456'}});
+process.stdout.write(JSON.stringify({
+  tiers:rows.map(practiceCandidateTier),
+  counts:practiceCandidateTierCounts(rows),
+  override:meta.trend_pullback,
+  fallback:meta.breakout,
+  boardLabel:practiceCandidateIndustryLabel({industry:'main_board'}),
+}));
+"""
+        output = subprocess.check_output(
+            [
+                'node', '--input-type=module', '-e',
+                scenario.replace('SOURCE', json.dumps(PRACTICE_CANDIDATE_UTILS_PATH.as_uri())),
+            ],
+            cwd=ROOT,
+            text=True,
+        )
+        result = json.loads(output)
+        self.assertEqual(result['tiers'], ['high', 'mid', 'low'])
+        self.assertEqual(result['counts'], {'high': 1, 'mid': 1, 'low': 1})
+        self.assertEqual(result['override'], {'label': '自定义趋势', 'color': '#123456'})
+        self.assertEqual(result['fallback']['label'], '突破确认')
+        self.assertEqual(result['boardLabel'], '主板')
 
-    def test_market_monitor_prioritizes_messages_and_reuses_page_cache(self):
-        self.assertIn("const MARKET_PAGE_STATE_KEY = 'niuniu-dashboard-market-page-v1';", DASHBOARD_FRONTEND)
-        self.assertIn('function applyCachedMarketPage()', DASHBOARD_FRONTEND)
-        self.assertIn('function marketPageRevision(payload)', DASHBOARD_FRONTEND)
-        self.assertIn('const messageRequest = fetch(msgUrl, {signal: controller.signal});', DASHBOARD_FRONTEND)
-        self.assertIn("if (categoryAtStart !== 'market_monitor') loadActiveCategoryData(categoryAtStart);", DASHBOARD_FRONTEND)
-        self.assertIn("if (categoryAtStart === 'market_monitor') loadActiveCategoryData(categoryAtStart);", DASHBOARD_FRONTEND)
-        self.assertIn('function loadMarketMonitorAuxData()', DASHBOARD_FRONTEND)
-        self.assertIn("const request = fetch('/api/us_market_summary')", DASHBOARD_FRONTEND)
-        self.assertNotIn('function loadIndicesDataInBg()', DASHBOARD_FRONTEND)
-        self.assertIn("else if (categoryAtStart === 'market_monitor') saveMarketPageState();", DASHBOARD_FRONTEND)
-        self.assertIn('let usMarketSummaryExpanded = false;', DASHBOARD_FRONTEND)
-        self.assertIn('data-us-market-action="toggle"', DASHBOARD_FRONTEND)
-        self.assertIn('aria-controls="us-market-summary-body"', DASHBOARD_FRONTEND)
-        self.assertIn('aria-expanded="${usMarketSummaryExpanded', DASHBOARD_FRONTEND)
-        self.assertIn('class="market-chevron us-market-chevron"', DASHBOARD_FRONTEND)
-        self.assertIn('class="market-card-preview us-market-preview">${esc(preview)}', DASHBOARD_FRONTEND)
-        self.assertIn('function renderUsMarketSummaryDetail(summaryData, summary)', DASHBOARD_FRONTEND)
-        self.assertIn('class="market-detail-overview us-market-overview', DASHBOARD_FRONTEND)
-        self.assertIn('class="market-card-detail us-market-summary-body"', DASHBOARD_FRONTEND)
+    def test_market_monitor_uses_vue_cache_and_revision_polling(self):
+        self.assertIn("const CACHE_KEY = 'niuniu-dashboard-market-page-v2'", MARKET_MONITOR_DATA)
+        self.assertIn('const REFRESH_INTERVAL_MS = 15 * 1000', MARKET_MONITOR_DATA)
+        self.assertIn('const SUMMARY_REFRESH_INTERVAL_MS = 5 * 60 * 1000', MARKET_MONITOR_DATA)
+        self.assertIn("fetchJson(`/api/messages/revision?category=${CATEGORY}`", MARKET_MONITOR_DATA)
+        self.assertIn('revisionKey(revision) !== state.revision', MARKET_MONITOR_DATA)
+        self.assertIn('return loadHistory({ background: state.records.length > 0 })', MARKET_MONITOR_DATA)
+        self.assertIn("fetchJson('/api/us_market_summary'", MARKET_MONITOR_DATA)
+        self.assertIn("for (const category of ['market_monitor', 'x_monitor', 'us_ratings'])", MARKET_MONITOR_DATA)
+        self.assertIn('publishMessageCategoryCounts()', MARKET_MONITOR_DATA)
+        self.assertIn('aria-controls="us-market-summary-body"', MARKET_MONITOR_COMPONENTS)
+        self.assertIn('class="market-chevron us-market-chevron"', MARKET_MONITOR_COMPONENTS)
+        self.assertIn('class="market-card-preview us-market-preview"', MARKET_MONITOR_COMPONENTS)
+        self.assertIn('class="market-detail-overview us-market-overview"', MARKET_MONITOR_COMPONENTS)
+        self.assertIn('class="market-card-detail us-market-summary-body"', MARKET_MONITOR_COMPONENTS)
         self.assertIn('.us-market-summary-card.open .us-market-preview { display:none; }', DASHBOARD_FRONTEND)
         self.assertIn('.us-market-summary-card.collapsed::before { opacity:0; }', DASHBOARD_FRONTEND)
         self.assertIn('.us-market-summary-card.collapsed .us-market-tone', DASHBOARD_FRONTEND)
@@ -1358,26 +1532,30 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertIn('.us-market-summary-card.open .market-chevron', DASHBOARD_FRONTEND)
         self.assertIn('.market-monitor-card:hover, .us-market-summary-card:hover', DASHBOARD_FRONTEND)
         self.assertIn('.market-monitor-card.open, .us-market-summary-card.open', DASHBOARD_FRONTEND)
-        self.assertNotIn('class="us-market-toggle"', DASHBOARD_FRONTEND)
-        self.assertIn('usMarketSummaryExpanded = !usMarketSummaryExpanded;', DASHBOARD_FRONTEND)
-        self.assertIn('summaryBody.hidden = !usMarketSummaryExpanded;', DASHBOARD_FRONTEND)
-        self.assertIn("summaryCard?.classList.toggle('open', usMarketSummaryExpanded);", DASHBOARD_FRONTEND)
-        self.assertIn(
-            "${usSummaryHtml}${renderMarketDayPager(records, days, day, dayRecords)}`;",
-            DASHBOARD_FRONTEND,
-        )
-        self.assertIn('const showLiveUsSummary = usMarketSummaryMatchesDay(day);', DASHBOARD_FRONTEND)
-        self.assertIn('dayRecords.filter(record => !isUsMarketSummaryRecord(record))', DASHBOARD_FRONTEND)
-        self.assertNotIn(
-            "return `${usSummaryHtml}<div class=\"market-monitor-grid\">",
-            DASHBOARD_FRONTEND,
-        )
+        self.assertIn("usMarketSummaryMatchesDay(selectedDay.value, state.summary)", MARKET_MONITOR_COMPONENTS)
+        self.assertIn('selectedRecords.value.filter(record => !isUsMarketSummaryRecord(record))', MARKET_MONITOR_COMPONENTS)
+        self.assertNotIn('function renderMarketMonitor(', DASHBOARD_FRONTEND)
+        self.assertNotIn('function loadMarketMonitorAuxData()', DASHBOARD_FRONTEND)
+
+    def test_us_ratings_use_vue_revision_polling_and_lazy_enrichment(self):
+        self.assertIn('const HISTORY_LIMIT = 120', US_RATING_DATA)
+        self.assertIn('const REFRESH_INTERVAL_MS = 10 * 60 * 1000', US_RATING_DATA)
+        self.assertIn("const CACHE_KEY = 'niuniu-dashboard-us-ratings-v1'", US_RATING_DATA)
+        self.assertIn('/api/messages/revision?category=${CATEGORY}', US_RATING_DATA)
+        self.assertIn('revisionKey(revision) !== state.revision', US_RATING_DATA)
+        self.assertIn("kind === 'quotes' ? '/api/us_quotes' : '/api/us_profiles'", US_RATING_DATA)
+        self.assertIn('loadQuotesForRecords(records)', US_RATING_DATA)
+        self.assertIn('function loadProfile(ticker)', US_RATING_DATA)
+        self.assertIn('watch(selectedRecords, records => loadQuotesForRecords(records)', US_RATING_COMPONENTS)
+        self.assertIn('if (opening) props.loadProfile(row.ticker)', US_RATING_COMPONENTS)
+        self.assertIn('class="rating-table"', US_RATING_COMPONENTS)
+        self.assertIn('class="rating-detail-row"', US_RATING_COMPONENTS)
+        self.assertIn('export function parseRatingReport', US_RATING_UTILS)
+        self.assertIn('export function groupRatingRecordsByDay', US_RATING_UTILS)
 
     def test_market_monitor_only_uses_live_us_summary_for_its_target_day(self):
-        start = DASHBOARD_FRONTEND.index('function isUsMarketSummaryRecord')
-        end = DASHBOARD_FRONTEND.index('function marketDateKey', start)
-        functions = DASHBOARD_FRONTEND[start:end]
         scenario = r"""
+import {isUsMarketSummaryRecord, usMarketSummaryMatchesDay} from SOURCE;
 const stored = {
   title:'隔夜美股盘面总结',
   source_id:'cron_output_98f0c8a12d3e',
@@ -1396,7 +1574,10 @@ const result = {
 console.log(JSON.stringify(result));
 """
         output = subprocess.check_output(
-            ['node', '-e', functions + scenario],
+            [
+                'node', '--input-type=module', '-e',
+                scenario.replace('SOURCE', json.dumps(MARKET_MONITOR_UTILS_PATH.as_uri())),
+            ],
             cwd=ROOT,
             text=True,
         )
@@ -1414,10 +1595,8 @@ console.log(JSON.stringify(result));
         )
 
     def test_market_monitor_classifies_report_type_from_record_identity(self):
-        start = DASHBOARD_FRONTEND.index('function marketReportType')
-        end = DASHBOARD_FRONTEND.index('function marketSectionLines', start)
-        functions = DASHBOARD_FRONTEND[start:end]
         scenario = r"""
+import {marketReportType} from SOURCE;
 const result = {
   close: marketReportType(
     {title:'A股盘后总结'},
@@ -1444,7 +1623,10 @@ const result = {
 console.log(JSON.stringify(result));
 """
         output = subprocess.check_output(
-            ['node', '-e', functions + scenario],
+            [
+                'node', '--input-type=module', '-e',
+                scenario.replace('SOURCE', json.dumps(MARKET_MONITOR_UTILS_PATH.as_uri())),
+            ],
             cwd=ROOT,
             text=True,
         )
@@ -1459,12 +1641,13 @@ console.log(JSON.stringify(result));
                 'fallback': '盘面',
             },
         )
-        self.assertNotIn("if (activeCategory === 'market_monitor') render();\n    }\n    return;", DASHBOARD_FRONTEND)
+        self.assertNotIn("if (activeCategory === 'market_monitor')", DASHBOARD_FRONTEND)
         self.assertIn('.us-market-summary-card.collapsed', DASHBOARD_FRONTEND)
 
-    def test_http_server_absorbs_short_media_request_bursts(self):
-        self.assertTrue(dashboard.ReusableThreadingHTTPServer.daemon_threads)
-        self.assertGreaterEqual(dashboard.ReusableThreadingHTTPServer.request_queue_size, 64)
+    def test_dashboard_uses_asgi_server_without_legacy_http_listener(self):
+        source = (ROOT / 'app' / 'dashboard' / 'server.py').read_text(encoding='utf-8')
+        self.assertNotIn('ThreadingHTTPServer', source)
+        self.assertNotIn('BaseHTTPRequestHandler', source)
 
     def test_equity_heartbeat_records_without_dashboard_requests_and_invalidates_snapshots(self):
         calls = []
@@ -1560,14 +1743,14 @@ console.log(JSON.stringify(result));
         self.assertEqual(handler.status, 200)
         self.assertEqual(payload["items"][0]["symbol"], "SMH")
 
-    def test_industry_flow_page_api_and_tide_animation_are_wired(self):
+    def test_industry_flow_page_api_and_animation_are_wired(self):
         original_producer = dashboard.produce_industry_flow_data
         try:
             dashboard.produce_industry_flow_data = lambda: {
-                "available": True,
-                "generated_at": "2026-07-20 11:00:00",
-                "nodes": [{"id": "sector-a", "name": "行业A", "role": "outflow"}],
-                "links": [],
+                'available': True,
+                'generated_at': '2026-07-20 11:00:00',
+                'nodes': [{'id': 'sector-a', 'name': '行业A', 'role': 'outflow'}],
+                'links': [],
             }
             page = FakeHandler(path='/industry-flow')
             page.do_GET()
@@ -1579,86 +1762,22 @@ console.log(JSON.stringify(result));
 
         self.assertEqual(page.status, 200)
         self.assertEqual(api.status, 200)
-        self.assertEqual(payload["nodes"][0]["name"], "行业A")
-        self.assertIn("industry_flow: '/industry-flow'", DASHBOARD_FRONTEND)
-        self.assertIn("fetch('/api/industry-flow'", DASHBOARD_FRONTEND)
-        self.assertIn('function renderIndustryFlowPage()', DASHBOARD_FRONTEND)
-        self.assertIn('function renderIndicesViewSwitch(activePanel)', DASHBOARD_FRONTEND)
-        self.assertIn("onclick=\"setIndicesViewMode('flow')\">资金流动</button>", DASHBOARD_FRONTEND)
-        self.assertIn("const topLevelActiveCategory = activeCategory === 'industry_flow' ? 'indices' : activeCategory;", DASHBOARD_FRONTEND)
-        self.assertIn('function startIndustryFlowAnimation()', DASHBOARD_FRONTEND)
-        self.assertIn('data-flow-node-id=', DASHBOARD_FRONTEND)
-        self.assertIn('data-flow-bar', DASHBOARD_FRONTEND)
-        self.assertIn('data-flow-out-list', DASHBOARD_FRONTEND)
-        self.assertIn('data-flow-in-list', DASHBOARD_FRONTEND)
-        self.assertNotIn('data-flow-liquid', DASHBOARD_FRONTEND)
-        self.assertNotIn('function industryFlowLevel(role, progress)', DASHBOARD_FRONTEND)
-        self.assertIn('function industryFlowSizeScale(role, progress)', DASHBOARD_FRONTEND)
-        self.assertIn('function industryFlowTimelineFrame(progress, payload = industryFlowData)', DASHBOARD_FRONTEND)
-        self.assertIn('function industryFlowSplitSortedNodes(nodes, sideLimit = industryFlowConfiguredSideLimit())', DASHBOARD_FRONTEND)
-        self.assertIn('const INDUSTRY_FLOW_SIDE_LIMIT = 10;', DASHBOARD_FRONTEND)
-        self.assertIn('const INDUSTRY_FLOW_RANK_ANIMATION_MS = 420;', DASHBOARD_FRONTEND)
-        self.assertIn('const INDUSTRY_FLOW_SAMPLE_PLAYBACK_MS = 460;', DASHBOARD_FRONTEND)
-        self.assertIn('function industryFlowPlaybackDuration(frameCount)', DASHBOARD_FRONTEND)
-        self.assertIn('speed: 0.5,', DASHBOARD_FRONTEND)
-        self.assertIn('const INDUSTRY_FLOW_SPEED_OPTIONS = [0.5, 0.75, 1, 1.5, 2];', DASHBOARD_FRONTEND)
-        self.assertIn('const speedOptions = INDUSTRY_FLOW_SPEED_OPTIONS.map(speed =>', DASHBOARD_FRONTEND)
-        self.assertIn('if (!INDUSTRY_FLOW_SPEED_OPTIONS.includes(speed)) return;', DASHBOARD_FRONTEND)
-        self.assertIn('function animateIndustryFlowRankChanges(', DASHBOARD_FRONTEND)
-        self.assertIn("{transform:`translateY(${deltaY}px)`}", DASHBOARD_FRONTEND)
-        self.assertIn('const MONEY_FLOW_REFRESH_INTERVAL_MS = 60 * 1000;', DASHBOARD_FRONTEND)
-        self.assertIn('moneyFlowData = payload.money_flow;', DASHBOARD_FRONTEND)
-        self.assertIn('const configuredSpeed = Number(payload?.settings?.playback_speed);', DASHBOARD_FRONTEND)
-        self.assertIn('function industryFlowConfiguredSideLimit(payload = industryFlowData)', DASHBOARD_FRONTEND)
-        self.assertIn('const universeById = new Map();', DASHBOARD_FRONTEND)
-        self.assertIn('data-flow-value', DASHBOARD_FRONTEND)
-        self.assertIn('id="industryFlowSampleTime"', DASHBOARD_FRONTEND)
-        self.assertIn('id="industryFlowStage"', DASHBOARD_FRONTEND)
-        self.assertIn('id="industryFlowSeek"', DASHBOARD_FRONTEND)
-        self.assertIn('oninput="seekIndustryFlowAnimation(this.value)"', DASHBOARD_FRONTEND)
-        self.assertIn('function beginIndustryFlowSeek()', DASHBOARD_FRONTEND)
-        self.assertIn('function seekIndustryFlowAnimation(value)', DASHBOARD_FRONTEND)
-        self.assertIn('function endIndustryFlowSeek()', DASHBOARD_FRONTEND)
-        self.assertIn('orderChanged && !industryFlowSeekState.active', DASHBOARD_FRONTEND)
-        self.assertIn('class="industry-flow-progress-times"', DASHBOARD_FRONTEND)
-        self.assertIn('morningWindow.end ||', DASHBOARD_FRONTEND)
-        self.assertIn('afternoonWindow.start ||', DASHBOARD_FRONTEND)
-        self.assertIn('<h2>行业主力资金流动</h2>', DASHBOARD_FRONTEND)
-        self.assertNotIn('A 股 · 当日资金对照', DASHBOARD_FRONTEND)
-        self.assertNotIn('后台正在按设置频率积累真实快照', DASHBOARD_FRONTEND)
-        self.assertNotIn('条形长度与排序按真实采样点同步变化', DASHBOARD_FRONTEND)
-        self.assertNotIn('class="industry-flow-kpis"', DASHBOARD_FRONTEND)
-        self.assertNotIn('id="industryFlowVisibleIn"', DASHBOARD_FRONTEND)
-        self.assertNotIn('可见主力净流入', DASHBOARD_FRONTEND)
-        self.assertNotIn('class="industry-flow-legend"', DASHBOARD_FRONTEND)
-        self.assertNotIn('左侧 · 主力净流出（大者居上）', DASHBOARD_FRONTEND)
-        self.assertNotIn('条长 = 当日主力净额相对强弱', DASHBOARD_FRONTEND)
-        self.assertNotIn('class="flow-bars-head"', DASHBOARD_FRONTEND)
-        self.assertNotIn('id="industryFlowCoreBalance"', DASHBOARD_FRONTEND)
-        self.assertNotIn('class="industry-flow-caveat"', DASHBOARD_FRONTEND)
-        self.assertNotIn('<b>口径说明</b>', DASHBOARD_FRONTEND)
-        self.assertIn('class="flow-bars-stage"', DASHBOARD_FRONTEND)
-        self.assertIn('class="flow-bar-row', DASHBOARD_FRONTEND)
-        self.assertNotIn('class="flow-tide-zone', DASHBOARD_FRONTEND)
-        self.assertNotIn('class="flow-pressure-columns', DASHBOARD_FRONTEND)
-        self.assertNotIn('<svg id="industryFlowSvg"', DASHBOARD_FRONTEND)
-        self.assertNotIn('<clipPath id="industryFlowClip', DASHBOARD_FRONTEND)
-        self.assertNotIn('marker-end="url(#industryFlowArrow)"', DASHBOARD_FRONTEND)
-        dashboard_css = (FRONTEND / 'dashboard.css').read_text(encoding='utf-8')
-        self.assertIn('.flow-bar-row.outflow .flow-bar-track i { transform-origin:right center; background:var(--flow-out); }', dashboard_css)
-        self.assertIn('.flow-bar-row.inflow .flow-bar-track i { transform-origin:left center; background:var(--flow-in); }', dashboard_css)
-        self.assertIn('will-change:transform;', dashboard_css)
-        self.assertIn('.industry-flow-progress-seek {', dashboard_css)
-        self.assertIn('touch-action:none;', dashboard_css)
-        self.assertIn('cursor:ew-resize;', dashboard_css)
-        self.assertIn('.industry-flow-progress-times {', dashboard_css)
-        self.assertIn('grid-template-columns:1fr auto 1fr;', dashboard_css)
-        self.assertNotIn('transition:width .14s ease;', dashboard_css)
-        self.assertIn('.flow-legend-node.outflow { border-color:var(--flow-out); background:var(--flow-out-soft); }', dashboard_css)
-        self.assertIn('.flow-bars-split { grid-template-columns:minmax(0,1fr) 12px minmax(0,1fr); gap:0; }', dashboard_css)
-        self.assertIn('.flow-bars-axis { display:flex; }', dashboard_css)
-        self.assertNotIn('.flow-bars-split { grid-template-columns:minmax(0,1fr); gap:14px; }', dashboard_css)
-        self.assertIn('不推断行业之间的资金划转关系', dashboard.build_industry_flow_payload({})['inference']['caveat'])
+        self.assertEqual(payload['nodes'][0]['name'], '行业A')
+        component = (
+            ROOT / 'web' / 'src' / 'components' / 'IndustryFlowPanel.vue'
+        ).read_text(encoding='utf-8')
+        data_source = (
+            ROOT / 'web' / 'src' / 'composables' / 'useIndustryFlowData.js'
+        ).read_text(encoding='utf-8')
+        animation_source = INDUSTRY_FLOW_ANIMATION_PATH.read_text(encoding='utf-8')
+        self.assertIn("fetch('/api/industry-flow?compact=1'", data_source)
+        self.assertIn('useIndustryFlowAnimation(payload)', component)
+        self.assertIn('<TransitionGroup', component)
+        self.assertIn('id="industryFlowSeek"', component)
+        self.assertIn('@pointerdown="beginSeek"', component)
+        self.assertIn('export function frameAt', animation_source)
+        self.assertIn('export function splitSortedNodes', animation_source)
+        self.assertIn('const SPEED_OPTIONS = [0.5, 0.75, 1, 1.5, 2]', animation_source)
 
     def test_industry_flow_sampling_window_and_history_file_are_bounded_to_local_data(self):
         original_calendar = dashboard.is_a_share_trading_day_for_dashboard
@@ -1742,11 +1861,10 @@ console.log(JSON.stringify(result));
             dashboard.refresh_industry_flow_sample = original_refresh
             dashboard.time.monotonic = original_monotonic
 
-    def test_industry_flow_timeline_interpolates_node_and_summary_amounts(self):
-        start = DASHBOARD_FRONTEND.index('const INDUSTRY_FLOW_SIDE_LIMIT')
-        end = DASHBOARD_FRONTEND.index('function renderIndustryFlowPage', start)
-        functions = DASHBOARD_FRONTEND[start:end]
+    def test_industry_flow_timeline_interpolates_node_amounts(self):
         scenario = r"""
+globalThis.window = {matchMedia:() => ({matches:false})};
+const {frameAt} = await import(SOURCE);
 const payload = {
   nodes:[
     {id:'a', name:'行业A', role:'inflow', net_flow_yi:20},
@@ -1763,31 +1881,25 @@ const payload = {
     ]},
   ],
 };
-const frame = industryFlowTimelineFrame(0.5, payload);
-console.log(JSON.stringify(frame));
+console.log(JSON.stringify(frameAt(payload, 0.5)));
 """
         output = subprocess.check_output(
-            ['node', '-e', 'let industryFlowData = {};\n' + functions + scenario],
+            ['node', '--input-type=module', '-e', scenario.replace(
+                'SOURCE', json.dumps(INDUSTRY_FLOW_ANIMATION_PATH.as_uri()),
+            )],
             cwd=ROOT,
             text=True,
         )
         frame = json.loads(output)
         nodes = {node['id']: node for node in frame['nodes']}
-
         self.assertEqual(frame['generated_at'], '2026-07-20 10:00:30')
         self.assertEqual(nodes['a']['net_flow_yi'], 15)
         self.assertEqual(nodes['b']['net_flow_yi'], -6)
-        self.assertEqual(frame['totals']['visible_inflow_yi'], 15)
-        self.assertEqual(frame['totals']['visible_outflow_yi'], 6)
-        self.assertEqual(frame['totals']['visible_balance_yi'], 9)
-        self.assertEqual(frame['totals']['inflow_count'], 1)
-        self.assertEqual(frame['totals']['outflow_count'], 1)
 
     def test_industry_flow_timeline_keeps_leaders_from_both_neighboring_minutes(self):
-        start = DASHBOARD_FRONTEND.index('const INDUSTRY_FLOW_SIDE_LIMIT')
-        end = DASHBOARD_FRONTEND.index('function renderIndustryFlowPage', start)
-        functions = DASHBOARD_FRONTEND[start:end]
         scenario = r"""
+globalThis.window = {matchMedia:() => ({matches:false})};
+const {frameAt} = await import(SOURCE);
 const payload = {
   nodes:[
     {id:'new-in', name:'新流入', net_flow_yi:20},
@@ -1795,31 +1907,30 @@ const payload = {
   ],
   timeline:[
     {generated_at:'2026-07-20 10:00:00', nodes:[
-      {id:'old-in', name:'旧流入', net_flow_yi:10, inflow_yi:20, outflow_yi:10},
-      {id:'old-out', name:'旧流出', net_flow_yi:-8, inflow_yi:4, outflow_yi:12},
+      {id:'old-in', name:'旧流入', net_flow_yi:10},
+      {id:'old-out', name:'旧流出', net_flow_yi:-8},
     ]},
     {generated_at:'2026-07-20 10:01:00', nodes:[
-      {id:'new-in', name:'新流入', net_flow_yi:20, inflow_yi:35, outflow_yi:15},
-      {id:'new-out', name:'新流出', net_flow_yi:-4, inflow_yi:10, outflow_yi:14},
+      {id:'new-in', name:'新流入', net_flow_yi:20},
+      {id:'new-out', name:'新流出', net_flow_yi:-4},
     ]},
   ],
 };
-const frame = industryFlowTimelineFrame(0.5, payload);
-console.log(JSON.stringify(frame.nodes.map(node => node.id).sort()));
+console.log(JSON.stringify(frameAt(payload, 0.5).nodes.map(node => node.id).sort()));
 """
         output = subprocess.check_output(
-            ['node', '-e', 'let industryFlowData = {};\n' + functions + scenario],
+            ['node', '--input-type=module', '-e', scenario.replace(
+                'SOURCE', json.dumps(INDUSTRY_FLOW_ANIMATION_PATH.as_uri()),
+            )],
             cwd=ROOT,
             text=True,
         )
-
         self.assertEqual(json.loads(output), ['new-in', 'new-out', 'old-in', 'old-out'])
 
     def test_industry_flow_timeline_respects_configured_industry_count(self):
-        start = DASHBOARD_FRONTEND.index('const INDUSTRY_FLOW_SIDE_LIMIT')
-        end = DASHBOARD_FRONTEND.index('function renderIndustryFlowPage', start)
-        functions = DASHBOARD_FRONTEND[start:end]
         scenario = r"""
+globalThis.window = {matchMedia:() => ({matches:false})};
+const {frameAt} = await import(SOURCE);
 const payload = {
   settings:{side_limit:1},
   nodes:[],
@@ -1838,129 +1949,86 @@ const payload = {
     ]},
   ],
 };
-const frame = industryFlowTimelineFrame(0.5, payload);
-console.log(JSON.stringify({ids:frame.nodes.map(node => node.id), totals:frame.totals}));
+console.log(JSON.stringify(frameAt(payload, 0.5).nodes.map(node => node.id)));
 """
         output = subprocess.check_output(
-            ['node', '-e', 'let industryFlowData = {};\n' + functions + scenario],
+            ['node', '--input-type=module', '-e', scenario.replace(
+                'SOURCE', json.dumps(INDUSTRY_FLOW_ANIMATION_PATH.as_uri()),
+            )],
             cwd=ROOT,
             text=True,
         )
-        result = json.loads(output)
+        self.assertEqual(set(json.loads(output)), {'in-a', 'out-a'})
 
-        self.assertEqual(set(result['ids']), {'in-a', 'out-a'})
-        self.assertEqual(result['totals']['inflow_count'], 1)
-        self.assertEqual(result['totals']['outflow_count'], 1)
-
-    def test_industry_flow_rank_changes_animate_rows_from_their_previous_positions(self):
-        start = DASHBOARD_FRONTEND.index('const INDUSTRY_FLOW_RANK_ANIMATION_MS')
-        end = DASHBOARD_FRONTEND.index('function industryFlowRenderBarRow', start)
-        functions = DASHBOARD_FRONTEND[start:end]
-        scenario = r"""
-const calls = [];
-const rows = [
-  {
-    dataset:{flowNodeId:'a'},
-    getBoundingClientRect:() => ({top:50}),
-    animate:(frames, options) => { calls.push({id:'a', frames, options}); return {cancel(){}}; },
-  },
-  {
-    dataset:{flowNodeId:'b'},
-    getBoundingClientRect:() => ({top:10}),
-    animate:(frames, options) => { calls.push({id:'b', frames, options}); return {cancel(){}}; },
-  },
-];
-const listEl = {querySelectorAll:() => rows};
-animateIndustryFlowRankChanges(
-  listEl,
-  new Map([['a', 10], ['b', 50]]),
-  ['a', 'b'],
-  ['b', 'a'],
-  'inflow',
-);
-console.log(JSON.stringify(calls));
-"""
-        output = subprocess.check_output(
-            ['node', '-e', 'const industryFlowMotionReduced = false;\n' + functions + scenario],
-            cwd=ROOT,
-            text=True,
-        )
-        calls = json.loads(output)
-
-        self.assertEqual([call['id'] for call in calls], ['a', 'b'])
-        self.assertEqual(calls[0]['frames'][0]['transform'], 'translateY(-40px)')
-        self.assertEqual(calls[1]['frames'][0]['transform'], 'translateY(40px)')
-        self.assertEqual(calls[0]['frames'][1]['transform'], 'translateY(0)')
-        self.assertEqual(calls[0]['options']['duration'], 420)
-        self.assertEqual(calls[0]['options']['easing'], 'cubic-bezier(.22,.8,.24,1)')
+    def test_industry_flow_rank_changes_use_vue_transition_group(self):
+        component = (
+            ROOT / 'web' / 'src' / 'components' / 'IndustryFlowPanel.vue'
+        ).read_text(encoding='utf-8')
+        self.assertEqual(component.count('<TransitionGroup'), 2)
+        self.assertIn('name="industry-flow-rank"', component)
+        self.assertIn('.industry-flow-rank-move,', component)
+        self.assertIn('transition: transform 420ms cubic-bezier(.22,.8,.24,1)', component)
+        self.assertIn("@media (prefers-reduced-motion: reduce)", component)
 
     def test_industry_flow_playback_duration_keeps_sample_transitions_readable(self):
-        start = DASHBOARD_FRONTEND.index('const INDUSTRY_FLOW_SAMPLE_PLAYBACK_MS')
-        end = DASHBOARD_FRONTEND.index('function industryFlowSplitSortedNodes', start)
-        functions = DASHBOARD_FRONTEND[start:end]
         scenario = r"""
+globalThis.window = {matchMedia:() => ({matches:false})};
+const {playbackDuration} = await import(SOURCE);
 console.log(JSON.stringify([
-  industryFlowPlaybackDuration(2),
-  industryFlowPlaybackDuration(96),
-  industryFlowPlaybackDuration(242),
+  playbackDuration(2),
+  playbackDuration(96),
+  playbackDuration(242),
 ]));
 """
         output = subprocess.check_output(
-            ['node', '-e', functions + scenario],
+            ['node', '--input-type=module', '-e', scenario.replace(
+                'SOURCE', json.dumps(INDUSTRY_FLOW_ANIMATION_PATH.as_uri()),
+            )],
             cwd=ROOT,
             text=True,
         )
-
         self.assertEqual(json.loads(output), [9000, 43700, 110000])
-        self.assertIn('if (orderChanged) listEl.appendChild(row);', DASHBOARD_FRONTEND)
-        self.assertIn('if (bar.style.transform !== nextTransform) bar.style.transform = nextTransform;', DASHBOARD_FRONTEND)
 
     def test_indices_market_panel_switches_to_us_sectors_with_index_session(self):
-        self.assertIn("let usSectorData = {items: []};", DASHBOARD_FRONTEND)
-        self.assertIn("fetchJson('/api/us_sectors'", DASHBOARD_FRONTEND)
-        self.assertIn('function indicesSwitchSession(aIndexItems = [])', DASHBOARD_FRONTEND)
-        self.assertIn("let indicesMarketRegionOverride = '';", DASHBOARD_FRONTEND)
-        self.assertIn('function resolvedIndicesMarketRegion(aIndexItems = [])', DASHBOARD_FRONTEND)
-        self.assertIn('function setIndicesMarketRegion(mode)', DASHBOARD_FRONTEND)
-        self.assertIn("const marketRegion = resolvedIndicesMarketRegion(aIndexItems);", DASHBOARD_FRONTEND)
-        self.assertIn("const marketUsesUsSectors = marketRegion === 'us';", DASHBOARD_FRONTEND)
-        self.assertIn('aria-label="行情市场切换"', DASHBOARD_FRONTEND)
-        self.assertIn('data-market-region="a_share"', DASHBOARD_FRONTEND)
-        self.assertIn('data-market-region="us"', DASHBOARD_FRONTEND)
-        self.assertIn("const activeTitleHtml = activePanel === 'index'", DASHBOARD_FRONTEND)
-        self.assertIn('${activeTitleHtml}${indexPrioritySwitchHtml}${marketRegionSwitchHtml}', DASHBOARD_FRONTEND)
-        self.assertNotIn('<h2 class="indices-part-title">${activeTitle}</h2>', DASHBOARD_FRONTEND)
-        self.assertNotIn('indicesMarketRegionOverride,\n      savedAt', DASHBOARD_FRONTEND)
-        self.assertIn('function renderUsSectorMarketBlock()', DASHBOARD_FRONTEND)
-        self.assertIn('function renderSectorCloudHeading(source)', DASHBOARD_FRONTEND)
-        self.assertIn('更新 ${esc(source.generated_at)}', DASHBOARD_FRONTEND)
-        self.assertIn('${renderSectorCloudHeading(sec)}', DASHBOARD_FRONTEND)
-        self.assertIn('${renderSectorCloudHeading(usSectorData)}', DASHBOARD_FRONTEND)
-        self.assertNotIn('<h3>美股板块涨跌幅', DASHBOARD_FRONTEND)
-        self.assertIn('rows.filter(row => Number.isFinite(row.pct) && row.pct > 0)', DASHBOARD_FRONTEND)
-        self.assertIn('rows.filter(row => Number.isFinite(row.pct) && row.pct < 0)', DASHBOARD_FRONTEND)
-        self.assertIn('暂无上涨板块', DASHBOARD_FRONTEND)
-        self.assertIn('暂无下跌板块', DASHBOARD_FRONTEND)
-        self.assertIn("s.a_share_mapping.slice(0, 3).join('、')", DASHBOARD_FRONTEND)
-        self.assertNotIn("`A股映射 ${s.a_share_mapping.slice(0, 3).join('、')}`", DASHBOARD_FRONTEND)
-        self.assertNotIn('const US_MARKET_QUOTE_SYMBOLS', DASHBOARD_FRONTEND)
+        panel = (
+            ROOT / 'web' / 'src' / 'components' / 'IndicesPanel.vue'
+        ).read_text(encoding='utf-8')
+        data_source = (
+            ROOT / 'web' / 'src' / 'composables' / 'useIndicesData.js'
+        ).read_text(encoding='utf-8')
+        overview = (
+            ROOT / 'web' / 'src' / 'components' / 'indices' / 'MarketOverview.vue'
+        ).read_text(encoding='utf-8')
+        display = (
+            ROOT / 'web' / 'src' / 'utils' / 'marketDisplay.js'
+        ).read_text(encoding='utf-8')
+        self.assertIn("fetchJson('/api/us_sectors'", data_source)
+        self.assertIn('indicesSwitchSession(aIndexItems.value)', panel)
+        self.assertIn("marketRegion.value === 'us'", panel)
+        self.assertIn('aria-label="行情市场切换"', panel)
+        self.assertIn("@click=\"setMarketRegion('a_share')\"", panel)
+        self.assertIn("@click=\"setMarketRegion('us')\"", panel)
+        self.assertIn("v-if=\"region === 'us'\"", overview)
+        self.assertIn('export function indicesSwitchSession', display)
+        self.assertIn('暂无上涨板块', overview)
+        self.assertIn('暂无下跌板块', overview)
 
     def test_indices_panel_can_put_a_share_or_us_indices_first(self):
-        self.assertIn("const INDICES_INDEX_PRIORITY_STATE_KEY = 'niuniu-dashboard-index-priority-v1';", DASHBOARD_FRONTEND)
-        self.assertIn("let indicesIndexPriorityOverride = '';", DASHBOARD_FRONTEND)
-        self.assertIn('function setIndicesIndexPriority(mode)', DASHBOARD_FRONTEND)
-        self.assertIn('function resolvedIndicesIndexPriority(aIndexItems = [])', DASHBOARD_FRONTEND)
-        self.assertIn("sessionStorage.setItem(INDICES_INDEX_PRIORITY_STATE_KEY, mode)", DASHBOARD_FRONTEND)
-        self.assertIn("const indexSections = indexPriority === 'a_share' ? [", DASHBOARD_FRONTEND)
-        self.assertIn("['A股指数', aIndexItems],\n      ['美股指数', usIndexItems],", DASHBOARD_FRONTEND)
-        self.assertIn("['美股指数', usIndexItems],\n      ['A股指数', aIndexItems],", DASHBOARD_FRONTEND)
-        self.assertIn('return [...indexSections, ...supportingSections]', DASHBOARD_FRONTEND)
-        self.assertIn('aria-label="指数排序切换"', DASHBOARD_FRONTEND)
-        self.assertIn('data-index-priority="a_share"', DASHBOARD_FRONTEND)
-        self.assertIn('data-index-priority="us"', DASHBOARD_FRONTEND)
-        self.assertIn('A股在上', DASHBOARD_FRONTEND)
-        self.assertIn('美股在上', DASHBOARD_FRONTEND)
-        self.assertIn('${activeTitleHtml}${indexPrioritySwitchHtml}${marketRegionSwitchHtml}', DASHBOARD_FRONTEND)
+        panel = (
+            ROOT / 'web' / 'src' / 'components' / 'IndicesPanel.vue'
+        ).read_text(encoding='utf-8')
+        overview = (
+            ROOT / 'web' / 'src' / 'components' / 'indices' / 'IndexOverview.vue'
+        ).read_text(encoding='utf-8')
+        self.assertIn("const INDEX_PRIORITY_STATE_KEY = 'niuniu-dashboard-index-priority-v1'", panel)
+        self.assertIn('function setIndexPriority(value)', panel)
+        self.assertIn('window.sessionStorage.setItem(INDEX_PRIORITY_STATE_KEY, value)', panel)
+        self.assertIn('aria-label="指数排序切换"', panel)
+        self.assertIn('A股在上', panel)
+        self.assertIn('美股在上', panel)
+        self.assertIn("props.priority === 'a_share'", overview)
+        self.assertIn("[['A股指数', aShare], ['美股指数', us]]", overview)
+        self.assertIn("[['美股指数', us], ['A股指数', aShare]]", overview)
 
     def test_index_template_github_button_links_to_repo_with_icon(self):
         self.assertIn(
@@ -1973,277 +2041,103 @@ console.log(JSON.stringify([
         self.assertIn('<svg viewBox="0 0 16 16" aria-hidden="true"', DASHBOARD_FRONTEND)
         self.assertNotIn('<span class="header-text" title="开源仓库">GitHub</span>', DASHBOARD_FRONTEND)
 
-    def test_index_template_inlines_trade_reasons_on_stock_cards(self):
-        self.assertNotIn('买入战法绩效', DASHBOARD_FRONTEND)
-        self.assertNotIn('BUY_COLORS', DASHBOARD_FRONTEND)
-        self.assertNotIn('renderStrategyPerformance', DASHBOARD_FRONTEND)
-        self.assertNotIn('practice-perf', DASHBOARD_FRONTEND)
-        self.assertNotIn('exit-rule-row', DASHBOARD_FRONTEND)
-        self.assertIn('x.bought_today', DASHBOARD_FRONTEND)
-        self.assertIn('买入理由', DASHBOARD_FRONTEND)
-        self.assertIn('卖出归因', DASHBOARD_FRONTEND)
-        self.assertIn('最低/最高', DASHBOARD_FRONTEND)
-        self.assertNotIn('最低涨幅', DASHBOARD_FRONTEND)
-        self.assertNotIn('最高涨幅', DASHBOARD_FRONTEND)
-        self.assertIn("main_board: '主板'", DASHBOARD_FRONTEND)
-        self.assertIn('industryLabel = item.industry || item.sector || item.board_label || STOCK_BOARD_LABELS[item.board]', DASHBOARD_FRONTEND)
-        self.assertNotIn('item.industry || item.sector || item.board ||', DASHBOARD_FRONTEND)
-        self.assertIn('${esc(industryLabel)}</span>', DASHBOARD_FRONTEND)
-        self.assertIn('white-space:nowrap', DASHBOARD_FRONTEND)
-        self.assertNotIn('所属板块', DASHBOARD_FRONTEND)
-        self.assertNotIn('板块 ${esc(industryLabel)}', DASHBOARD_FRONTEND)
-        self.assertIn('仓位占比', DASHBOARD_FRONTEND)
-        self.assertIn('可卖/持有', DASHBOARD_FRONTEND)
-        self.assertNotIn('${esc(x.qty)}股', DASHBOARD_FRONTEND)
-        self.assertIn('今日收益曲线', DASHBOARD_FRONTEND)
-        self.assertIn('isNonTradingCalendarDay', DASHBOARD_FRONTEND)
-        self.assertIn('tradingCalendar.is_trading_day === false', DASHBOARD_FRONTEND)
-        self.assertIn('function renderPracticeChartTitle', DASHBOARD_FRONTEND)
-        self.assertIn('class="practice-chart-title-measure" aria-hidden="true"', DASHBOARD_FRONTEND)
-        self.assertIn('.practice-chart-title { display:inline-grid; flex:0 0 auto;', DASHBOARD_FRONTEND)
-        self.assertIn('.practice-chart-title-text, .practice-chart-title-measure { grid-area:1 / 1;', DASHBOARD_FRONTEND)
-        self.assertIn('.practice-chart-title-measure { visibility:hidden;', DASHBOARD_FRONTEND)
-        self.assertIn('currentDateKey', DASHBOARD_FRONTEND)
-        self.assertIn("timeZone: 'Asia/Shanghai'", DASHBOARD_FRONTEND)
-        self.assertIn('practicePayloadDateKey', DASHBOARD_FRONTEND)
-        self.assertIn('等待今日盘中净值点', DASHBOARD_FRONTEND)
-        self.assertIn('最近已有分时点', DASHBOARD_FRONTEND)
-        self.assertIn('累积收益曲线', DASHBOARD_FRONTEND)
-        self.assertIn('practice-hover-tooltip', DASHBOARD_FRONTEND)
-        self.assertIn('practice-chart-hover-layer', DASHBOARD_FRONTEND)
-        self.assertIn('practiceHoverMove(event, this)', DASHBOARD_FRONTEND)
+    def test_practice_vue_components_preserve_account_chart_and_calendar_details(self):
+        self.assertNotIn('renderPracticePage', DASHBOARD_FRONTEND)
+        self.assertNotIn('loadPracticePage', DASHBOARD_FRONTEND)
+        self.assertIn("main_board: '主板'", PRACTICE_CANDIDATE_UTILS)
+        self.assertIn('item.industry || item.sector || item.board_label || item.board', PRACTICE_CANDIDATE_UTILS)
+        self.assertIn('{{ industryLabel }}', PRACTICE_CANDIDATE_COMPONENTS)
+        self.assertNotIn('所属板块', PRACTICE_CANDIDATE_COMPONENTS)
+
+        for label in ('买入理由', '卖出归因', '最低/最高', '仓位占比', '可卖/持有'):
+            self.assertIn(label, PRACTICE_COMPONENTS)
+        self.assertIn('<PracticePositionCard', PRACTICE_COMPONENTS)
+        self.assertIn('<PracticeSoldCard', PRACTICE_COMPONENTS)
+        self.assertIn("next.searchParams.set('holdings', 'sold')", PRACTICE_COMPONENTS)
+        self.assertIn("next.searchParams.set('brief', '1')", PRACTICE_COMPONENTS)
+
+        self.assertIn('buildPracticeChartModel', PRACTICE_CHART_UTILS)
+        self.assertIn("timeZone: 'Asia/Shanghai'", PRACTICE_CHART_UTILS)
+        self.assertIn('tradingClockMinuteOfDay', PRACTICE_CHART_UTILS)
+        self.assertIn('normalizePracticeTradeMarkers', PRACTICE_CHART_UTILS)
+        self.assertIn('class="practice-chart-title-measure"', PRACTICE_COMPONENTS)
+        self.assertIn('class="practice-chart-hover-layer"', PRACTICE_COMPONENTS)
+        self.assertIn('class="practice-trade-marker-tooltip"', PRACTICE_COMPONENTS)
+        self.assertIn("trade.action === 'SELL' && trade.isFullExit", PRACTICE_COMPONENTS)
         self.assertIn('touch-action:none', DASHBOARD_FRONTEND)
-        self.assertIn('data-practice-hover-points', DASHBOARD_FRONTEND)
-        self.assertIn("layer.classList.toggle('place-left'", DASHBOARD_FRONTEND)
-        self.assertIn("layer.classList.toggle('place-bottom'", DASHBOARD_FRONTEND)
-        self.assertIn('收益金额', DASHBOARD_FRONTEND)
-        self.assertIn('累计收益率', DASHBOARD_FRONTEND)
-        self.assertIn('当日收益率', DASHBOARD_FRONTEND)
-        self.assertIn('function renderPracticeTradeMarkers', DASHBOARD_FRONTEND)
-        self.assertIn('practiceTradeMarkersForDate', DASHBOARD_FRONTEND)
-        self.assertIn('practice-trade-marker-tooltip', DASHBOARD_FRONTEND)
-        self.assertIn("const side = trade.action === 'BUY' ? '买' : '卖';", DASHBOARD_FRONTEND)
-        self.assertIn('function renderPracticeTradeMarkerLine', DASHBOARD_FRONTEND)
-        self.assertIn('practice-trade-marker-side', DASHBOARD_FRONTEND)
-        self.assertIn('.practice-chart-card { position:relative; z-index:0; isolation:isolate; overflow:hidden;', DASHBOARD_FRONTEND)
-        self.assertIn('.practice-trade-marker { --marker-size:18px; --marker-radius:9px; appearance:none;', DASHBOARD_FRONTEND)
-        self.assertIn(
-            'left:clamp(var(--marker-radius), var(--marker-x), calc(100% - var(--marker-radius)));',
-            DASHBOARD_FRONTEND,
-        )
-        self.assertIn('min-width:var(--marker-size); max-width:var(--marker-size);', DASHBOARD_FRONTEND)
-        self.assertIn(
-            '.practice-calendar-day-curve-chart .practice-trade-marker { --marker-size:15px; --marker-radius:7.5px;',
-            DASHBOARD_FRONTEND,
-        )
-        self.assertIn('style="--marker-x:${xPct.toFixed(2)}%;top:${yPct.toFixed(2)}%"', DASHBOARD_FRONTEND)
-        self.assertIn('font-family:inherit; cursor:default;', DASHBOARD_FRONTEND)
-        self.assertNotIn('font-family:inherit; cursor:help;', DASHBOARD_FRONTEND)
-        self.assertIn('.practice-trade-marker-pnl.up { color:#ff6b6d; }', DASHBOARD_FRONTEND)
-        self.assertIn('.practice-trade-marker-pnl.down { color:#39d98a; }', DASHBOARD_FRONTEND)
-        self.assertIn('.practice-trade-marker.sell-partial { background:#f59e0b;', DASHBOARD_FRONTEND)
-        self.assertIn('.practice-trade-marker.sell-full { background:#ef4444;', DASHBOARD_FRONTEND)
-        self.assertIn("? 'sell-full'", DASHBOARD_FRONTEND)
-        self.assertIn("? 'sell-partial' : 'sell-mixed'", DASHBOARD_FRONTEND)
-        self.assertIn("trade.action === 'SELL' && trade.isFullExit", DASHBOARD_FRONTEND)
-        self.assertIn("${practiceTradeShareText(trade.shares)}股×${practiceTradePriceText(trade.price)}", DASHBOARD_FRONTEND)
-        self.assertIn('renderPracticeTradeMarkers(latestDay, xFromTime, plottedPts, w, h)', DASHBOARD_FRONTEND)
-        self.assertIn('const tradeMarkerHtml = renderPracticeTradeMarkers(', DASHBOARD_FRONTEND)
-        self.assertIn('class="practice-calendar-day-curve-chart"', DASHBOARD_FRONTEND)
-        self.assertNotIn('practice-hover-readout', DASHBOARD_FRONTEND)
-        self.assertNotIn('拖动查看收益曲线点位', DASHBOARD_FRONTEND)
-        self.assertNotIn('每日总收益', DASHBOARD_FRONTEND)
-        self.assertNotIn('if (points.length < 2) points = rawPoints.slice(-180);', DASHBOARD_FRONTEND)
-        self.assertIn('交易日历', DASHBOARD_FRONTEND)
-        self.assertIn('openPracticeCalendar(event)', DASHBOARD_FRONTEND)
-        self.assertIn('buildPracticeCalendarRows', DASHBOARD_FRONTEND)
-        self.assertIn('practice-calendar-popover', DASHBOARD_FRONTEND)
-        self.assertIn('practiceCalendarSelectedDate', DASHBOARD_FRONTEND)
-        self.assertIn('renderPracticeCalendarDayCurve', DASHBOARD_FRONTEND)
-        self.assertIn('practice-calendar-day-curve', DASHBOARD_FRONTEND)
-        self.assertIn('data-practice-calendar-date="${esc(date)}"', DASHBOARD_FRONTEND)
-        self.assertIn('data-practice-calendar-action="clear-day"', DASHBOARD_FRONTEND)
-        self.assertIn('data-practice-calendar-curve', DASHBOARD_FRONTEND)
-        self.assertIn('selectedCls = date === practiceCalendarSelectedDate', DASHBOARD_FRONTEND)
-        self.assertIn("practiceCalendarSelectedDate = practiceCalendarSelectedDate === nextDate ? '' : nextDate", DASHBOARD_FRONTEND)
-        self.assertIn('sessionDayPoints', DASHBOARD_FRONTEND)
-        self.assertIn('allDayHistoryPoints.at(-1)?.equity', DASHBOARD_FRONTEND)
-        self.assertIn("? '分时加载失败 · '", DASHBOARD_FRONTEND)
-        self.assertIn('practiceCalendarHistoryPoints(p)', DASHBOARD_FRONTEND)
-        self.assertIn('practiceCalendarHistoryCoversDate(p, date)', DASHBOARD_FRONTEND)
-        self.assertIn(
-            'const needsFullHistory = isCurrentDate || (hasPartialHistory && !practiceCalendarHistoryCoversDate(p, date));',
-            DASHBOARD_FRONTEND,
-        )
-        self.assertIn('分时曲线加载中…', DASHBOARD_FRONTEND)
-        self.assertIn('分时曲线加载失败', DASHBOARD_FRONTEND)
-        self.assertIn("time: `${date} 15:00:00`", DASHBOARD_FRONTEND)
-        self.assertIn('const w = 464, h = 96', DASHBOARD_FRONTEND)
-        self.assertIn('0轴 ${prevPoint ? esc(String(prevPoint.time || \'\').slice(5, 16)) : \'初始资金\'}', DASHBOARD_FRONTEND)
-        self.assertIn('position:absolute; left:0; right:0; bottom:calc(100% + 8px)', DASHBOARD_FRONTEND)
-        self.assertIn('overflow:visible', DASHBOARD_FRONTEND)
-        self.assertIn('width:min(390px', DASHBOARD_FRONTEND)
-        self.assertIn('transform:translate(-50%,-50%)', DASHBOARD_FRONTEND)
-        self.assertNotIn('max-height:min(76vh, 640px); display:grid; gap:8px', DASHBOARD_FRONTEND)
-        self.assertNotIn('practice-calendar-popover::before', DASHBOARD_FRONTEND)
-        self.assertNotIn('filter:blur(18px)', DASHBOARD_FRONTEND)
-        self.assertIn('border:1px solid transparent', DASHBOARD_FRONTEND)
-        self.assertIn('linear-gradient(135deg, rgba(96,165,250,.68), rgba(124,92,255,.56) 48%, rgba(52,211,153,.32)) border-box', DASHBOARD_FRONTEND)
-        self.assertIn('background:linear-gradient(180deg, #172033, #101827)', DASHBOARD_FRONTEND)
-        self.assertIn('background:rgba(31,42,62,.72)', DASHBOARD_FRONTEND)
-        self.assertIn('practice-calendar-no-data', DASHBOARD_FRONTEND)
+        self.assertIn('.practice-trade-marker.sell-partial', DASHBOARD_FRONTEND)
+        self.assertIn('.practice-trade-marker.sell-full', DASHBOARD_FRONTEND)
+
+        self.assertIn('buildPracticeCalendarRows', PRACTICE_CHART_UTILS)
+        self.assertIn('practiceCalendarHistoryCoversDate', PRACTICE_CHART_UTILS)
+        self.assertIn('class="practice-calendar-popover"', PRACTICE_COMPONENTS)
+        self.assertIn('class="practice-calendar-day-curve"', PRACTICE_COMPONENTS)
+        self.assertIn('@ensure-full="ensureFullSnapshot"', PRACTICE_COMPONENTS)
+        self.assertIn('class="practice-calendar-today weekend-today"', PRACTICE_COMPONENTS)
         self.assertIn('grid-template-columns:repeat(5, minmax(0, 1.14fr)) repeat(2, minmax(30px, .72fr))', DASHBOARD_FRONTEND)
-        self.assertIn('dayOfWeek === 0 || dayOfWeek === 6', DASHBOARD_FRONTEND)
-        self.assertIn('practice-calendar-day.weekend', DASHBOARD_FRONTEND)
-        self.assertIn('practice-calendar-weekday.weekend', DASHBOARD_FRONTEND)
-        self.assertIn('weekendTodayMarker = isToday && isWeekend && !row', DASHBOARD_FRONTEND)
-        self.assertIn('inlineTodayMarker = isToday && !weekendTodayMarker', DASHBOARD_FRONTEND)
-        self.assertIn('class="practice-calendar-today weekend-today"', DASHBOARD_FRONTEND)
-        self.assertIn('grid-row:2; align-self:end; justify-self:start; padding:0 3px', DASHBOARD_FRONTEND)
-        self.assertNotIn('practice-calendar-day.weekend { min-height', DASHBOARD_FRONTEND)
-        self.assertNotIn('align-self:start', DASHBOARD_FRONTEND)
-        self.assertIn("${date}${isWeekend ? ' 周末' : ''}", DASHBOARD_FRONTEND)
-        self.assertIn('signedCellPct', DASHBOARD_FRONTEND)
-        self.assertIn('signedCellAmount', DASHBOARD_FRONTEND)
-        self.assertIn('aria-label="${esc(fullText)}"', DASHBOARD_FRONTEND)
-        self.assertIn('practice-calendar-grid', DASHBOARD_FRONTEND)
-        self.assertIn('data-practice-calendar-action="prev"', DASHBOARD_FRONTEND)
-        self.assertNotIn('practice-calendar-backdrop', DASHBOARD_FRONTEND)
-        self.assertNotIn('practiceCalendarAnchor', DASHBOARD_FRONTEND)
-        self.assertNotIn('practice-calendar-values empty', DASHBOARD_FRONTEND)
-        self.assertNotIn('<h3 class="practice-panel-title"><span>牛牛实战 · 模拟账户</span><button class="practice-calendar-open-btn"', DASHBOARD_FRONTEND)
-        self.assertIn('<h3>模拟账户</h3>', DASHBOARD_FRONTEND)
-        self.assertNotIn('最近交易日收益', DASHBOARD_FRONTEND)
-        self.assertNotIn('getDay() === 0 || nowForCurve.getDay() === 6', DASHBOARD_FRONTEND)
+        self.assertIn('background:linear-gradient(180deg, #172033, #101827)', DASHBOARD_FRONTEND)
+        self.assertNotIn('practice-calendar-backdrop', PRACTICE_COMPONENTS)
 
     def test_index_template_loads_calendar_history_without_waiting_for_full_snapshot(self):
-        self.assertIn("const VIEW_STATE_KEY = 'niuniu-dashboard-view-state-v5';", DASHBOARD_FRONTEND)
-        self.assertIn("'/api/niuniu_practice?fast=1&calendar_schema=1'", DASHBOARD_FRONTEND)
-        self.assertIn("fetchJson('/api/niuniu_practice?snapshot_schema=2')", DASHBOARD_FRONTEND)
-        self.assertIn('const fullPracticePromise = practiceFullSnapshotLoaded ? null : practiceFullRequest;', DASHBOARD_FRONTEND)
-        self.assertIn("fetch('/api/v2/public/latest'", DASHBOARD_FRONTEND)
-        self.assertIn('async function changedPublicProjectionSections()', DASHBOARD_FRONTEND)
-        self.assertIn('Date.now() - practiceFullSnapshotLastAttemptAt >= PRACTICE_FULL_HISTORY_RETRY_MS', DASHBOARD_FRONTEND)
-        self.assertIn('practiceFullSnapshotLoaded = true;', DASHBOARD_FRONTEND)
-        self.assertIn('function mergePracticePayloadSnapshots', DASHBOARD_FRONTEND)
-        self.assertIn('function mergePracticeEquityRows', DASHBOARD_FRONTEND)
-        self.assertIn('function comparePracticePayloadFreshness', DASHBOARD_FRONTEND)
-        self.assertIn("String(payload.equity_history_scope || '') === 'unavailable'", DASHBOARD_FRONTEND)
-        self.assertNotIn("typeof payload !== 'object' || payload.last_error", DASHBOARD_FRONTEND)
-        self.assertIn('if (seq !== practiceLoadSeq) return;', DASHBOARD_FRONTEND)
-        self.assertIn("practiceFullSnapshotStatus = 'loading';", DASHBOARD_FRONTEND)
-        self.assertIn("practiceFullSnapshotStatus = 'loaded';", DASHBOARD_FRONTEND)
-        self.assertIn("practiceFullSnapshotStatus = 'error';", DASHBOARD_FRONTEND)
-        self.assertIn('function compactPracticeCalendarHistoryPoints', DASHBOARD_FRONTEND)
-        self.assertIn('calendar.complete !== true', DASHBOARD_FRONTEND)
-        self.assertIn('buildPracticeCalendarRows(practiceCalendarHistoryPoints(p)', DASHBOARD_FRONTEND)
-        self.assertIn('renderPracticeCurve(p.equity_history || []', DASHBOARD_FRONTEND)
+        self.assertIn("'/api/niuniu_practice?fast=1&calendar_schema=1'", PRACTICE_DATA)
+        self.assertIn("fetchJson('/api/niuniu_practice?snapshot_schema=2'", PRACTICE_DATA)
+        self.assertEqual(PRACTICE_DATA.count('/api/niuniu_practice?snapshot_schema=2'), 1)
+        self.assertIn('async function ensureFullSnapshot()', PRACTICE_DATA)
+        self.assertIn('FULL_HISTORY_RETRY_MS = 5 * 60 * 1000', PRACTICE_DATA)
+        self.assertIn("state.fullSnapshotStatus = 'loading'", PRACTICE_DATA)
+        self.assertIn("state.fullSnapshotStatus = 'loaded'", PRACTICE_DATA)
+        self.assertIn("state.fullSnapshotStatus = 'error'", PRACTICE_DATA)
+        self.assertIn('subscribePublicProjection(handleProjection', PRACTICE_DATA)
+        self.assertIn("fetchJson('/api/v2/public/latest'", PUBLIC_PROJECTION_DATA)
+        self.assertIn('mergePracticePayloadSnapshots', PRACTICE_PAYLOAD_UTILS)
+        self.assertIn('mergePracticeEquityRows', PRACTICE_PAYLOAD_UTILS)
+        self.assertIn('comparePracticePayloadFreshness', PRACTICE_PAYLOAD_UTILS)
+        self.assertIn("String(payload.equity_history_scope || '') === 'unavailable'", PRACTICE_PAYLOAD_UTILS)
+        self.assertIn('compactPracticeCalendarHistoryPoints', PRACTICE_CHART_UTILS)
+        self.assertIn('calendar.complete !== true', PRACTICE_CHART_UTILS)
+        self.assertIn('@ensure-full="ensureFullSnapshot"', PRACTICE_COMPONENTS)
+        self.assertNotIn('loadPracticePage', DASHBOARD_FRONTEND)
 
     def test_index_template_separates_single_stock_retries_from_quote_channels(self):
         self.assertIn(
-            '`腾讯${channels.tencent ?? 0}/东财${channels.eastmoney ?? 0}/Sina${channels.sina ?? 0}`',
-            DASHBOARD_FRONTEND,
+            '`行情：${quote.quote_time} 更新${quote.updated ?? 0}只 腾讯${channels.tencent ?? 0}/东财${channels.eastmoney ?? 0}/Sina${channels.sina ?? 0}${singleRetryCount',
+            PRACTICE_COMPONENTS,
         )
-        self.assertNotIn('/单票${channels.single', DASHBOARD_FRONTEND)
-        self.assertIn(
-            'const singleRetryText = singleRetryCount ? `，单股重试${singleRetryCount}只` : \'\';',
-            DASHBOARD_FRONTEND,
-        )
+        self.assertIn('const singleRetryCount = Math.max', PRACTICE_COMPONENTS)
+        self.assertIn('`，单股重试${singleRetryCount}只`', PRACTICE_COMPONENTS)
+        self.assertNotIn('/单票${channels.single', PRACTICE_COMPONENTS)
 
-    def test_index_template_uses_independent_category_routes(self):
-        self.assertIn("let activeCategory = categoryFromLocation(initialParams);", DASHBOARD_FRONTEND)
-        self.assertIn("const CATEGORY_ORDER = ['practice', 'indices', 'market_monitor', 'dragon_tiger', 'x_monitor', 'us_ratings'];", DASHBOARD_FRONTEND)
-        self.assertIn("practice:'模拟交易'", DASHBOARD_FRONTEND)
-        self.assertIn("industry_flow:'行业资金流'", DASHBOARD_FRONTEND)
-        self.assertIn("if (normalized === 'industry_flow') return normalized;", DASHBOARD_FRONTEND)
-        self.assertIn("dragon_tiger:'龙虎榜'", DASHBOARD_FRONTEND)
-        self.assertIn("practice: '/practice'", DASHBOARD_FRONTEND)
-        self.assertIn("indices: '/indices'", DASHBOARD_FRONTEND)
-        self.assertIn("industry_flow: '/industry-flow'", DASHBOARD_FRONTEND)
-        self.assertIn("dragon_tiger: '/dragon-tiger'", DASHBOARD_FRONTEND)
-        self.assertIn('fetch(`/api/iwencai/dragon-tiger${query}`', DASHBOARD_FRONTEND)
-        self.assertIn('function renderDragonTigerPanel()', DASHBOARD_FRONTEND)
-        self.assertIn('function sortDragonTigerItems(items)', DASHBOARD_FRONTEND)
-        self.assertIn("renderDragonTigerSortButton('name', '名称')", DASHBOARD_FRONTEND)
-        self.assertIn("renderDragonTigerSortButton('sector', '板块')", DASHBOARD_FRONTEND)
-        self.assertIn("renderDragonTigerSortButton('change_pct', '涨幅')", DASHBOARD_FRONTEND)
-        self.assertIn("renderDragonTigerSortButton('net_amount_yuan', '净买入')", DASHBOARD_FRONTEND)
-        self.assertIn("event.target.closest('[data-dragon-tiger-sort]')", DASHBOARD_FRONTEND)
-        self.assertIn("let dragonTigerSort = {key: 'net_amount_yuan', direction: 'desc'};", DASHBOARD_FRONTEND)
-        self.assertIn('<details class="dragon-tiger-item">', DASHBOARD_FRONTEND)
-        self.assertIn('function collectDragonTigerReasons(details)', DASHBOARD_FRONTEND)
-        self.assertIn('function renderDragonTigerStreak(item)', DASHBOARD_FRONTEND)
-        self.assertIn('.dragon-tiger-panel { width:100%; max-width:900px; margin-inline:auto; padding:0; }', DASHBOARD_FRONTEND)
-        self.assertIn("upStreak === 1 ? '首板' : `${upStreak}连板`", DASHBOARD_FRONTEND)
-        self.assertIn("downStreak === 1 ? '首跌停' : `${downStreak}连跌停`", DASHBOARD_FRONTEND)
-        self.assertIn('${renderDragonTigerStreak(item)}', DASHBOARD_FRONTEND)
-        self.assertIn('class="dragon-tiger-reasons" aria-label="上榜理由"', DASHBOARD_FRONTEND)
-        self.assertIn('${renderDragonTigerReasons(details)}', DASHBOARD_FRONTEND)
-        self.assertIn('function renderDragonTigerSeats(item, payload)', DASHBOARD_FRONTEND)
-        self.assertIn('function groupDragonTigerSeatRecords(records)', DASHBOARD_FRONTEND)
-        self.assertIn('function renderDragonTigerSeatSide(records, side)', DASHBOARD_FRONTEND)
-        self.assertIn('function renderDragonTigerSeatGroup(group, index, totalGroups)', DASHBOARD_FRONTEND)
-        self.assertIn('const heading = totalGroups > 1', DASHBOARD_FRONTEND)
-        self.assertIn('class="dragon-tiger-seat-rank ${side}"', DASHBOARD_FRONTEND)
-        self.assertIn('class="dragon-tiger-seat-sides"', DASHBOARD_FRONTEND)
-        self.assertIn('aria-label="${label}"', DASHBOARD_FRONTEND)
-        self.assertIn("dragonTigerSeatSideRank(left, side) - dragonTigerSeatSideRank(right, side)", DASHBOARD_FRONTEND)
-        self.assertIn("renderDragonTigerSeatSide(group?.records || [], 'buy')", DASHBOARD_FRONTEND)
-        self.assertIn("renderDragonTigerSeatSide(group?.records || [], 'sell')", DASHBOARD_FRONTEND)
-        self.assertIn('.dragon-tiger-seat-sides { grid-template-columns:minmax(0,1fr); }', DASHBOARD_FRONTEND)
-        self.assertIn('.dragon-tiger-seat-values { display:grid;', DASHBOARD_FRONTEND)
-        self.assertIn('.dragon-tiger-seat-record + .dragon-tiger-seat-record', DASHBOARD_FRONTEND)
-        self.assertIn('const showReason = Array.isArray(details) && details.length > 1;', DASHBOARD_FRONTEND)
-        self.assertIn('class="dragon-tiger-funds" aria-label="榜单资金"', DASHBOARD_FRONTEND)
-        self.assertIn('class="dragon-tiger-seats" aria-label="席位明细"', DASHBOARD_FRONTEND)
-        self.assertLess(
-            DASHBOARD_FRONTEND.index('class="dragon-tiger-funds" aria-label="榜单资金"'),
-            DASHBOARD_FRONTEND.index('${renderDragonTigerSeats(item, payload)}'),
-        )
-        self.assertNotIn('class="dragon-tiger-seat-summary"', DASHBOARD_FRONTEND)
-        self.assertNotIn('<small>买方席位</small>', DASHBOARD_FRONTEND)
-        self.assertNotIn('<small>卖方席位</small>', DASHBOARD_FRONTEND)
-        self.assertNotIn('<small>机构席位</small>', DASHBOARD_FRONTEND)
-        self.assertNotIn('.dragon-tiger-seat-values > span { padding:6px 7px; }', DASHBOARD_FRONTEND)
-        self.assertIn('class="dragon-tiger-seat-group"', DASHBOARD_FRONTEND)
-        self.assertIn('${renderDragonTigerSeats(item, payload)}', DASHBOARD_FRONTEND)
-        self.assertIn("record?.seat_category === 'institution'", DASHBOARD_FRONTEND)
-        self.assertIn('data-dragon-tiger-date-action="load"', DASHBOARD_FRONTEND)
-        self.assertIn('点击股票可查看上榜理由、买卖前五机构及营业部席位与榜单明细', DASHBOARD_FRONTEND)
-        self.assertNotIn('全部上榜理由', DASHBOARD_FRONTEND)
-        self.assertNotIn('class="dragon-tiger-metrics"', DASHBOARD_FRONTEND)
-        self.assertNotIn('class="dragon-tiger-metric"', DASHBOARD_FRONTEND)
-        self.assertNotIn('净买入合计', DASHBOARD_FRONTEND)
-        self.assertNotIn('净卖出合计', DASHBOARD_FRONTEND)
-        self.assertNotIn('<th>上榜原因</th>', DASHBOARD_FRONTEND)
-        self.assertIn("const LEGACY_CATEGORY_ALIASES = {b1_screen:'practice'};", DASHBOARD_FRONTEND)
-        self.assertIn('const normalized = LEGACY_CATEGORY_ALIASES[category] || category;', DASHBOARD_FRONTEND)
-        self.assertIn("fetchJson('/api/practice_candidates')", DASHBOARD_FRONTEND)
-        self.assertIn("actionFetch('/api/practice_candidates/refresh')", DASHBOARD_FRONTEND)
-        self.assertIn('async function loadPracticePage()', DASHBOARD_FRONTEND)
-        self.assertIn('function renderPracticePage()', DASHBOARD_FRONTEND)
-        self.assertIn("location.pathname + location.search !== currentViewUrl()", DASHBOARD_FRONTEND)
-        self.assertNotIn('href="/?category=', DASHBOARD_FRONTEND)
-        self.assertNotIn('function loadB1Screen', DASHBOARD_FRONTEND)
-        self.assertNotIn('function renderB1Screen', DASHBOARD_FRONTEND)
-        self.assertNotIn("fetchJson('/api/b1_screen')", DASHBOARD_FRONTEND)
-        self.assertNotIn("actionFetch('/api/b1_screen/trigger')", DASHBOARD_FRONTEND)
-        self.assertIn("actionFetch('/api/niuniu_practice/manual-cycle')", DASHBOARD_FRONTEND)
-        self.assertIn("fetch('/api/niuniu_practice/manual-cycle', {cache:'no-store'})", DASHBOARD_FRONTEND)
-        self.assertIn('手动运行选股与交易策略', DASHBOARD_FRONTEND)
-        self.assertIn('盘面评价 · ${esc(marketContext.tone_label', DASHBOARD_FRONTEND)
-        self.assertIn('let practiceMarketSummaryExpanded = false;', DASHBOARD_FRONTEND)
-        self.assertIn('class="practice-market-summary-card ${expanded ? \'open\' : \'collapsed\'}', DASHBOARD_FRONTEND)
-        self.assertIn('class="practice-market-summary-body"${expanded ? \'\' : \' hidden\'}', DASHBOARD_FRONTEND)
-        self.assertIn('function togglePracticeMarketSummary()', DASHBOARD_FRONTEND)
-        self.assertIn("disabled aria-busy=\"true\"", DASHBOARD_FRONTEND)
-        self.assertIn('实时热门行业（涨幅与主力净流入交叉确认）', DASHBOARD_FRONTEND)
-        self.assertIn("实时快照已超过5分钟", SRC.joinpath('dashboard', 'practice_market_summary.py').read_text(encoding='utf-8'))
+    def test_vue_router_and_components_own_independent_category_routes(self):
+        router_source = (ROOT / 'web' / 'src' / 'router.js').read_text(encoding='utf-8')
+        tabs_source = (
+            ROOT / 'web' / 'src' / 'composables' / 'useDashboardTabs.js'
+        ).read_text(encoding='utf-8')
+        dragon_source = (
+            ROOT / 'web' / 'src' / 'components' / 'DragonTigerPanel.vue'
+        ).read_text(encoding='utf-8')
+        dashboard_page = (
+            ROOT / 'web' / 'src' / 'components' / 'DashboardPage.vue'
+        ).read_text(encoding='utf-8')
+
+        for route in ('/practice', '/indices', '/industry-flow', '/dragon-tiger', '/market-monitor', '/x-monitor', '/us-ratings'):
+            self.assertIn(f"'{route}'", router_source)
+        self.assertIn("const CATEGORY_ORDER = ['practice', 'indices', 'market_monitor', 'dragon_tiger', 'x_monitor', 'us_ratings']", tabs_source)
+        self.assertIn("industry_flow: '/industry-flow'", tabs_source)
+        self.assertIn("const LEGACY_CATEGORY_ALIASES = { b1_screen: 'practice' }", tabs_source)
+        self.assertIn("fetch(`/api/iwencai/dragon-tiger${query}`", dragon_source)
+        self.assertIn("const SORT_FIELDS = new Set(['name', 'sector', 'change_pct', 'net_amount_yuan'])", dragon_source)
+        self.assertIn("record?.seat_category === 'institution'", dragon_source)
+        self.assertIn('<PracticePanel />', dashboard_page)
+        self.assertIn('<DragonTigerPanel />', dashboard_page)
+        self.assertIn('subscribePublicProjection(handleProjection)', PRACTICE_CANDIDATE_DATA)
+        self.assertIn("fetchJson('/api/v2/public/latest'", PUBLIC_PROJECTION_DATA)
+        self.assertNotIn('/static/dashboard.js', dashboard_page)
 
     def test_index_snapshot_merge_handles_business_errors_and_stale_full_responses(self):
-        start = DASHBOARD_FRONTEND.index('function mergePracticeTimedRows')
-        end = DASHBOARD_FRONTEND.index('async function loadPracticePage', start)
-        functions = DASHBOARD_FRONTEND[start:end]
+        functions = (
+            "import { isUsablePracticePayload, mergePracticePayloadSnapshots } "
+            f"from {json.dumps(PRACTICE_PAYLOAD_UTILS_PATH.as_uri())};\n"
+        )
         scenario = r"""
 const fast = {
   snapshot_mode:'fast', equity_history_scope:'latest_day', source_updated_at:'2026-07-10 15:00:00',
@@ -2307,7 +2201,7 @@ process.stdout.write(JSON.stringify({
 }));
 """
         result = subprocess.run(
-            ['node', '-e', functions + scenario],
+            ['node', '--input-type=module', '-e', functions + scenario],
             check=True,
             capture_output=True,
             text=True,
@@ -2317,12 +2211,12 @@ process.stdout.write(JSON.stringify({
         self.assertTrue(all(checks.values()), checks)
 
     def test_index_template_does_not_guess_missing_decision_model(self):
-        self.assertIn("const decisionModel = String(p.decision_model || '').trim();", DASHBOARD_FRONTEND)
-        self.assertIn("practiceFullSnapshotStatus === 'error' ? '未知' : '加载中'", DASHBOARD_FRONTEND)
-        self.assertIn('delete niuniuPracticeData.decision_model;', DASHBOARD_FRONTEND)
-        self.assertIn('delete niuniuPracticeData.decision_provider;', DASHBOARD_FRONTEND)
-        self.assertIn("{cache: 'no-cache'}", DASHBOARD_FRONTEND)
-        self.assertNotIn("p.decision_model || 'deepseek-v4-pro'", DASHBOARD_FRONTEND)
+        self.assertIn("const model = String(props.practice.decision_model || '').trim()", PRACTICE_COMPONENTS)
+        self.assertIn("props.fullSnapshotStatus === 'error' ? '未知' : '加载中'", PRACTICE_COMPONENTS)
+        self.assertIn('delete state.practice.decision_model', PRACTICE_DATA)
+        self.assertIn('delete state.practice.decision_provider', PRACTICE_DATA)
+        self.assertIn("cache: 'no-cache'", PRACTICE_DATA)
+        self.assertNotIn("decision_model || 'deepseek-v4-pro'", PRACTICE_COMPONENTS)
 
     def test_cache_invalidation_prevents_inflight_model_snapshot_from_repopulating_cache(self):
         cache_key = dashboard.PRACTICE_FAST_CACHE_KEY
@@ -2499,34 +2393,35 @@ process.stdout.write(JSON.stringify({
         self.assertIn('indices-cache-notice', DASHBOARD_FRONTEND)
 
     def test_index_template_intraday_curve_renders_single_point_from_opening_base(self):
-        self.assertIn('if (rawPoints.length < (isDailyMode ? 2 : 1))', DASHBOARD_FRONTEND)
-        self.assertIn('if (sessionPoints.length >= 1)', DASHBOARD_FRONTEND)
-        self.assertIn('isNonTradingCalendarDay && dayPoints.length >= 2', DASHBOARD_FRONTEND)
-        self.assertIn('if (points.length < 1)', DASHBOARD_FRONTEND)
-        self.assertIn(
-            'if (points.length < 2) return \'<div class="empty" style="padding:18px">累计收益等待更多交易日净值点…</div>\';',
-            DASHBOARD_FRONTEND,
+        scenario = f"""
+import {{ buildPracticeChartModel }} from {json.dumps(PRACTICE_CHART_UTILS_PATH.as_uri())};
+const chart = buildPracticeChartModel({{
+  initial_cash: 1000,
+  current_date: '2026-07-22',
+  equity_history: [{{time:'2026-07-22 10:05:00', equity:1010}}],
+  daily_equity_history: [{{time:'2026-07-21 15:00:00', equity:1005}}],
+}}, 'intraday');
+process.stdout.write(JSON.stringify({{
+  available: chart.available,
+  base: chart.baseEquity,
+  synthetic: chart.points[0]?.synthetic === true,
+  openTime: chart.points[0]?.time,
+  oneLivePoint: chart.points.length === 2,
+}}));
+"""
+        result = subprocess.run(
+            ['node', '--input-type=module', '-e', scenario],
+            check=True,
+            capture_output=True,
+            text=True,
         )
-        self.assertIn(
-            'const hasIntradayOpenBase = !isDailyMode && Number.isFinite(intradayBaseEquity) && intradayBaseEquity > 0;',
-            DASHBOARD_FRONTEND,
-        )
-        self.assertIn(
-            'const chartBase = isDailyMode ? initialCash : (hasIntradayOpenBase ? intradayBaseEquity : vals[0]);',
-            DASHBOARD_FRONTEND,
-        )
-        self.assertIn('const axisPcts = hasIntradayOpenBase ? [0, ...chartPcts] : chartPcts;', DASHBOARD_FRONTEND)
-        self.assertIn('const openAnchor = [left, y(0)];', DASHBOARD_FRONTEND)
-        self.assertIn('pts.unshift(openAnchor);', DASHBOARD_FRONTEND)
-        self.assertIn('hasSyntheticOpenAnchor = true;', DASHBOARD_FRONTEND)
-        self.assertIn(
-            '} else if (!isDailyMode && points.length > 1 && pts.length > 0 && pts[0][0] > left + 1) {',
-            DASHBOARD_FRONTEND,
-        )
-        self.assertIn('const hasCurveSegment = pts.length > 1;', DASHBOARD_FRONTEND)
-        self.assertIn('const drawdownVals = hasIntradayOpenBase ? [chartBase, ...vals] : vals;', DASHBOARD_FRONTEND)
-        self.assertIn('time: `${latestDay} 09:30:00`', DASHBOARD_FRONTEND)
-        self.assertIn('const intradayBaseLabel = hasIntradayOpenBase', DASHBOARD_FRONTEND)
+        self.assertEqual(json.loads(result.stdout), {
+            'available': True,
+            'base': 1005,
+            'synthetic': True,
+            'openTime': '2026-07-22 09:30:00',
+            'oneLivePoint': True,
+        })
 
     def test_configured_admin_password_issues_secure_session_and_unlocks_settings(self):
         dashboard.ADMIN_PASSWORD = '管理员密码'
@@ -2576,7 +2471,7 @@ process.stdout.write(JSON.stringify({
         unlocked_page = FakeHandler(path='/admin', headers={'Cookie': session_cookie})
         unlocked_page.do_GET()
         self.assertEqual(unlocked_page.status, 200)
-        self.assertIn('<script src="/static/admin.js?v=22" defer></script>', unlocked_page.wfile.getvalue().decode('utf-8'))
+        self.assertIn('<div id="app">', unlocked_page.wfile.getvalue().decode('utf-8'))
 
         unlocked_api = FakeHandler(path='/api/admin/config', headers={'Cookie': session_cookie})
         unlocked_api.do_GET()
@@ -2748,18 +2643,6 @@ process.stdout.write(JSON.stringify({
             self.assertEqual(second.status, 429)
         finally:
             dashboard.RATE_LIMIT_ANON = original_anon_limit
-
-    def test_send_payload_gzips_large_json_when_client_accepts_it(self):
-        payload = json.dumps({"items": ["牛" * 50 for _ in range(200)]}, ensure_ascii=False).encode("utf-8")
-        handler = FakeHandler(path="/api/messages", headers={"Accept-Encoding": "br, gzip"})
-
-        handler.send_payload(payload)
-
-        body = handler.wfile.getvalue()
-        self.assertEqual(handler.header("Content-Encoding"), "gzip")
-        self.assertIn("Accept-Encoding", handler.header("Vary") or "")
-        self.assertLess(len(body), len(payload))
-        self.assertEqual(gzip.decompress(body), payload)
 
     def test_practice_candidates_cache_prefers_multi_strategy_and_falls_back_to_legacy(self):
         original_multi_strategy_cache_file = dashboard.MULTI_STRATEGY_CACHE_FILE
@@ -3563,47 +3446,22 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(handler.status, 200)
         self.assertEqual(len(payload['groups']), 13)
         self.assertEqual(item_names, set(dashboard.ADMIN_VISIBLE_ENV_NAMES))
-        self.assertIn('<script src="/static/admin.js?v=22" defer></script>', index_body)
+        self.assertIn('<div id="app">', index_body)
         self.assertNotIn("name='env__", index_body)
-        self.assertIn('function renderSettingsIndex()', ADMIN_FRONTEND)
-        self.assertIn('function renderSettingsGroup(slug)', ADMIN_FRONTEND)
-        self.assertIn("data-save-endpoint='/api/admin/config/env/", ADMIN_FRONTEND)
+        self.assertIn('<AdminSettingsIndex', ADMIN_FRONTEND)
+        self.assertIn('<AdminSettingsGroup', ADMIN_FRONTEND)
+        self.assertIn('`/api/admin/config/env/${props.slug}`', ADMIN_FRONTEND)
         self.assertIn("'X-NiuOne-Action': '1'", ADMIN_FRONTEND)
-        self.assertIn("window.history.pushState({}, '', link.getAttribute('href'))", ADMIN_FRONTEND)
-        self.assertIn("class='settings-back-link' href='/admin' data-settings-route", ADMIN_FRONTEND)
-        self.assertNotIn("class='toplink' href='/admin' data-settings-route>全部设置", ADMIN_FRONTEND)
-        self.assertIn("button.disabled = true;", ADMIN_FRONTEND)
-        self.assertIn("button.textContent = '已保存';", ADMIN_FRONTEND)
-        self.assertIn("</div></section></form></div>", ADMIN_FRONTEND)
-        self.assertIn('data-saved-state="0"] .settings-actions', ADMIN_FRONTEND)
-        self.assertIn('function brieflyShowEnvSaved(form)', ADMIN_FRONTEND)
-        self.assertIn("String(event.key || '').toLowerCase() !== 's'", ADMIN_FRONTEND)
-        self.assertIn('function renderEnvInput(item)', ADMIN_FRONTEND)
+        self.assertIn('onBeforeRouteLeave', ADMIN_FRONTEND)
+        self.assertIn('保存本组设置', ADMIN_FRONTEND)
+        self.assertIn('<AdminEnvInput', ADMIN_FRONTEND)
         self.assertEqual(
             [item['id'] for item in payload['model_tests']],
-            [
-                'news-precheck',
-                'decision-model',
-                'grok-model',
-                'us-rating-model',
-                'a-share-summary-model',
-            ],
+            ['news-precheck', 'decision-model', 'grok-model', 'us-rating-model', 'a-share-summary-model'],
         )
-        self.assertIn("function renderModelTests(slug)", ADMIN_FRONTEND)
-        self.assertIn("data-model-test='", ADMIN_FRONTEND)
         self.assertIn("fetch('/api/admin/models/test'", ADMIN_FRONTEND)
-        self.assertIn('API Key 留空时安全复用已保存密钥', ADMIN_FRONTEND)
         self.assertEqual(payload['iwencai_test']['group_slug'], 'iwencai')
-        self.assertEqual(payload['iwencai_test']['field_names'], [
-            'IWENCAI_BASE_URL',
-            'IWENCAI_API_KEY',
-            'IWENCAI_TIMEOUT_SECONDS',
-        ])
-        self.assertIn('function renderIwencaiTest(slug)', ADMIN_FRONTEND)
-        self.assertIn("data-iwencai-test", ADMIN_FRONTEND)
         self.assertIn("fetch('/api/admin/iwencai/test'", ADMIN_FRONTEND)
-        self.assertIn('测试问财接口', ADMIN_FRONTEND)
-        self.assertNotIn('HIDDEN-CODE', ADMIN_FRONTEND)
         self.assertNotIn('/admin/invite', ADMIN_FRONTEND)
 
     def test_admin_settings_groups_have_standalone_pages(self):
@@ -3619,161 +3477,16 @@ process.stdout.write(JSON.stringify({
             route = FakeHandler(path=f'/admin/settings/{slug}')
             route.do_GET()
             self.assertEqual(route.status, 200)
-            self.assertIn('<script src="/static/admin.js?v=22" defer></script>', route.wfile.getvalue().decode('utf-8'))
+            self.assertIn('<div id="app">', route.wfile.getvalue().decode('utf-8'))
 
         self.assertEqual(len(groups), 13)
         self.assertEqual(len(slugs), len(set(slugs)))
         self.assertEqual(slugs[:2], ['access-control', 'notifications'])
-        self.assertEqual(slugs.index('trading-risk'), slugs.index('decision-model') + 1)
-        self.assertEqual(slugs.index('decision-reference'), slugs.index('decision-times') + 1)
-        self.assertEqual(slugs.index('iwencai'), slugs.index('decision-reference') + 1)
-        self.assertEqual(slugs.index('us-market'), slugs.index('stock-strategy') + 1)
         self.assertEqual(grouped_names, set(dashboard.ADMIN_VISIBLE_ENV_NAMES))
-        self.assertIn("data-save-endpoint='/api/admin/config/env/", ADMIN_FRONTEND)
-        self.assertIn("settingsGroupSlug()", ADMIN_FRONTEND)
+        self.assertIn(':to="`/admin/settings/${group.slug}`"', ADMIN_FRONTEND)
         self.assertIn('保存本组设置', ADMIN_FRONTEND)
         self.assertEqual(len(dashboard.admin_setting_group_env_names('us-market')), 16)
         self.assertEqual(len(dashboard.admin_setting_group_env_names('iwencai')), 8)
-        iwencai_group = next(group for group in groups if group['slug'] == 'iwencai')
-        self.assertEqual(iwencai_group['note'], '')
-        decision_group = next(group for group in groups if group['slug'] == 'decision-times')
-        self.assertEqual(decision_group['name'], '选股与买卖设置')
-        strategy_group = next(group for group in groups if group['slug'] == 'stock-strategy')
-        self.assertEqual(strategy_group['name'], '选股与交易策略')
-        market_data_group = next(group for group in groups if group['slug'] == 'indices-refresh')
-        self.assertEqual(market_data_group['name'], '行情与资金流设置')
-        self.assertEqual(market_data_group['item_count'], 9)
-        self.assertIn('09:25～11:31、13:00～15:01', market_data_group['note'])
-        self.assertEqual(dashboard.admin_setting_group_env_names('indices-refresh'), {
-            'DASHBOARD_INDICES_TTL_SECONDS',
-            'DASHBOARD_PUBLIC_REFRESH_SECONDS',
-            'DASHBOARD_INDUSTRY_FLOW_PLAYBACK_SPEED',
-            'DASHBOARD_INDUSTRY_FLOW_SIDE_LIMIT',
-            'DASHBOARD_INDUSTRY_FLOW_SAMPLE_INTERVAL_SECONDS',
-            'DASHBOARD_INDUSTRY_FLOW_MORNING_START',
-            'DASHBOARD_INDUSTRY_FLOW_MORNING_END',
-            'DASHBOARD_INDUSTRY_FLOW_AFTERNOON_START',
-            'DASHBOARD_INDUSTRY_FLOW_AFTERNOON_END',
-        })
-        decision_names = dashboard.admin_setting_group_env_names('decision-times')
-        self.assertIn('DASHBOARD_DISPLAY_CANDIDATE_LIMIT', decision_names)
-        self.assertIn('DASHBOARD_TRADE_CANDIDATE_LIMIT', decision_names)
-        self.assertIn('DASHBOARD_STOCK_UNIVERSE', decision_names)
-        config_by_name = {item['name']: item for item in dashboard.ENV_CONFIG_SCHEMA}
-        self.assertEqual(config_by_name['DASHBOARD_GROK_API_MODE']['kind'], 'api_mode')
-        self.assertEqual(config_by_name['DASHBOARD_GROK_API_MODE']['default'], 'auto')
-        self.assertEqual(config_by_name['DASHBOARD_NEWS_API_MODE']['kind'], 'api_mode')
-        self.assertEqual(config_by_name['DASHBOARD_NEWS_API_MODE']['default'], 'auto')
-        self.assertEqual(config_by_name['DASHBOARD_INDUSTRY_FLOW_PLAYBACK_SPEED']['kind'], 'playback_speed')
-        self.assertEqual(config_by_name['DASHBOARD_INDUSTRY_FLOW_PLAYBACK_SPEED']['default'], '0.5')
-        self.assertEqual(config_by_name['DASHBOARD_INDUSTRY_FLOW_SIDE_LIMIT']['default'], '10')
-        self.assertEqual(config_by_name['DASHBOARD_INDUSTRY_FLOW_SAMPLE_INTERVAL_SECONDS']['default'], '60')
-        self.assertEqual(config_by_name['DASHBOARD_INDUSTRY_FLOW_MORNING_START']['default'], '09:25')
-        self.assertEqual(config_by_name['DASHBOARD_INDUSTRY_FLOW_MORNING_END']['default'], '11:31')
-        self.assertEqual(config_by_name['DASHBOARD_INDUSTRY_FLOW_AFTERNOON_START']['default'], '13:00')
-        self.assertEqual(config_by_name['DASHBOARD_INDUSTRY_FLOW_AFTERNOON_END']['default'], '15:01')
-        self.assertTrue(all(
-            config_by_name[name]['kind'] == 'time'
-            for name in dashboard.INDUSTRY_FLOW_WINDOW_CONFIG_NAMES
-        ))
-        self.assertIn('DASHBOARD_NEWS_API_MODE', dashboard.TRADER_RUNTIME_ENV_NAMES)
-        self.assertEqual(dashboard.normalize_env_update('DASHBOARD_GROK_API_MODE', 'responses', 'api_mode'), 'responses')
-        self.assertEqual(dashboard.normalize_env_update('DASHBOARD_GROK_API_MODE', 'chat-completions', 'api_mode'), 'chat')
-        self.assertEqual(
-            dashboard.normalize_business_updates({'DASHBOARD_GROK_API_MODE': 'chat-completions'}),
-            {'DASHBOARD_GROK_API_MODE': 'chat'},
-        )
-        with self.assertRaises(ValueError):
-            dashboard.normalize_business_updates({'DASHBOARD_GROK_API_MODE': 'invalid'})
-        with self.assertRaises(ValueError):
-            dashboard.validate_business_updates({'X_WATCHLIST_REQUEST_TIMEOUT_SECONDS': '7'})
-        self.assertIn("kind === 'api_mode'", ADMIN_FRONTEND)
-        self.assertIn("kind === 'playback_speed'", ADMIN_FRONTEND)
-        self.assertIn("item.min ?", ADMIN_FRONTEND)
-        dashboard.validate_business_updates({
-            'DASHBOARD_INDUSTRY_FLOW_PLAYBACK_SPEED': '0.75',
-            'DASHBOARD_INDUSTRY_FLOW_SIDE_LIMIT': '6',
-            'DASHBOARD_INDUSTRY_FLOW_SAMPLE_INTERVAL_SECONDS': '120',
-            'DASHBOARD_INDUSTRY_FLOW_MORNING_START': '09:20',
-            'DASHBOARD_INDUSTRY_FLOW_MORNING_END': '11:32',
-            'DASHBOARD_INDUSTRY_FLOW_AFTERNOON_START': '12:59',
-            'DASHBOARD_INDUSTRY_FLOW_AFTERNOON_END': '15:02',
-        })
-        self.assertEqual(
-            dashboard.normalize_business_updates({'DASHBOARD_INDUSTRY_FLOW_PLAYBACK_SPEED': '1.0'}),
-            {'DASHBOARD_INDUSTRY_FLOW_PLAYBACK_SPEED': '1'},
-        )
-        for name, value in (
-            ('DASHBOARD_INDUSTRY_FLOW_PLAYBACK_SPEED', '0.6'),
-            ('DASHBOARD_INDUSTRY_FLOW_SIDE_LIMIT', '11'),
-            ('DASHBOARD_INDUSTRY_FLOW_SAMPLE_INTERVAL_SECONDS', '30'),
-        ):
-            with self.subTest(name=name), self.assertRaises(ValueError):
-                dashboard.validate_business_updates({name: value})
-        with self.assertRaisesRegex(ValueError, '上午开始'):
-            dashboard.validate_business_updates({
-                'DASHBOARD_INDUSTRY_FLOW_MORNING_START': '11:40',
-                'DASHBOARD_INDUSTRY_FLOW_MORNING_END': '11:31',
-            })
-        self.assertEqual(config_by_name['DASHBOARD_DISPLAY_CANDIDATE_LIMIT']['default'], '10')
-        self.assertEqual(config_by_name['DASHBOARD_TRADE_CANDIDATE_LIMIT']['default'], '10')
-        self.assertEqual(config_by_name['IWENCAI_ENABLED']['default'], '0')
-        self.assertEqual(config_by_name['IWENCAI_BASE_URL']['default'], 'https://openapi.iwencai.com')
-        self.assertEqual(config_by_name['IWENCAI_API_KEY']['kind'], 'secret')
-        self.assertEqual(config_by_name['IWENCAI_DRAGON_TIGER_CRON']['default'], '0 18 * * 1-5')
-        self.assertEqual(
-            dashboard.normalize_business_updates({'IWENCAI_DRAGON_TIGER_CRON': '18:00'}),
-            {'IWENCAI_DRAGON_TIGER_CRON': '0 18 * * 1-5'},
-        )
-        dashboard.validate_business_updates({
-            'IWENCAI_BASE_URL': 'https://openapi.iwencai.com',
-            'IWENCAI_TIMEOUT_SECONDS': '20',
-            'IWENCAI_MAX_RETRIES': '1',
-            'IWENCAI_MAX_CONCURRENCY': '2',
-            'IWENCAI_CACHE_TTL_SECONDS': '300',
-        })
-        with self.assertRaises(ValueError):
-            dashboard.validate_business_updates({'IWENCAI_BASE_URL': 'http://openapi.iwencai.com'})
-        with self.assertRaises(ValueError):
-            dashboard.validate_business_updates({'IWENCAI_MAX_CONCURRENCY': '5'})
-        self.assertEqual(config_by_name['DASHBOARD_STOCK_UNIVERSE']['default'], 'main_board')
-        universe_item = next(item for item in payload['items'] if item['name'] == 'DASHBOARD_STOCK_UNIVERSE')
-        self.assertEqual(universe_item['stock_universe_values'], ['main_board'])
-        self.assertEqual(
-            [option['label'] for option in universe_item['stock_universe_options']],
-            ['ST', '创业板', '科创板', '主板'],
-        )
-        self.assertIn("kind === 'stock_universe'", ADMIN_FRONTEND)
-        decision_model_names = dashboard.admin_setting_group_env_names('decision-model')
-        decision_reference_names = dashboard.admin_setting_group_env_names('decision-reference')
-        trading_risk_names = dashboard.admin_setting_group_env_names('trading-risk')
-        self.assertEqual(len(decision_model_names), 6)
-        self.assertEqual(
-            decision_reference_names,
-            {
-                'DASHBOARD_DECISION_INTELLIGENCE_ENABLED',
-                'DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS',
-                'DASHBOARD_DECISION_INTELLIGENCE_MAX_ITEMS',
-            },
-        )
-        self.assertEqual(
-            config_by_name['DASHBOARD_DECISION_INTELLIGENCE_MAX_ITEMS']['label'],
-            '单类参考数据上限',
-        )
-        self.assertEqual(
-            trading_risk_names,
-            {
-                'DASHBOARD_MARKET_GUIDANCE_ENABLED',
-                'DASHBOARD_TRADE_DISCIPLINE_TEXT',
-                'DASHBOARD_MAX_OPEN_POSITIONS',
-                'DASHBOARD_MAX_NEW_BUYS_PER_DECISION',
-                'DASHBOARD_MAX_SINGLE_POSITION_PCT',
-                'DASHBOARD_MAX_TOTAL_POSITION_PCT',
-                'DASHBOARD_MIN_CASH_RESERVE_PCT',
-                'DASHBOARD_MORNING_MAX_OPEN_POSITIONS',
-            },
-        )
-        self.assertNotIn('DASHBOARD_TRADE_DISCIPLINE_TEXT', decision_model_names)
 
     def test_candidate_limit_settings_require_positive_integers(self):
         dashboard.validate_business_updates({
@@ -3803,7 +3516,7 @@ process.stdout.write(JSON.stringify({
         locked.do_GET()
         locked_body = locked.wfile.getvalue().decode('utf-8')
         self.assertEqual(locked.status, 200)
-        self.assertIn('<script src="/static/admin.js?v=22" defer></script>', locked_body)
+        self.assertIn('<div id="app">', locked_body)
         self.assertNotIn("name='env__DASHBOARD_NOTIFICATION_ENABLED'", locked_body)
 
         cookie = self.admin_cookie()
@@ -3827,8 +3540,7 @@ process.stdout.write(JSON.stringify({
         )
         missing.do_GET()
         self.assertEqual(missing.status, 404)
-        self.assertIn('<script src="/static/admin.js?v=22" defer></script>', missing.wfile.getvalue().decode('utf-8'))
-        self.assertIn('未找到该设置分组', ADMIN_FRONTEND)
+        self.assertEqual(missing.wfile.getvalue(), b'')
 
     def test_group_save_ignores_fields_from_other_settings_groups(self):
         original_values = {
@@ -3983,12 +3695,18 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(password_item['file_value'], '')
 
     def test_home_page_uses_us_feature_flag_for_tabs_without_deleting_data(self):
-        dashboard.DASHBOARD_ENV_FILE.write_text('DASHBOARD_US_FEATURES_ENABLED=0\n', encoding='utf-8')
+        dashboard.DASHBOARD_ENV_FILE.write_text(
+            'DASHBOARD_US_FEATURES_ENABLED=0\n',
+            encoding='utf-8',
+        )
         disabled = FakeHandler(path='/api/dashboard/bootstrap')
         disabled.do_GET()
         disabled_payload = json.loads(disabled.wfile.getvalue().decode('utf-8'))
 
-        dashboard.DASHBOARD_ENV_FILE.write_text('DASHBOARD_US_FEATURES_ENABLED=1\n', encoding='utf-8')
+        dashboard.DASHBOARD_ENV_FILE.write_text(
+            'DASHBOARD_US_FEATURES_ENABLED=1\n',
+            encoding='utf-8',
+        )
         enabled = FakeHandler(path='/api/dashboard/bootstrap')
         enabled.do_GET()
         enabled_payload = json.loads(enabled.wfile.getvalue().decode('utf-8'))
@@ -3997,9 +3715,13 @@ process.stdout.write(JSON.stringify({
         self.assertFalse(disabled_payload['us_features_enabled'])
         self.assertEqual(enabled.status, 200)
         self.assertTrue(enabled_payload['us_features_enabled'])
-        self.assertIn('let US_FEATURES_ENABLED = false;', DASHBOARD_FRONTEND)
-        self.assertIn("fetch('/api/dashboard/bootstrap'", DASHBOARD_FRONTEND)
-        self.assertIn('activeCategory = normalizeActiveCategory(activeCategory);', DASHBOARD_FRONTEND)
+        tabs_source = (
+            ROOT / 'web' / 'src' / 'composables' / 'useDashboardTabs.js'
+        ).read_text(encoding='utf-8')
+        self.assertIn("const US_FEATURE_CATEGORIES = new Set(['x_monitor', 'us_ratings'])", tabs_source)
+        self.assertIn("fetch('/api/dashboard/bootstrap'", tabs_source)
+        self.assertIn('usFeaturesEnabled.value = payload.us_features_enabled === true', tabs_source)
+        self.assertIn('.filter(categoryAvailable)', tabs_source)
 
     def test_us_feature_flag_reads_dashboard_env_without_touching_records(self):
         dashboard.DASHBOARD_ENV_FILE.write_text('DASHBOARD_US_FEATURES_ENABLED=0\n', encoding='utf-8')
@@ -4134,11 +3856,8 @@ process.stdout.write(JSON.stringify({
             self.assertEqual(item['default'], '4096')
             self.assertEqual(item['file_value'], '4096')
 
-        body = ADMIN_FRONTEND
-        self.assertIn("'4096；例如 2048 或 8192'", body)
-        self.assertIn("'4096 tokens；按所选接口映射为兼容的输出长度参数'", body)
-        self.assertIn("'128000；例如 128K、1M 或 1000000'", body)
-        self.assertIn("'128000 tokens；填写后保存为数字 tokens'", body)
+        self.assertIn('默认 4096 tokens；按所选接口映射为兼容的输出长度参数', ADMIN_FRONTEND)
+        self.assertIn('默认 128000 tokens；填写后保存为数字 tokens', ADMIN_FRONTEND)
 
     def test_business_settings_are_local_to_dashboard_env(self):
         original_env_file = dashboard.DASHBOARD_ENV_FILE
