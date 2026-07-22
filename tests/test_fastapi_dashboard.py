@@ -170,6 +170,7 @@ class FastApiDashboardTests(unittest.TestCase):
                 ("/api/niuniu_practice", "niuniu_practice"),
                 ("/api/practice_benchmarks", "practice_benchmarks"),
                 ("/api/indices", "indices"),
+                ("/api/market_breadth", "market_breadth"),
                 ("/api/sectors", "sectors"),
                 ("/api/hot_stocks?sort_by=turnover", "hot_stocks:turnover"),
                 ("/api/hot_stocks?sort_by=not-valid", "hot_stocks:amount"),
@@ -207,6 +208,7 @@ class FastApiDashboardTests(unittest.TestCase):
             "niuniu_practice",
             "practice_benchmarks",
             "indices",
+            "market_breadth",
             "sectors",
             "hot_stocks:turnover",
             "hot_stocks:amount",
@@ -803,6 +805,9 @@ class FastApiDashboardTests(unittest.TestCase):
         index_sparkline = (
             ROOT / "web" / "src" / "components" / "indices" / "IndexSparkline.vue"
         ).read_text(encoding="utf-8")
+        market_breadth = (
+            ROOT / "web" / "src" / "components" / "indices" / "MarketBreadthChart.vue"
+        ).read_text(encoding="utf-8")
         market_overview = (
             ROOT / "web" / "src" / "components" / "indices" / "MarketOverview.vue"
         ).read_text(encoding="utf-8")
@@ -916,13 +921,37 @@ class FastApiDashboardTests(unittest.TestCase):
         self.assertIn("<MarketOverview", indices)
         self.assertIn("router.push('/industry-flow')", indices)
         self.assertIn("niuniu-dashboard-index-priority-v1", indices)
+        self.assertIn("@click=\"selectPanel('market-breadth')\">市场情绪</button>", indices)
         self.assertIn("market-strip", index_overview)
         self.assertIn("<IndexSparkline", index_overview)
+        self.assertNotIn("<MarketBreadthChart", index_overview)
+        self.assertIn("<MarketBreadthChart", indices)
         self.assertIn("sparkline-zero", index_sparkline)
+        self.assertIn("跌停板、涨停板、炸板、红盘和绿盘数量日内曲线", market_breadth)
+        self.assertIn("左轴看红绿盘，右轴看涨跌停与炸板", market_breadth)
+        self.assertIn('v-model="showBreadth"', market_breadth)
+        self.assertIn('v-model="showLimitState"', market_breadth)
+        self.assertIn("market-breadth-line-muted", market_breadth)
+        self.assertIn("market-breadth-axis-line", market_breadth)
+        self.assertIn("market-breadth-endpoint", market_breadth)
+        self.assertIn(":r=\"series.muted ? 1.45 : 1.9\"", market_breadth)
+        self.assertIn("const drawSeries = computed", market_breadth)
+        self.assertIn('@pointermove="updateHover"', market_breadth)
+        self.assertIn('@pointerleave="clearHover"', market_breadth)
+        self.assertIn("clearHoverOutside", market_breadth)
+        self.assertIn('ref="chartElement"', market_breadth)
+        self.assertIn("market-breadth-crosshair", market_breadth)
+        self.assertIn("market-breadth-tooltip-panel", market_breadth)
+        self.assertIn("const rows = visibleSeries.value.map", market_breadth)
+        self.assertIn("42 + rows.length * 14", market_breadth)
+        self.assertIn("color: '#fb7185'", market_breadth)
+        self.assertIn("color: '#2dd4bf'", market_breadth)
+        self.assertNotIn("stroke-dasharray", market_breadth)
         self.assertIn("主力资金流向", market_overview)
         self.assertIn("美股板块行情暂不可用", market_overview)
         for endpoint in (
             "/api/indices",
+            "/api/market_breadth",
             "/api/sectors",
             "/api/us_sectors",
             "/api/hot_stocks",
@@ -932,6 +961,7 @@ class FastApiDashboardTests(unittest.TestCase):
             self.assertIn(endpoint, indices_data)
         self.assertIn("REFRESH_INTERVAL_MS = 15 * 1000", indices_data)
         self.assertIn("MONEY_FLOW_REFRESH_INTERVAL_MS = 60 * 1000", indices_data)
+        self.assertIn("MARKET_BREADTH_REFRESH_INTERVAL_MS = 60 * 1000", indices_data)
         self.assertIn("<IndustryFlowPanel", dashboard)
         self.assertIn("activeCategory === 'industry_flow'", dashboard)
         self.assertIn("/api/industry-flow?compact=1", industry_flow_data)
@@ -941,7 +971,8 @@ class FastApiDashboardTests(unittest.TestCase):
         self.assertIn('id="industryFlowStage"', industry_flow)
         self.assertIn('id="industryFlowSeek"', industry_flow)
         self.assertIn("<TransitionGroup", industry_flow)
-        self.assertIn("router.push({ path: '/indices', query:", industry_flow)
+        self.assertIn("path: '/indices'", industry_flow)
+        self.assertIn("@click=\"selectPanel('market-breadth')\">市场情绪</button>", industry_flow)
         self.assertIn("SAMPLE_PLAYBACK_MS = 460", industry_flow_animation)
         self.assertIn("function frameAt(payload, progress)", industry_flow_animation)
         self.assertIn("export function splitSortedNodes", industry_flow_animation)

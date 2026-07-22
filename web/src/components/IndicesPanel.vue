@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useIndicesData } from '../composables/useIndicesData.js'
 import { indicesSwitchSession, marketItems } from '../utils/marketDisplay.js'
 import IndexOverview from './indices/IndexOverview.vue'
+import MarketBreadthChart from './indices/MarketBreadthChart.vue'
 import MarketOverview from './indices/MarketOverview.vue'
 
 const INDEX_PRIORITY_STATE_KEY = 'niuniu-dashboard-index-priority-v1'
@@ -11,7 +12,13 @@ const router = useRouter()
 const { state, view, activateIndices, deactivateIndices } = useIndicesData()
 
 const { panel, marketRegionOverride, indexPriorityOverride } = toRefs(view)
-panel.value = new URLSearchParams(window.location.search).get('panel') === 'market' ? 'market' : 'index'
+
+function panelFromLocation() {
+  const value = new URLSearchParams(window.location.search).get('panel')
+  return ['market', 'market-breadth'].includes(value) ? value : 'index'
+}
+
+panel.value = panelFromLocation()
 try {
   const saved = window.sessionStorage.getItem(INDEX_PRIORITY_STATE_KEY)
   if (['a_share', 'us'].includes(saved)) indexPriorityOverride.value = saved
@@ -44,13 +51,19 @@ const aShareModuleCount = computed(() => {
   return [hasSectorMoves, hasHotStocks, hasMarketFlow, hasMoneyFlow].filter(Boolean).length
 })
 const marketModuleCount = computed(() => marketRegion.value === 'us' ? usSectorCount.value : aShareModuleCount.value)
-const panelMeta = computed(() => panel.value === 'market'
-  ? `${marketModuleCount.value} ${marketRegion.value === 'us' ? '项' : '组'}`
-  : `${indexItems.value.length} 项`)
+const panelMeta = computed(() => {
+  if (panel.value === 'market') {
+    return `${marketModuleCount.value} ${marketRegion.value === 'us' ? '项' : '组'}`
+  }
+  if (panel.value === 'market-breadth') {
+    return `${state.marketBreadth.timeline?.length || 0} 个采样点`
+  }
+  return `${indexItems.value.length} 项`
+})
 
 function updateUrl() {
   const nextUrl = new URL(window.location.href)
-  if (panel.value === 'market') nextUrl.searchParams.set('panel', 'market')
+  if (['market', 'market-breadth'].includes(panel.value)) nextUrl.searchParams.set('panel', panel.value)
   else nextUrl.searchParams.delete('panel')
   window.history.replaceState({}, '', `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`)
 }
@@ -60,7 +73,7 @@ function selectPanel(nextPanel) {
     router.push('/industry-flow')
     return
   }
-  const normalized = nextPanel === 'market' ? 'market' : 'index'
+  const normalized = ['market', 'market-breadth'].includes(nextPanel) ? nextPanel : 'index'
   if (panel.value === normalized) return
   panel.value = normalized
   updateUrl()
@@ -77,7 +90,7 @@ function setMarketRegion(value) {
 }
 
 function syncPanelFromLocation() {
-  panel.value = new URLSearchParams(window.location.search).get('panel') === 'market' ? 'market' : 'index'
+  panel.value = panelFromLocation()
 }
 
 onMounted(() => {
@@ -100,15 +113,17 @@ onBeforeUnmount(() => {
   </div>
   <div v-if="state.loading && !indexItems.length && !state.indices.error" class="loading">行情加载中...</div>
   <div v-else class="indices-page">
-    <div class="indices-switch" role="group" aria-label="指数行情与资金流动切换">
+    <div class="indices-switch" role="group" aria-label="指数行情、资金流动与市场情绪切换">
       <button type="button" class="indices-switch-btn" :class="{ active: panel === 'index' }" :aria-pressed="panel === 'index'" @click="selectPanel('index')">指数</button>
       <button type="button" class="indices-switch-btn" :class="{ active: panel === 'market' }" :aria-pressed="panel === 'market'" @click="selectPanel('market')">行情</button>
       <button type="button" class="indices-switch-btn" aria-pressed="false" @click="selectPanel('flow')">资金流动</button>
+      <button type="button" class="indices-switch-btn" :class="{ active: panel === 'market-breadth' }" :aria-pressed="panel === 'market-breadth'" @click="selectPanel('market-breadth')">市场情绪</button>
     </div>
-    <section class="indices-part" :id="panel === 'market' ? 'market-overview' : 'indices-overview'">
+    <section class="indices-part" :id="panel === 'market' ? 'market-overview' : panel === 'market-breadth' ? 'market-breadth-overview' : 'indices-overview'">
       <div class="indices-part-head">
         <div class="indices-part-title-row">
           <h2 v-if="panel === 'index'" class="indices-part-title">指数</h2>
+          <h2 v-else-if="panel === 'market-breadth'" class="indices-part-title">市场情绪</h2>
           <div
             v-if="panel === 'index'"
             class="market-region-switch index-priority-switch"
@@ -120,7 +135,7 @@ onBeforeUnmount(() => {
             <button type="button" class="market-region-btn" :class="{ active: indexPriority === 'us' }" :aria-pressed="indexPriority === 'us'" @click="setIndexPriority('us')">美股在上</button>
           </div>
           <div
-            v-else
+            v-else-if="panel === 'market'"
             class="market-region-switch"
             role="group"
             aria-label="行情市场切换"
@@ -133,9 +148,13 @@ onBeforeUnmount(() => {
         <div class="indices-part-meta">{{ panelMeta }}</div>
       </div>
       <div :class="panel === 'market' ? 'indices-market-stack' : 'indices-index-stack'">
-        <IndexOverview v-if="panel === 'index'" :payload="state.indices" :priority="indexPriority" />
+        <IndexOverview
+          v-if="panel === 'index'"
+          :payload="state.indices"
+          :priority="indexPriority"
+        />
         <MarketOverview
-          v-else
+          v-else-if="panel === 'market'"
           :sectors="state.sectors"
           :us-sectors="state.usSectors"
           :hot-stocks="state.hotStocks"
@@ -143,6 +162,7 @@ onBeforeUnmount(() => {
           :market-flow="state.marketFlow"
           :region="marketRegion"
         />
+        <MarketBreadthChart v-else :payload="state.marketBreadth" />
       </div>
     </section>
   </div>

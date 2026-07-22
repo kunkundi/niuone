@@ -62,10 +62,18 @@ from dashboard.apis.industry_flow import (
     is_industry_flow_session_timestamp,
     normalize_industry_flow_sampling_windows,
 )
+from dashboard.apis.market_breadth import (
+    DEFAULT_SAMPLE_INTERVAL_SECONDS as MARKET_BREADTH_DEFAULT_SAMPLE_INTERVAL_SECONDS,
+    append_market_breadth_sample,
+    build_market_breadth_payload,
+    compact_market_breadth_sample,
+    is_market_breadth_session_timestamp,
+)
 from market_data.iwencai_client import (
     DEFAULT_BASE_URL as IWENCAI_DEFAULT_BASE_URL,
     normalize_base_url as normalize_iwencai_base_url,
 )
+from market_data.tencent_market_breadth import fetch_tencent_market_breadth
 from niuone_paths import apply_container_runtime_overrides, get_dashboard_env_file, get_dashboard_home, get_local_data_dir
 import push_history
 from screening.stock_universe import (
@@ -143,6 +151,7 @@ MONEY_FLOW_SNAPSHOT_FILE = CRON_OUTPUT_DIR / "industry_main_money_flow_cache.jso
 # Main-net samples use a new history file so legacy total-flow observations
 # remain recoverable but can never be replayed under the new metric label.
 INDUSTRY_FLOW_HISTORY_FILE = CRON_OUTPUT_DIR / "industry_main_flow_history.json"
+MARKET_BREADTH_HISTORY_FILE = CRON_OUTPUT_DIR / "market_breadth_history.json"
 STATS_DB = DASHBOARD_HOME / "dashboard_stats.db"
 LEGACY_STATS_DB = DASHBOARD_HOME / "dashboard_users.db"
 LEGACY_STATS_MIGRATION_KEY = "dashboard_users_visit_stats_v1"
@@ -244,6 +253,10 @@ PRACTICE_EQUITY_HEARTBEAT_THREAD: threading.Thread | None = None
 PRACTICE_EQUITY_HEARTBEAT_POLL_SECONDS = 5.0
 INDUSTRY_FLOW_HISTORY_LOCK = threading.RLock()
 INDUSTRY_FLOW_SAMPLER_THREAD: threading.Thread | None = None
+MARKET_BREADTH_HISTORY_LOCK = threading.RLock()
+MARKET_BREADTH_REFRESH_LOCK = threading.Lock()
+MARKET_BREADTH_SAMPLER_THREAD: threading.Thread | None = None
+MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS = MARKET_BREADTH_DEFAULT_SAMPLE_INTERVAL_SECONDS
 INDUSTRY_FLOW_SAMPLE_INTERVAL_SECONDS = _bounded_int_value(
     os.environ.get("DASHBOARD_INDUSTRY_FLOW_SAMPLE_INTERVAL_SECONDS"),
     INDUSTRY_FLOW_DEFAULT_SAMPLE_INTERVAL_SECONDS,
@@ -350,6 +363,7 @@ API_TTLS = {
     "niuniu_practice": int(os.environ.get("DASHBOARD_PRACTICE_TTL_SECONDS", "15") or "15"),
     "practice_benchmarks": 30,
     "indices": int(os.environ.get("DASHBOARD_INDICES_TTL_SECONDS", "60") or "60"),
+    "market_breadth": MARKET_BREADTH_DEFAULT_SAMPLE_INTERVAL_SECONDS,
     "sectors": 60,
     "us_sectors": int(os.environ.get("DASHBOARD_US_SECTORS_TTL_SECONDS", "300") or "300"),
     "hot_stocks": 60,
@@ -2002,6 +2016,172 @@ def start_practice_equity_heartbeat() -> None:
     )
     PRACTICE_EQUITY_HEARTBEAT_THREAD.start()
     print("Practice equity heartbeat enabled: 60s", flush=True)
+
+
+def is_market_breadth_sampling_window(now: datetime | None = None) -> bool:
+    """Return whether Beijing time is inside an A-share quote session."""
+
+    current = now or current_cn_datetime()
+    return (
+        is_a_share_trading_day_for_dashboard(current)
+        and is_market_breadth_session_timestamp(current)
+    )
+
+
+def load_market_breadth_samples() -> list[dict[str, Any]]:
+    with MARKET_BREADTH_HISTORY_LOCK:
+        history = read_json_cache(MARKET_BREADTH_HISTORY_FILE, None) or {}
+        samples: list[dict[str, Any]] = []
+        for raw in history.get("samples") or []:
+            compact = compact_market_breadth_sample(raw if isinstance(raw, dict) else None)
+            if compact is not None and is_market_breadth_session_timestamp(compact["generated_at"]):
+                samples.append(compact)
+        return samples
+
+
+def record_market_breadth_sample(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Persist one complete market snapshot without inventing missing values."""
+
+    compact = compact_market_breadth_sample(snapshot)
+    if compact is None or not is_market_breadth_session_timestamp(compact["generated_at"]):
+        return load_market_breadth_samples()
+    with MARKET_BREADTH_HISTORY_LOCK:
+        history = read_json_cache(MARKET_BREADTH_HISTORY_FILE, None) or {}
+        updated = append_market_breadth_sample(
+            history,
+            snapshot,
+            interval_seconds=MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
+        )
+        if updated != history and updated.get("samples"):
+            write_json_cache(MARKET_BREADTH_HISTORY_FILE, updated)
+        return [
+            sample
+            for sample in (updated.get("samples") or [])
+            if isinstance(sample, dict)
+        ]
+
+
+def _market_breadth_failure_payload(error: Exception) -> dict[str, Any]:
+    samples = load_market_breadth_samples()
+    if not samples:
+        return build_market_breadth_payload({
+            "error": f"{type(error).__name__}: {error}",
+        })
+    fallback = dict(samples[-1])
+    fallback.update({
+        "stale_cache": True,
+        "error": f"{type(error).__name__}: {error}",
+    })
+    return build_market_breadth_payload(
+        fallback,
+        history_samples=samples,
+        interval_seconds=MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
+    )
+
+
+def _cached_market_breadth_payload(now: datetime) -> dict[str, Any] | None:
+    """Reuse a fresh sample, or the last close while the market is not sampling."""
+
+    samples = load_market_breadth_samples()
+    if not samples:
+        return None
+    latest = samples[-1]
+    try:
+        latest_time = datetime.strptime(
+            str(latest.get("generated_at") or ""),
+            "%Y-%m-%d %H:%M:%S",
+        )
+    except ValueError:
+        return None
+    same_day = latest_time.date() == now.date()
+    age_seconds = (now - latest_time).total_seconds()
+    fresh = (
+        same_day
+        and -120 <= age_seconds < max(5, MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS - 5)
+    )
+    if is_market_breadth_sampling_window(now) and not fresh:
+        return None
+    return build_market_breadth_payload(
+        latest,
+        history_samples=samples,
+        interval_seconds=MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
+    )
+
+
+def produce_market_breadth_data() -> dict[str, Any]:
+    """Fetch, validate, persist, and project one market-breadth observation."""
+
+    with MARKET_BREADTH_REFRESH_LOCK:
+        cached = _cached_market_breadth_payload(current_cn_datetime())
+        if cached is not None:
+            return cached
+        try:
+            snapshot = fetch_tencent_market_breadth()
+            samples = record_market_breadth_sample(snapshot)
+            return build_market_breadth_payload(
+                snapshot,
+                history_samples=samples,
+                interval_seconds=MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
+            )
+        except Exception as exc:
+            return _market_breadth_failure_payload(exc)
+
+
+def refresh_market_breadth_sample() -> bool:
+    payload = produce_market_breadth_data()
+    latest = payload.get("latest") if isinstance(payload.get("latest"), dict) else {}
+    recorded = bool(latest and not payload.get("error"))
+    if recorded:
+        invalidate_api_cache("market_breadth")
+    return recorded
+
+
+def market_breadth_sampling_loop(
+    *,
+    stop_event: threading.Event | None = None,
+    poll_seconds: float | None = None,
+) -> None:
+    """Collect current-day breadth curves even when the index page is closed."""
+
+    stop_event = stop_event or threading.Event()
+    next_due = time.monotonic()
+    while not stop_event.is_set():
+        interval = max(
+            60.0,
+            float(
+                MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS
+                if poll_seconds is None
+                else poll_seconds
+            ),
+        )
+        if is_market_breadth_sampling_window():
+            try:
+                refresh_market_breadth_sample()
+            except Exception as exc:
+                print(f"[WARN] 市场宽度采样失败: {type(exc).__name__}: {exc}", flush=True)
+        next_due += interval
+        now = time.monotonic()
+        if next_due <= now:
+            skipped_intervals = int((now - next_due) // interval) + 1
+            next_due += skipped_intervals * interval
+        if stop_event.wait(max(0.1, next_due - now)):
+            return
+
+
+def start_market_breadth_sampler() -> None:
+    global MARKET_BREADTH_SAMPLER_THREAD
+    if MARKET_BREADTH_SAMPLER_THREAD and MARKET_BREADTH_SAMPLER_THREAD.is_alive():
+        return
+    MARKET_BREADTH_SAMPLER_THREAD = threading.Thread(
+        target=market_breadth_sampling_loop,
+        name="market-breadth-sampler",
+        daemon=True,
+    )
+    MARKET_BREADTH_SAMPLER_THREAD.start()
+    print(
+        f"Market breadth sampler enabled: {MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS}s",
+        flush=True,
+    )
 
 
 def is_industry_flow_sampling_window(now: datetime | None = None) -> bool:

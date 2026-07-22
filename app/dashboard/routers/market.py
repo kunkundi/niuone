@@ -160,6 +160,18 @@ def create_market_router(
             ),
         )
 
+    @router.api_route("/api/market_breadth", methods=["GET", "HEAD"])
+    async def market_breadth(request: Request) -> Response:
+        ttl = services.API_TTLS["market_breadth"]
+        return await cached_response(
+            request,
+            cache_key="market_breadth",
+            ttl=ttl,
+            producer=services.produce_market_breadth_data,
+            edge_ttl=ttl,
+            browser_ttl=15,
+        )
+
     @router.api_route("/api/sectors", methods=["GET", "HEAD"])
     async def sectors(request: Request) -> Response:
         ttl = services.API_TTLS["sectors"]

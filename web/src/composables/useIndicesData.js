@@ -2,11 +2,13 @@ import { reactive } from 'vue'
 
 const REFRESH_INTERVAL_MS = 15 * 1000
 const MONEY_FLOW_REFRESH_INTERVAL_MS = 60 * 1000
+const MARKET_BREADTH_REFRESH_INTERVAL_MS = 60 * 1000
 
 const state = reactive({
   loading: false,
   loaded: false,
   indices: { items: [] },
+  marketBreadth: { latest: {}, timeline: [] },
   sectors: { sectors: [] },
   usSectors: { items: [] },
   hotStocks: { items: [] },
@@ -25,6 +27,7 @@ let requestController = null
 let loadSequence = 0
 let lastLoadedAt = 0
 let moneyFlowLastFetchAt = 0
+let marketBreadthLastFetchAt = 0
 
 function fallbackWithError(fallback, error) {
   return { ...fallback, error: String(error) }
@@ -70,7 +73,12 @@ async function loadIndices({ background = false } = {}) {
     const hasMoneyFlowRows = state.moneyFlow.inflow?.length || state.moneyFlow.outflow?.length
     const moneyFlowDue = !hasMoneyFlowRows
       || Date.now() - moneyFlowLastFetchAt >= MONEY_FLOW_REFRESH_INTERVAL_MS
+    const marketBreadthDue = !state.marketBreadth.timeline?.length
+      || Date.now() - marketBreadthLastFetchAt >= MARKET_BREADTH_REFRESH_INTERVAL_MS
     const requests = [
+      marketBreadthDue
+        ? fetchJson('/api/market_breadth', { latest: {}, timeline: [] }, controller.signal)
+        : Promise.resolve(state.marketBreadth),
       fetchJson('/api/sectors', { sectors: [] }, controller.signal),
       fetchJson('/api/us_sectors', { items: [] }, controller.signal),
       fetchJson('/api/hot_stocks', { items: [] }, controller.signal),
@@ -79,14 +87,18 @@ async function loadIndices({ background = false } = {}) {
         : Promise.resolve(state.moneyFlow),
       fetchJson('/api/market_flow', { total_inflow_yi: null }, controller.signal),
     ]
-    const [sectors, usSectors, hotStocks, moneyFlow, marketFlow] = await Promise.all(requests)
+    const [marketBreadth, sectors, usSectors, hotStocks, moneyFlow, marketFlow] = await Promise.all(requests)
     if (sequence !== loadSequence) return
+    state.marketBreadth = marketBreadth.error && state.marketBreadth.timeline?.length
+      ? { ...state.marketBreadth, error: marketBreadth.error }
+      : marketBreadth
     state.sectors = sectors
     state.usSectors = usSectors
     state.hotStocks = hotStocks
     state.moneyFlow = moneyFlow
     state.marketFlow = marketFlow
     if (moneyFlowDue && !moneyFlow.error) moneyFlowLastFetchAt = Date.now()
+    if (marketBreadthDue && !marketBreadth.error) marketBreadthLastFetchAt = Date.now()
     lastLoadedAt = Date.now()
   } catch (error) {
     if (error?.name === 'AbortError') return

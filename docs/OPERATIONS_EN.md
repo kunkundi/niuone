@@ -126,6 +126,8 @@ By default, industry fund flow is sampled only on A-share trading days during 09
 
 The **Main Fund Flow** ranking on the indices page and the fund-flow animation share Eastmoney's industry-board **Today Main Net Amount** metric (`f62`, converted from yuan to CNY 100 million) and the same 60-second cache. New snapshots and samples are stored in `industry_main_money_flow_cache.json` and `industry_main_flow_history.json`, respectively. Legacy files based on total inflow minus total outflow are retained but are never mixed into main-net playback.
 
+The A-share market-sentiment chart on the indices page reads one Tencent Shanghai/Shenzhen full-market snapshot every 60 seconds. It uses the returned current, high, upper-limit, and lower-limit prices to count sealed limit-ups, sealed limit-downs, and broken limit-ups; positive and negative quote changes produce the red and green counts. The universe includes ST stocks and excludes B shares, Beijing Stock Exchange listings, and securities without a valid current price. The background sampler runs only on A-share trading days during 09:30–11:30 and 13:00–15:00 China time and stores real observations in `market_breadth_history.json`. An incomplete batch or failed request retains the previous valid history instead of writing synthetic zeroes.
+
 ### 3.2 Practice-Strategy Scheduling and Process Ownership
 
 Individual practice strategies do not own separate candidate-scan timers. At every configured time, the B1 scheduler inside the Dashboard starts the shared scanner. The scanner reads `DASHBOARD_ACTIVE_STRATEGY` and runs only the scorers in that active suite. After a successful scan, the scheduled path synchronously runs the model assessment and simulated execution-layer checks.

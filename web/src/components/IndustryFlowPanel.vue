@@ -45,9 +45,9 @@ const progressText = computed(() => actualPlayback.value
   : `${animation.playing ? '播放' : '已暂停'} ${Math.round(displayedProgress.value * 100)}%`)
 
 function selectPanel(panel) {
-  if (!['index', 'market'].includes(panel)) return
+  if (!['index', 'market', 'market-breadth'].includes(panel)) return
   view.panel = panel
-  router.push({ path: '/indices', query: panel === 'market' ? { panel: 'market' } : {} })
+  router.push({ path: '/indices', query: panel === 'index' ? {} : { panel } })
 }
 
 function rowLabel(node, role) {
@@ -76,10 +76,11 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="indices-page">
-    <div class="indices-switch" role="group" aria-label="指数行情与资金流动切换">
+    <div class="indices-switch" role="group" aria-label="指数行情、资金流动与市场情绪切换">
       <button type="button" class="indices-switch-btn" aria-pressed="false" @click="selectPanel('index')">指数</button>
       <button type="button" class="indices-switch-btn" aria-pressed="false" @click="selectPanel('market')">行情</button>
       <button type="button" class="indices-switch-btn active" aria-pressed="true">资金流动</button>
+      <button type="button" class="indices-switch-btn" aria-pressed="false" @click="selectPanel('market-breadth')">市场情绪</button>
     </div>
 
     <div v-if="payload.loading && !payload.loaded" class="industry-flow-loading">正在加载行业资金流…</div>
