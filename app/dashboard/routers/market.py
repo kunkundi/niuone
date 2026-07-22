@@ -66,6 +66,14 @@ def create_market_router(
 
     router = APIRouter(include_in_schema=False)
 
+    def prepare_daily_money_flow_cache(ttl: int) -> None:
+        services.reset_daily_market_histories()
+        services.seed_api_cache_from_json_file(
+            "money_flow",
+            services.MONEY_FLOW_SNAPSHOT_FILE,
+            ttl,
+        )
+
     @router.api_route("/api/iwencai/dragon-tiger", methods=["GET", "HEAD"])
     async def iwencai_dragon_tiger(request: Request) -> Response:
         limited = await enforce_api_limits(request)
@@ -170,6 +178,7 @@ def create_market_router(
             producer=services.produce_market_breadth_data,
             edge_ttl=ttl,
             browser_ttl=15,
+            before_cache=services.reset_daily_market_histories,
         )
 
     @router.api_route("/api/sectors", methods=["GET", "HEAD"])
@@ -312,11 +321,7 @@ def create_market_router(
             producer=services.produce_money_flow_data,
             edge_ttl=ttl,
             browser_ttl=15,
-            before_cache=lambda: services.seed_api_cache_from_json_file(
-                "money_flow",
-                services.MONEY_FLOW_SNAPSHOT_FILE,
-                ttl,
-            ),
+            before_cache=lambda: prepare_daily_money_flow_cache(ttl),
         )
 
     @router.api_route("/api/industry-flow", methods=["GET", "HEAD"])
@@ -338,11 +343,7 @@ def create_market_router(
             ) if compact else services.produce_industry_flow_data,
             edge_ttl=ttl,
             browser_ttl=10,
-            before_cache=lambda: services.seed_api_cache_from_json_file(
-                "money_flow",
-                services.MONEY_FLOW_SNAPSHOT_FILE,
-                money_flow_ttl,
-            ),
+            before_cache=lambda: prepare_daily_money_flow_cache(money_flow_ttl),
         )
 
     @router.api_route("/api/market_flow", methods=["GET", "HEAD"])

@@ -211,6 +211,9 @@ class DashboardAuthTests(unittest.TestCase):
         self.original_admin_token_file = dashboard.ADMIN_TOKEN_FILE
         self.original_indices_snapshot_file = dashboard.INDICES_SNAPSHOT_FILE
         self.original_iwencai_snapshot_file = dashboard.IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE
+        self.original_market_breadth_history_file = dashboard.MARKET_BREADTH_HISTORY_FILE
+        self.original_industry_flow_history_file = dashboard.INDUSTRY_FLOW_HISTORY_FILE
+        self.original_money_flow_snapshot_file = dashboard.MONEY_FLOW_SNAPSHOT_FILE
         self.original_admin_password = dashboard.ADMIN_PASSWORD
         self.original_public_data_dir = dashboard.PUBLIC_DATA_DIR
         self.original_public_snapshot_publisher = dashboard.PUBLIC_SNAPSHOT_PUBLISHER
@@ -243,6 +246,9 @@ class DashboardAuthTests(unittest.TestCase):
         dashboard.CRON_STATE_DIR = self.tmp_path / 'cron' / 'state'
         dashboard.INDICES_SNAPSHOT_FILE = self.tmp_path / 'cron' / 'output' / 'indices_dashboard_cache.json'
         dashboard.IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE = self.tmp_path / 'cron' / 'output' / 'iwencai_dragon_tiger_latest.json'
+        dashboard.MARKET_BREADTH_HISTORY_FILE = self.tmp_path / 'cron' / 'output' / 'market_breadth_history.json'
+        dashboard.INDUSTRY_FLOW_HISTORY_FILE = self.tmp_path / 'cron' / 'output' / 'industry_main_flow_history.json'
+        dashboard.MONEY_FLOW_SNAPSHOT_FILE = self.tmp_path / 'cron' / 'output' / 'industry_main_money_flow_cache.json'
         dashboard.PUBLIC_DATA_DIR = self.tmp_path / 'public-data'
         dashboard.PUBLIC_SNAPSHOT_PUBLISHER = None
         dashboard.API_RESPONSE_CACHE.clear()
@@ -259,6 +265,9 @@ class DashboardAuthTests(unittest.TestCase):
         dashboard.ADMIN_TOKEN_FILE = self.original_admin_token_file
         dashboard.INDICES_SNAPSHOT_FILE = self.original_indices_snapshot_file
         dashboard.IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE = self.original_iwencai_snapshot_file
+        dashboard.MARKET_BREADTH_HISTORY_FILE = self.original_market_breadth_history_file
+        dashboard.INDUSTRY_FLOW_HISTORY_FILE = self.original_industry_flow_history_file
+        dashboard.MONEY_FLOW_SNAPSHOT_FILE = self.original_money_flow_snapshot_file
         dashboard.ADMIN_PASSWORD = self.original_admin_password
         dashboard.PUBLIC_DATA_DIR = self.original_public_data_dir
         dashboard.PUBLIC_SNAPSHOT_PUBLISHER = self.original_public_snapshot_publisher
@@ -1803,20 +1812,26 @@ console.log(JSON.stringify(result));
                 'generated_at': '2026-07-20 10:00:00',
                 'items': [{'name': '半导体', 'net_flow_yi': 12}],
             }
-            first = dashboard.record_industry_flow_sample(sample)
-            second = dashboard.record_industry_flow_sample(sample)
+            first = dashboard.record_industry_flow_sample(
+                sample,
+                now=datetime(2026, 7, 20, 10, 0),
+            )
+            second = dashboard.record_industry_flow_sample(
+                sample,
+                now=datetime(2026, 7, 20, 10, 0),
+            )
             too_soon = dashboard.record_industry_flow_sample({
                 'generated_at': '2026-07-20 10:01:00',
                 'items': [{'name': '银行', 'net_flow_yi': -3}],
-            })
+            }, now=datetime(2026, 7, 20, 10, 1))
             due = dashboard.record_industry_flow_sample({
                 'generated_at': '2026-07-20 10:02:00',
                 'items': [{'name': '银行', 'net_flow_yi': -4}],
-            })
+            }, now=datetime(2026, 7, 20, 10, 2))
             lunch = dashboard.record_industry_flow_sample({
                 'generated_at': '2026-07-20 12:00:00',
                 'items': [{'name': '银行', 'net_flow_yi': -5}],
-            })
+            }, now=datetime(2026, 7, 20, 12, 0))
             stored = json.loads(dashboard.INDUSTRY_FLOW_HISTORY_FILE.read_text(encoding='utf-8'))
 
             self.assertEqual(len(first), 1)

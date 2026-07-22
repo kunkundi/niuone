@@ -36,6 +36,9 @@ class FastApiDashboardTests(unittest.TestCase):
         self.original_legacy_stats_db = self.legacy.LEGACY_STATS_DB
         self.original_stats_signature = self.legacy.VISIT_STATS_INIT_SIGNATURE
         self.original_cron_output_dir = self.legacy.CRON_OUTPUT_DIR
+        self.original_market_breadth_history_file = self.legacy.MARKET_BREADTH_HISTORY_FILE
+        self.original_industry_flow_history_file = self.legacy.INDUSTRY_FLOW_HISTORY_FILE
+        self.original_money_flow_snapshot_file = self.legacy.MONEY_FLOW_SNAPSHOT_FILE
         self.legacy.PUBLIC_DATA_DIR = self.root / "public-data"
         self.legacy.PUBLIC_SNAPSHOT_PUBLISHER = None
         self.legacy.STATS_DB = self.root / "dashboard-stats.db"
@@ -43,6 +46,9 @@ class FastApiDashboardTests(unittest.TestCase):
         self.legacy.VISIT_STATS_INIT_SIGNATURE = None
         self.legacy.CRON_OUTPUT_DIR = self.root / "cron-output"
         self.legacy.CRON_OUTPUT_DIR.mkdir()
+        self.legacy.MARKET_BREADTH_HISTORY_FILE = self.legacy.CRON_OUTPUT_DIR / "market_breadth_history.json"
+        self.legacy.INDUSTRY_FLOW_HISTORY_FILE = self.legacy.CRON_OUTPUT_DIR / "industry_main_flow_history.json"
+        self.legacy.MONEY_FLOW_SNAPSHOT_FILE = self.legacy.CRON_OUTPUT_DIR / "industry_main_money_flow_cache.json"
         self.legacy.RATE_LIMIT_BUCKETS.clear()
         self.legacy.public_snapshot_publisher().publish(
             {"account": {"cash": 100}},
@@ -64,6 +70,9 @@ class FastApiDashboardTests(unittest.TestCase):
         self.legacy.LEGACY_STATS_DB = self.original_legacy_stats_db
         self.legacy.VISIT_STATS_INIT_SIGNATURE = self.original_stats_signature
         self.legacy.CRON_OUTPUT_DIR = self.original_cron_output_dir
+        self.legacy.MARKET_BREADTH_HISTORY_FILE = self.original_market_breadth_history_file
+        self.legacy.INDUSTRY_FLOW_HISTORY_FILE = self.original_industry_flow_history_file
+        self.legacy.MONEY_FLOW_SNAPSHOT_FILE = self.original_money_flow_snapshot_file
         self.legacy.RATE_LIMIT_BUCKETS.clear()
         self.temp.cleanup()
 
@@ -149,6 +158,7 @@ class FastApiDashboardTests(unittest.TestCase):
         with (
             patch.object(self.legacy, "cache_get_json", side_effect=cached_payload),
             patch.object(self.legacy, "seed_api_cache_from_json_file", return_value=False),
+            patch.object(self.legacy, "reset_daily_market_histories", return_value=False) as reset_daily,
         ):
             for path, cache_key in (
                 ("/api/messages?limit=25&offset=50&category=x_monitor", "messages:v4:x_monitor:25:50"),
@@ -197,6 +207,7 @@ class FastApiDashboardTests(unittest.TestCase):
             )
             forced_candidates = self.client.get("/api/practice_candidates?force=1")
 
+        self.assertEqual(reset_daily.call_count, 4)
         self.assertEqual(seen_keys, [
             "messages:v4:x_monitor:25:50",
             "messages-revision:v1:market_monitor",

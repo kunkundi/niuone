@@ -159,6 +159,7 @@ def create_app(
             legacy.start_b1_scheduler()
             legacy.start_pending_decision_executor()
             legacy.start_practice_equity_heartbeat()
+            legacy.start_daily_market_history_reset()
             legacy.start_market_breadth_sampler()
             legacy.start_industry_flow_sampler()
             projection_enabled = str(

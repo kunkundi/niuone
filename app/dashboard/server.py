@@ -256,6 +256,7 @@ INDUSTRY_FLOW_SAMPLER_THREAD: threading.Thread | None = None
 MARKET_BREADTH_HISTORY_LOCK = threading.RLock()
 MARKET_BREADTH_REFRESH_LOCK = threading.Lock()
 MARKET_BREADTH_SAMPLER_THREAD: threading.Thread | None = None
+DAILY_MARKET_HISTORY_RESET_THREAD: threading.Thread | None = None
 MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS = MARKET_BREADTH_DEFAULT_SAMPLE_INTERVAL_SECONDS
 INDUSTRY_FLOW_SAMPLE_INTERVAL_SECONDS = _bounded_int_value(
     os.environ.get("DASHBOARD_INDUSTRY_FLOW_SAMPLE_INTERVAL_SECONDS"),
@@ -2028,23 +2029,152 @@ def is_market_breadth_sampling_window(now: datetime | None = None) -> bool:
     )
 
 
-def load_market_breadth_samples() -> list[dict[str, Any]]:
+def _daily_payload_date_keys(payload: dict[str, Any]) -> set[str]:
+    keys = {
+        str(payload.get(field) or "")[:10]
+        for field in ("date", "retention_date", "generated_at")
+        if str(payload.get(field) or "")[:10]
+    }
+    for raw in payload.get("samples") or []:
+        if not isinstance(raw, dict):
+            continue
+        value = str(raw.get("generated_at") or "")[:10]
+        if value:
+            keys.add(value)
+    return keys
+
+
+def _empty_market_breadth_history(day: str) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "date": day,
+        "interval_seconds": MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
+        "samples": [],
+    }
+
+
+def _empty_industry_flow_history(day: str) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "date": day,
+        "interval_seconds": INDUSTRY_FLOW_SAMPLE_INTERVAL_SECONDS,
+        "samples": [],
+    }
+
+
+def _empty_money_flow_snapshot(day: str) -> dict[str, Any]:
+    return {
+        "schema_version": 2,
+        "metric": "industry_main_net_flow",
+        "metric_label": "今日主力净额",
+        "retention_date": day,
+        "inflow": [],
+        "outflow": [],
+    }
+
+
+def reset_daily_market_histories(now: datetime | None = None) -> bool:
+    """Atomically clear market-flow and breadth data from prior Beijing dates."""
+
+    day = current_cn_date_key(now)
+    changed = False
+    with MARKET_BREADTH_HISTORY_LOCK:
+        history = read_json_cache(MARKET_BREADTH_HISTORY_FILE, None)
+        if history is not None and _daily_payload_date_keys(history) != {day}:
+            write_json_cache(MARKET_BREADTH_HISTORY_FILE, _empty_market_breadth_history(day))
+            changed = True
+    with INDUSTRY_FLOW_HISTORY_LOCK:
+        history = read_json_cache(INDUSTRY_FLOW_HISTORY_FILE, None)
+        if history is not None and _daily_payload_date_keys(history) != {day}:
+            write_json_cache(INDUSTRY_FLOW_HISTORY_FILE, _empty_industry_flow_history(day))
+            changed = True
+        snapshot = read_json_cache(MONEY_FLOW_SNAPSHOT_FILE, None)
+        if snapshot is not None and _daily_payload_date_keys(snapshot) != {day}:
+            write_json_cache(MONEY_FLOW_SNAPSHOT_FILE, _empty_money_flow_snapshot(day))
+            changed = True
+    if changed:
+        invalidate_api_cache("market_breadth", "money_flow")
+        invalidate_api_cache_prefix("industry_flow")
+    return changed
+
+
+def seconds_until_next_cn_midnight(now: datetime | None = None) -> float:
+    current = now or current_cn_datetime()
+    next_midnight = datetime.combine(
+        current.date() + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=current.tzinfo,
+    )
+    return max(0.1, (next_midnight - current).total_seconds())
+
+
+def daily_market_history_reset_loop(
+    *,
+    stop_event: threading.Event | None = None,
+) -> None:
+    """Clear both daily chart histories at each Beijing midnight."""
+
+    stop_event = stop_event or threading.Event()
+    while not stop_event.is_set():
+        if stop_event.wait(seconds_until_next_cn_midnight()):
+            return
+        reset_daily_market_histories(current_cn_datetime())
+
+
+def start_daily_market_history_reset() -> None:
+    global DAILY_MARKET_HISTORY_RESET_THREAD
+    reset_daily_market_histories(current_cn_datetime())
+    if (
+        DAILY_MARKET_HISTORY_RESET_THREAD
+        and DAILY_MARKET_HISTORY_RESET_THREAD.is_alive()
+    ):
+        return
+    DAILY_MARKET_HISTORY_RESET_THREAD = threading.Thread(
+        target=daily_market_history_reset_loop,
+        name="daily-market-history-reset",
+        daemon=True,
+    )
+    DAILY_MARKET_HISTORY_RESET_THREAD.start()
+    print("Daily market history reset enabled: 00:00 Asia/Shanghai", flush=True)
+
+
+def load_market_breadth_samples(
+    *,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    resolved_now = now or current_cn_datetime()
+    current_day = current_cn_date_key(resolved_now)
+    reset_daily_market_histories(resolved_now)
     with MARKET_BREADTH_HISTORY_LOCK:
         history = read_json_cache(MARKET_BREADTH_HISTORY_FILE, None) or {}
         samples: list[dict[str, Any]] = []
         for raw in history.get("samples") or []:
             compact = compact_market_breadth_sample(raw if isinstance(raw, dict) else None)
-            if compact is not None and is_market_breadth_session_timestamp(compact["generated_at"]):
+            if (
+                compact is not None
+                and compact["generated_at"][:10] == current_day
+                and is_market_breadth_session_timestamp(compact["generated_at"])
+            ):
                 samples.append(compact)
         return samples
 
 
-def record_market_breadth_sample(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+def record_market_breadth_sample(
+    snapshot: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
     """Persist one complete market snapshot without inventing missing values."""
 
+    resolved_now = now or current_cn_datetime()
+    reset_daily_market_histories(resolved_now)
     compact = compact_market_breadth_sample(snapshot)
-    if compact is None or not is_market_breadth_session_timestamp(compact["generated_at"]):
-        return load_market_breadth_samples()
+    if (
+        compact is None
+        or compact["generated_at"][:10] != current_cn_date_key(resolved_now)
+        or not is_market_breadth_session_timestamp(compact["generated_at"])
+    ):
+        return load_market_breadth_samples(now=resolved_now)
     with MARKET_BREADTH_HISTORY_LOCK:
         history = read_json_cache(MARKET_BREADTH_HISTORY_FILE, None) or {}
         updated = append_market_breadth_sample(
@@ -2061,8 +2191,12 @@ def record_market_breadth_sample(snapshot: dict[str, Any]) -> list[dict[str, Any
         ]
 
 
-def _market_breadth_failure_payload(error: Exception) -> dict[str, Any]:
-    samples = load_market_breadth_samples()
+def _market_breadth_failure_payload(
+    error: Exception,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    samples = load_market_breadth_samples(now=now)
     if not samples:
         return build_market_breadth_payload({
             "error": f"{type(error).__name__}: {error}",
@@ -2082,7 +2216,7 @@ def _market_breadth_failure_payload(error: Exception) -> dict[str, Any]:
 def _cached_market_breadth_payload(now: datetime) -> dict[str, Any] | None:
     """Reuse a fresh sample, or the last close while the market is not sampling."""
 
-    samples = load_market_breadth_samples()
+    samples = load_market_breadth_samples(now=now)
     if not samples:
         return None
     latest = samples[-1]
@@ -2112,19 +2246,37 @@ def produce_market_breadth_data() -> dict[str, Any]:
     """Fetch, validate, persist, and project one market-breadth observation."""
 
     with MARKET_BREADTH_REFRESH_LOCK:
-        cached = _cached_market_breadth_payload(current_cn_datetime())
+        current = current_cn_datetime()
+        reset_daily_market_histories(current)
+        cached = _cached_market_breadth_payload(current)
         if cached is not None:
             return cached
+        if not is_market_breadth_sampling_window(current):
+            return build_market_breadth_payload(
+                {},
+                history_samples=[],
+                interval_seconds=MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
+            )
         try:
             snapshot = fetch_tencent_market_breadth()
-            samples = record_market_breadth_sample(snapshot)
+            samples = record_market_breadth_sample(snapshot, now=current)
+            compact = compact_market_breadth_sample(snapshot)
+            if (
+                compact is None
+                or compact["generated_at"][:10] != current_cn_date_key(current)
+            ):
+                return build_market_breadth_payload(
+                    {},
+                    history_samples=samples,
+                    interval_seconds=MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
+                )
             return build_market_breadth_payload(
                 snapshot,
                 history_samples=samples,
                 interval_seconds=MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
             )
         except Exception as exc:
-            return _market_breadth_failure_payload(exc)
+            return _market_breadth_failure_payload(exc, now=current)
 
 
 def refresh_market_breadth_sample() -> bool:
@@ -2196,7 +2348,11 @@ def is_industry_flow_sampling_window(now: datetime | None = None) -> bool:
     )
 
 
-def _filter_industry_flow_session_samples(samples: list[Any]) -> list[dict[str, Any]]:
+def _filter_industry_flow_session_samples(
+    samples: list[Any],
+    *,
+    retention_day: str = "",
+) -> list[dict[str, Any]]:
     filtered: list[dict[str, Any]] = []
     for item in samples:
         if not isinstance(item, dict):
@@ -2206,31 +2362,52 @@ def _filter_industry_flow_session_samples(samples: list[Any]) -> list[dict[str, 
             sample_time = datetime.strptime(generated_at, "%Y-%m-%d %H:%M:%S")
         except ValueError:
             continue
+        if retention_day and generated_at[:10] != retention_day:
+            continue
         if is_industry_flow_sampling_window(sample_time):
             filtered.append(item)
     return filtered
 
 
-def load_industry_flow_samples() -> list[dict[str, Any]]:
+def load_industry_flow_samples(
+    *,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    resolved_now = now or current_cn_datetime()
+    current_day = current_cn_date_key(resolved_now)
+    reset_daily_market_histories(resolved_now)
     with INDUSTRY_FLOW_HISTORY_LOCK:
         history = read_json_cache(INDUSTRY_FLOW_HISTORY_FILE, None) or {}
-        return _filter_industry_flow_session_samples(history.get("samples") or [])
+        return _filter_industry_flow_session_samples(
+            history.get("samples") or [],
+            retention_day=current_day,
+        )
 
 
-def record_industry_flow_sample(money_flow: dict[str, Any]) -> list[dict[str, Any]]:
+def record_industry_flow_sample(
+    money_flow: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
     """Persist one valid sample without replacing earlier same-day observations."""
 
+    resolved_now = now or current_cn_datetime()
+    current_day = current_cn_date_key(resolved_now)
+    reset_daily_market_histories(resolved_now)
     generated_at = str(money_flow.get("generated_at") or "")
     try:
         sample_time = datetime.strptime(generated_at, "%Y-%m-%d %H:%M:%S")
     except ValueError:
-        return load_industry_flow_samples()
-    if not is_industry_flow_sampling_window(sample_time):
-        return load_industry_flow_samples()
+        return load_industry_flow_samples(now=resolved_now)
+    if generated_at[:10] != current_day or not is_industry_flow_sampling_window(sample_time):
+        return load_industry_flow_samples(now=resolved_now)
 
     with INDUSTRY_FLOW_HISTORY_LOCK:
         history = read_json_cache(INDUSTRY_FLOW_HISTORY_FILE, None) or {}
-        existing_samples = _filter_industry_flow_session_samples(history.get("samples") or [])
+        existing_samples = _filter_industry_flow_session_samples(
+            history.get("samples") or [],
+            retention_day=current_day,
+        )
         same_day_samples = [
             item for item in existing_samples
             if str(item.get("generated_at") or "")[:10] == generated_at[:10]
@@ -2250,7 +2427,10 @@ def record_industry_flow_sample(money_flow: dict[str, Any]) -> list[dict[str, An
         )
         if updated != history and updated.get("samples"):
             write_json_cache(INDUSTRY_FLOW_HISTORY_FILE, updated)
-        return _filter_industry_flow_session_samples(updated.get("samples") or [])
+        return _filter_industry_flow_session_samples(
+            updated.get("samples") or [],
+            retention_day=current_day,
+        )
 
 
 def refresh_industry_flow_sample() -> bool:
@@ -2657,13 +2837,24 @@ def produce_money_flow_data() -> dict[str, Any]:
 
 
 def produce_industry_flow_data() -> dict[str, Any]:
+    current = current_cn_datetime()
+    current_day = current_cn_date_key(current)
+    reset_daily_market_histories(current)
     money_flow = cached_json_data(
         "money_flow",
         API_TTLS["money_flow"],
         produce_money_flow_data,
         {"inflow": [], "outflow": []},
     )
-    history_samples = record_industry_flow_sample(money_flow)
+    history_samples = record_industry_flow_sample(money_flow, now=current)
+    if str(money_flow.get("generated_at") or "")[:10] != current_day:
+        money_flow = {
+            "schema_version": 2,
+            "metric": "industry_main_net_flow",
+            "metric_label": "今日主力净额",
+            "inflow": [],
+            "outflow": [],
+        }
     return build_industry_flow_payload(
         money_flow,
         side_limit=INDUSTRY_FLOW_SIDE_LIMIT,

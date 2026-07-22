@@ -55,6 +55,45 @@ FIELDS = (
 )
 
 
+def _beijing_now() -> datetime:
+    return datetime.now(BEIJING_TZ)
+
+
+def _empty_payload() -> dict[str, Any]:
+    return {
+        "schema_version": 2,
+        "metric": METRIC_NAME,
+        "metric_label": METRIC_LABEL,
+        "source": SOURCE_NAME,
+        "source_url": SOURCE_URL,
+        "retention_date": _beijing_now().strftime("%Y-%m-%d"),
+        "inflow": [],
+        "outflow": [],
+    }
+
+
+def _is_current_day_payload(payload: dict[str, Any]) -> bool:
+    generated_at = str(payload.get("generated_at") or "")
+    if generated_at:
+        return generated_at[:10] == _beijing_now().strftime("%Y-%m-%d")
+    return not payload.get("inflow") and not payload.get("outflow")
+
+
+def _read_current_day_cache(
+    path: Path,
+    ttl_seconds: int | float | None,
+) -> dict[str, Any] | None:
+    payload = read_json_cache(path, ttl_seconds)
+    if payload is None or not _is_current_day_payload(payload):
+        return None
+    return payload
+
+
+def _compute_current_day() -> dict[str, Any]:
+    payload = _compute()
+    return payload if _is_current_day_payload(payload) else _empty_payload()
+
+
 def _finite_number(value: Any) -> float | None:
     try:
         text = str(value).replace(",", "").replace("%", "").strip()
@@ -245,21 +284,13 @@ def _compute() -> dict[str, Any]:
 
 
 def fetch_money_flow(force_refresh: bool = False) -> dict[str, Any]:
-    empty = {
-        "schema_version": 2,
-        "metric": METRIC_NAME,
-        "metric_label": METRIC_LABEL,
-        "source": SOURCE_NAME,
-        "source_url": SOURCE_URL,
-        "inflow": [],
-        "outflow": [],
-    }
+    empty = _empty_payload()
     return load_cached_payload(
         CACHE_PATH,
         CACHE_TTL,
-        compute=_compute,
+        compute=_compute_current_day,
         empty=empty,
-        read_cache=read_json_cache,
+        read_cache=_read_current_day_cache,
         write_cache=write_json_cache,
         force_refresh=force_refresh,
     )

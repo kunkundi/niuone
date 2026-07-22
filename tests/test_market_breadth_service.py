@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import tempfile
 import unittest
@@ -116,6 +117,121 @@ class TencentMarketBreadthTests(unittest.TestCase):
 
 
 class MarketBreadthHistoryTests(unittest.TestCase):
+    def test_midnight_reset_clears_daily_market_files_and_cached_payloads(self):
+        original_breadth_file = dashboard.MARKET_BREADTH_HISTORY_FILE
+        original_flow_file = dashboard.INDUSTRY_FLOW_HISTORY_FILE
+        original_money_file = dashboard.MONEY_FLOW_SNAPSHOT_FILE
+        try:
+            with tempfile.TemporaryDirectory(prefix="niuone-daily-market-reset-") as temp_dir:
+                root = Path(temp_dir)
+                dashboard.MARKET_BREADTH_HISTORY_FILE = root / "market_breadth.json"
+                dashboard.INDUSTRY_FLOW_HISTORY_FILE = root / "industry_flow.json"
+                dashboard.MONEY_FLOW_SNAPSHOT_FILE = root / "money_flow.json"
+                dashboard.MARKET_BREADTH_HISTORY_FILE.write_text(json.dumps({
+                    "date": "2026-07-22",
+                    "samples": [sample("2026-07-22 15:00:00")],
+                }), encoding="utf-8")
+                dashboard.INDUSTRY_FLOW_HISTORY_FILE.write_text(json.dumps({
+                    "date": "2026-07-22",
+                    "samples": [{
+                        "generated_at": "2026-07-22 15:00:00",
+                        "items": [{"name": "半导体", "net_flow_yi": 12}],
+                    }],
+                }), encoding="utf-8")
+                dashboard.MONEY_FLOW_SNAPSHOT_FILE.write_text(json.dumps({
+                    "generated_at": "2026-07-22 15:00:00",
+                    "inflow": [{"name": "半导体", "net_flow_yi": 12}],
+                    "outflow": [],
+                }), encoding="utf-8")
+
+                changed = dashboard.reset_daily_market_histories(
+                    datetime(2026, 7, 23, 0, 0, 0)
+                )
+                repeated = dashboard.reset_daily_market_histories(
+                    datetime(2026, 7, 23, 0, 1, 0)
+                )
+
+                breadth = json.loads(dashboard.MARKET_BREADTH_HISTORY_FILE.read_text(encoding="utf-8"))
+                flow = json.loads(dashboard.INDUSTRY_FLOW_HISTORY_FILE.read_text(encoding="utf-8"))
+                money = json.loads(dashboard.MONEY_FLOW_SNAPSHOT_FILE.read_text(encoding="utf-8"))
+                self.assertTrue(changed)
+                self.assertFalse(repeated)
+                self.assertEqual(breadth["date"], "2026-07-23")
+                self.assertEqual(breadth["samples"], [])
+                self.assertEqual(flow["date"], "2026-07-23")
+                self.assertEqual(flow["samples"], [])
+                self.assertEqual(money["retention_date"], "2026-07-23")
+                self.assertEqual(money["inflow"], [])
+                self.assertEqual(money["outflow"], [])
+        finally:
+            dashboard.MARKET_BREADTH_HISTORY_FILE = original_breadth_file
+            dashboard.INDUSTRY_FLOW_HISTORY_FILE = original_flow_file
+            dashboard.MONEY_FLOW_SNAPSHOT_FILE = original_money_file
+
+    def test_after_midnight_apis_do_not_refetch_or_publish_yesterday_data(self):
+        original_breadth_file = dashboard.MARKET_BREADTH_HISTORY_FILE
+        original_flow_file = dashboard.INDUSTRY_FLOW_HISTORY_FILE
+        original_money_file = dashboard.MONEY_FLOW_SNAPSHOT_FILE
+        try:
+            with tempfile.TemporaryDirectory(prefix="niuone-after-midnight-") as temp_dir:
+                root = Path(temp_dir)
+                dashboard.MARKET_BREADTH_HISTORY_FILE = root / "market_breadth.json"
+                dashboard.INDUSTRY_FLOW_HISTORY_FILE = root / "industry_flow.json"
+                dashboard.MONEY_FLOW_SNAPSHOT_FILE = root / "money_flow.json"
+                yesterday_breadth = {
+                    "date": "2026-07-22",
+                    "samples": [sample("2026-07-22 15:00:00")],
+                }
+                dashboard.MARKET_BREADTH_HISTORY_FILE.write_text(
+                    json.dumps(yesterday_breadth), encoding="utf-8"
+                )
+                yesterday_flow = {
+                    "generated_at": "2026-07-22 15:00:00",
+                    "inflow": [{"name": "半导体", "net_flow_yi": 12}],
+                    "outflow": [{"name": "银行", "net_flow_yi": -6}],
+                }
+                with patch.object(
+                    dashboard,
+                    "current_cn_datetime",
+                    return_value=datetime(2026, 7, 23, 0, 1, 0),
+                ), patch.object(
+                    dashboard,
+                    "fetch_tencent_market_breadth",
+                ) as fetch, patch.object(
+                    dashboard,
+                    "cached_json_data",
+                    return_value=yesterday_flow,
+                ):
+                    breadth_payload = dashboard.produce_market_breadth_data()
+                    flow_payload = dashboard.produce_industry_flow_data()
+
+                fetch.assert_not_called()
+                self.assertFalse(breadth_payload["available"])
+                self.assertEqual(breadth_payload["timeline"], [])
+                self.assertFalse(flow_payload["available"])
+                self.assertEqual(flow_payload["nodes"], [])
+                self.assertEqual(flow_payload["timeline"], [])
+        finally:
+            dashboard.MARKET_BREADTH_HISTORY_FILE = original_breadth_file
+            dashboard.INDUSTRY_FLOW_HISTORY_FILE = original_flow_file
+            dashboard.MONEY_FLOW_SNAPSHOT_FILE = original_money_file
+
+    def test_daily_reset_wait_is_aligned_to_next_beijing_midnight(self):
+        self.assertEqual(
+            dashboard.seconds_until_next_cn_midnight(datetime(2026, 7, 22, 23, 59, 30)),
+            30,
+        )
+        self.assertEqual(
+            dashboard.seconds_until_next_cn_midnight(datetime(2026, 7, 23, 0, 0, 0)),
+            24 * 60 * 60,
+        )
+        self.assertEqual(
+            dashboard.seconds_until_next_cn_midnight(
+                datetime(2026, 7, 22, 23, 59, 30, tzinfo=dashboard.CN_TZ)
+            ),
+            30,
+        )
+
     def test_history_replaces_same_timestamp_and_resets_on_next_day(self):
         history = append_market_breadth_sample({}, sample("2026-07-22 09:30:00"))
         history = append_market_breadth_sample(
@@ -174,7 +290,8 @@ class MarketBreadthHistoryTests(unittest.TestCase):
             with tempfile.TemporaryDirectory(prefix="niuone-market-breadth-") as temp_dir:
                 dashboard.MARKET_BREADTH_HISTORY_FILE = Path(temp_dir) / "history.json"
                 recorded = dashboard.record_market_breadth_sample(
-                    sample("2026-07-22 10:00:00", red=3456, green=1544)
+                    sample("2026-07-22 10:00:00", red=3456, green=1544),
+                    now=datetime(2026, 7, 22, 10, 0),
                 )
                 with patch.object(
                     dashboard,
@@ -202,7 +319,8 @@ class MarketBreadthHistoryTests(unittest.TestCase):
             with tempfile.TemporaryDirectory(prefix="niuone-market-breadth-") as temp_dir:
                 dashboard.MARKET_BREADTH_HISTORY_FILE = Path(temp_dir) / "history.json"
                 dashboard.record_market_breadth_sample(
-                    sample("2026-07-22 10:00:00", red=3200, green=1800)
+                    sample("2026-07-22 10:00:00", red=3200, green=1800),
+                    now=datetime(2026, 7, 22, 10, 0),
                 )
                 with patch.object(
                     dashboard,
