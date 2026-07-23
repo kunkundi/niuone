@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing strict SemVer tag to publish
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -22,24 +28,35 @@ jobs:
       - name: Check out release source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Verify release tag and commit
+        id: release
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "Release tag must use strict SemVer format vMAJOR.MINOR.PATCH: $RELEASE_TAG" >&2
             exit 1
           fi
+          git fetch --force --tags origin
           git fetch --no-tags origin \
             "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" "refs/remotes/origin/$DEFAULT_BRANCH"; then
-            echo "Release commit $GITHUB_SHA is not on $DEFAULT_BRANCH" >&2
+          release_commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          checked_out_commit="$(git rev-parse HEAD)"
+          if [[ "$checked_out_commit" != "$release_commit" ]]; then
+            echo "Checked out commit $checked_out_commit does not match $RELEASE_TAG ($release_commit)" >&2
             exit 1
           fi
+          if ! git merge-base --is-ancestor "$release_commit" "refs/remotes/origin/$DEFAULT_BRANCH"; then
+            echo "Release commit $release_commit is not on $DEFAULT_BRANCH" >&2
+            exit 1
+          fi
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "commit=$release_commit" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -106,12 +123,13 @@ jobs:
           images: docker.io/${{ vars.DOCKERHUB_USERNAME }}/niuone
           flavor: latest=false
           tags: |
-            type=raw,value=${{ github.ref_name }}
-            type=semver,pattern={{version}}
+            type=raw,value=${{ steps.release.outputs.tag }}
+            type=semver,pattern={{version}},value=${{ steps.release.outputs.tag }}
           labels: |
             org.opencontainers.image.title=NiuOne
             org.opencontainers.image.description=Local-first market research dashboard and automation workspace
             org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.revision=${{ steps.release.outputs.commit }}
 
       - name: Build smoke-test image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -123,7 +141,7 @@ jobs:
           load: true
           tags: niuone:smoke
           build-args: |
-            NIUONE_VERSION=${{ github.ref_name }}
+            NIUONE_VERSION=${{ steps.release.outputs.tag }}
           cache-from: type=gha,scope=niuone-release
 
       - name: Smoke test container
@@ -136,7 +154,9 @@ jobs:
           trap cleanup EXIT
           ready=0
           for _ in {1..120}; do
-            if curl --fail --silent --show-error http://127.0.0.1:18787/healthz >/dev/null; then
+            if curl --fail --silent http://127.0.0.1:18787/healthz >/dev/null \
+              && curl --fail --silent \
+                'http://127.0.0.1:18787/api/v2/public/latest' >/dev/null; then
               ready=1
               break
             fi
@@ -146,8 +166,6 @@ jobs:
             docker logs niuone-smoke >&2
             exit 1
           fi
-          curl --fail --silent --show-error \
-            'http://127.0.0.1:18787/api/v2/public/latest' >/dev/null
 
       - name: Build and push multi-platform image
         id: build
@@ -161,7 +179,7 @@ jobs:
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           build-args: |
-            NIUONE_VERSION=${{ github.ref_name }}
+            NIUONE_VERSION=${{ steps.release.outputs.tag }}
           cache-from: type=gha,scope=niuone-release
           cache-to: type=gha,scope=niuone-release,mode=max
           provenance: mode=max
@@ -172,7 +190,7 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           IMAGE_NAME: docker.io/${{ vars.DOCKERHUB_USERNAME }}/niuone
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           git fetch --force --tags origin
           highest_tag=""

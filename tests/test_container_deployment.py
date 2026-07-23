@@ -132,6 +132,9 @@ print(json.dumps(result))
         text = path.read_text(encoding="utf-8")
         workflow = yaml.load(text, Loader=yaml.BaseLoader)
         self.assertEqual(workflow["on"]["push"]["tags"], ["v*.*.*"])
+        dispatch_input = workflow["on"]["workflow_dispatch"]["inputs"]["release_tag"]
+        self.assertEqual(dispatch_input["required"], "true")
+        self.assertEqual(dispatch_input["type"], "string")
         self.assertEqual(workflow["permissions"]["contents"], "read")
         uses = [step["uses"] for step in workflow["jobs"]["publish"]["steps"] if "uses" in step]
         for action in uses:
@@ -141,7 +144,34 @@ print(json.dumps(result))
         self.assertIn('DOCKERHUB_USERNAME" != "kunkundi', text)
         self.assertIn("linux/amd64,linux/arm64", text)
         self.assertIn("docker.io/${{ vars.DOCKERHUB_USERNAME }}/niuone", text)
-        self.assertEqual(text.count("NIUONE_VERSION=${{ github.ref_name }}"), 2)
+        self.assertEqual(text.count("NIUONE_VERSION=${{ steps.release.outputs.tag }}"), 2)
+
+    def test_manual_release_checks_out_and_verifies_the_existing_tag(self):
+        path = ROOT / ".github" / "workflows" / "docker-publish.yml"
+        workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        steps = workflow["jobs"]["publish"]["steps"]
+        checkout = next(step for step in steps if step["name"] == "Check out release source")
+        verification = next(
+            step for step in steps if step["name"] == "Verify release tag and commit"
+        )
+        self.assertIn("format('refs/tags/{0}', inputs.release_tag)", checkout["with"]["ref"])
+        self.assertIn(
+            'release_commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"',
+            verification["run"],
+        )
+        self.assertIn('checked_out_commit="$(git rev-parse HEAD)"', verification["run"])
+        self.assertIn('echo "tag=$RELEASE_TAG"', verification["run"])
+
+    def test_release_smoke_test_waits_for_public_snapshot(self):
+        path = ROOT / ".github" / "workflows" / "docker-publish.yml"
+        workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        steps = workflow["jobs"]["publish"]["steps"]
+        smoke_test = next(
+            step["run"] for step in steps if step.get("name") == "Smoke test container"
+        )
+        retry_loop = smoke_test.split("for _ in {1..120}; do", 1)[1].split("done", 1)[0]
+        self.assertIn("/healthz", retry_loop)
+        self.assertIn("/api/v2/public/latest", retry_loop)
 
 
 if __name__ == "__main__":
