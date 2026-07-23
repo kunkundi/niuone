@@ -23,7 +23,10 @@ from zoneinfo import ZoneInfo
 
 from dashboard_json_cache import read_json_cache, write_json_cache
 from niuone_paths import get_dashboard_home
-from dashboard.apis.market_retention import market_retention_date_key
+from dashboard.apis.market_retention import (
+    MARKET_RETENTION_ROLLOVER_HOUR,
+    market_retention_date_key,
+)
 
 if __package__ == "app":
     from .dashboard.apis.cache import load_cached_payload
@@ -98,7 +101,27 @@ def _read_current_day_cache(
 
 def _compute_current_day() -> dict[str, Any]:
     payload = _compute()
-    return payload if _is_current_day_payload(payload) else _empty_payload()
+    if (
+        _is_current_day_payload(payload)
+        and payload.get("inflow")
+        and payload.get("outflow")
+    ):
+        return payload
+
+    now = _beijing_now()
+    retained_day = market_retention_date_key(now)
+    generated_day = str(payload.get("generated_at") or "")[:10]
+    if (
+        now.hour >= MARKET_RETENTION_ROLLOVER_HOUR
+        and generated_day != retained_day
+    ):
+        return _empty_payload()
+
+    raise RuntimeError(
+        "industry main-flow refresh is not usable: "
+        f"source date {generated_day or 'missing'} does not match retained market date "
+        f"{retained_day}, or the rankings are incomplete"
+    )
 
 
 def _finite_number(value: Any) -> float | None:

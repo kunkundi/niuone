@@ -71,6 +71,56 @@ class MoneyFlowServiceTests(unittest.TestCase):
             stored = json.loads(cache_path.read_text(encoding="utf-8"))
             self.assertEqual(stored, yesterday)
 
+    def test_overnight_force_refresh_preserves_yesterday_on_unusable_results(self):
+        yesterday = {
+            "generated_at": "2026-07-22 15:00:00",
+            "inflow": [{"name": "半导体", "net_flow_yi": 12}],
+            "outflow": [{"name": "银行", "net_flow_yi": -6}],
+        }
+        unusable_results = {
+            "new_calendar_day": {
+                "generated_at": "2026-07-23 00:01:00",
+                "inflow": [{"name": "证券", "net_flow_yi": 2}],
+                "outflow": [{"name": "银行", "net_flow_yi": -1}],
+            },
+            "incomplete_rankings": {
+                "generated_at": "2026-07-22 15:00:00",
+                "inflow": [],
+                "outflow": [],
+            },
+        }
+        for case, upstream in unusable_results.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory(
+                prefix="niuone-money-flow-overnight-"
+            ) as temp_dir:
+                cache_path = Path(temp_dir) / "money_flow.json"
+                cache_path.write_text(json.dumps(yesterday), encoding="utf-8")
+                with patch.object(money_flow_service, "CACHE_PATH", cache_path), patch.object(
+                    money_flow_service,
+                    "_beijing_now",
+                    return_value=datetime(
+                        2026,
+                        7,
+                        23,
+                        0,
+                        1,
+                        tzinfo=money_flow_service.BEIJING_TZ,
+                    ),
+                ), patch.object(
+                    money_flow_service,
+                    "_compute",
+                    return_value=upstream,
+                ) as compute:
+                    payload = money_flow_service.fetch_money_flow(force_refresh=True)
+
+                compute.assert_called_once_with()
+                self.assertEqual(payload["inflow"], yesterday["inflow"])
+                self.assertEqual(payload["outflow"], yesterday["outflow"])
+                self.assertTrue(payload["stale_cache"])
+                self.assertIn("retained market date", payload["error"])
+                stored = json.loads(cache_path.read_text(encoding="utf-8"))
+                self.assertEqual(stored, yesterday)
+
     def test_yesterday_cache_and_upstream_snapshot_are_empty_at_beijing_nine(self):
         yesterday = {
             "generated_at": "2026-07-22 15:00:00",
