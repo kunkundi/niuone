@@ -149,8 +149,8 @@ A complete background deployment generally consists of three independent process
 | Process | macOS / Linux entry point | Windows entry point | Required? |
 |---|---|---|---|
 | Dashboard | `run-dashboard.sh` | `run.bat --no-browser --skip-install` | Yes |
-| Scheduled-task scheduler | `run-niuone-cron-scheduler.sh` | `.local-data\.venv\Scripts\python.exe app\niuone_cron_scheduler.py` | Required for automatic summaries, database writes, or simulated-position automatic-exit checks |
-| Watch-source daemon | `run-x-watchlist-daemon.sh` | `.local-data\.venv\Scripts\python.exe app\x_watchlist_daemon.py` | Required when the X watchlist is enabled |
+| Scheduled-task scheduler | `run-niuone-cron-scheduler.sh` | `.local-data\.venv\Scripts\python.exe app\entrypoints\niuone_cron_scheduler.py` | Required for automatic summaries, database writes, or simulated-position automatic-exit checks |
+| Watch-source daemon | `run-x-watchlist-daemon.sh` | `.local-data\.venv\Scripts\python.exe app\entrypoints\x_watchlist_daemon.py` | Required when the X watchlist is enabled |
 
 The live B1 stock-selection schedule runs inside the Dashboard process. The scheduled-task scheduler does not select stocks, but it does run the independent automatic-exit checks for simulated positions. Both processes must stay running for the full scheduled selection-decision-exit lifecycle.
 

@@ -10,7 +10,7 @@ The Dashboard now runs on Vue 3 + Vite and FastAPI/Uvicorn while preserving the 
 Market data / models / schedules / simulated trading
                          │
                          ▼
-      Single FastAPI/Uvicorn process (0.0.0.0:8787 by default)
+      Single FastAPI/Uvicorn process (127.0.0.1:8787 locally by default)
         ├── Vue 3 public page and /admin
         ├── native incremental snapshot APIs
         ├── in-process legacy API adapter (no second port)

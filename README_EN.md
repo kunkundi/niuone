@@ -219,7 +219,7 @@ docker compose down
 Deploy a specific version from Docker Hub:
 
 ```bash
-export NIUONE_IMAGE=kunkundi/niuone:v0.0.1
+export NIUONE_IMAGE=kunkundi/niuone:v0.0.4
 docker compose pull
 docker compose up -d --no-build
 ```
@@ -413,7 +413,7 @@ For platform-specific status, restart, uninstall, and unattended-operation instr
 ├── tests/                  # Automated tests
 ├── tools/                  # Local maintenance tools
 ├── web/                    # Vue 3 components, Vite configuration, and dependency lock
-├── frontend/               # Migration CSS and legacy controller assets
+├── frontend/               # Dashboard and administrator styles reused by the Vue build
 ├── dashboard.env.example   # Example configuration
 ├── run.sh                  # One-command startup for macOS / Linux
 ├── run.bat                 # One-command startup for Windows

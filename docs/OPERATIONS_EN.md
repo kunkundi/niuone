@@ -104,7 +104,7 @@ The `/dragon-tiger` Dashboard section can query a selected trading date live. Cu
 
 The trading-decision intelligence bundle is enabled by default. Each model decision after a stock-selection scan on the Practice page reads market monitoring, overnight U.S. market data, index quotes, sector performance, industry fund flows, trending stocks, candidate news, and an account-position summary, then writes the compressed `decision_intelligence` into the simulated-trading decision log. If a market-data source fails, its `source_status` is retained, and the current decision continues with available information and existing risk controls.
 
-The canonical URL for the Practice page is `/?category=practice`. The candidate query and refresh endpoints are `/api/practice_candidates` and `/api/practice_candidates/refresh`, respectively. The old `category=b1_screen` and `/api/b1_screen` paths are retained only as compatibility entry points.
+The canonical URL for the Practice page is `/practice`. The candidate query and refresh endpoints are `/api/practice_candidates` and `/api/practice_candidates/refresh`, respectively. Legacy links based on `?category=practice` or `?category=b1_screen`, plus the `/api/b1_screen` endpoint, are retained only as compatibility entry points.
 
 ### 3.1 Market Data and Fund-Flow Settings
 
@@ -350,7 +350,7 @@ Run:
 ./scripts/validate.sh
 ```
 
-This builds the `web/` Vue application and checks migration `frontend/` JavaScript, `app/` Python, Shell/PowerShell entrypoints, and the complete unit-test suite.
+This builds the `web/` Vue application and checks `web/` JavaScript, `app/` Python, Shell and Windows BAT entrypoints, and the complete unit-test suite.
 
 ### Do Not Commit Real Data
 

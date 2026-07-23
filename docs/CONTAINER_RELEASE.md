@@ -30,7 +30,7 @@ docker.io/kunkundi/niuone
 
 ## 3. 发布条件
 
-推送名称匹配 `v*.*.*` 的 Git tag 时会触发容器发布工作流。工作流随后要求 Tag 严格符合：
+推送名称匹配 `v*.*.*` 的 Git tag 时会触发容器发布工作流。也可在 GitHub Actions 中手动运行该工作流，并通过 `release_tag` 选择已存在的 Tag。两种入口都要求 Tag 严格符合：
 
 ```text
 vMAJOR.MINOR.PATCH
@@ -66,6 +66,8 @@ git push origin v1.2.3
 ```
 
 所有容器发布共用同一个并发组。一次只推送一个版本 Tag，并等待对应工作流结束后再发下一个版本。
+
+如需重新发布已存在的合法 Tag，可在 **Actions → Publish container image → Run workflow** 中填写该 Tag；手动入口不会绕过格式和默认分支归属检查。
 
 不要移动或覆盖已经发布的版本 Tag。需要修复已发布版本时，应提交修复并发布更高的补丁版本。
 

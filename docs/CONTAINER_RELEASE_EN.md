@@ -30,7 +30,7 @@ Before logging in to Docker Hub, the workflow checks both settings. The release 
 
 ## 3. Release Conditions
 
-Pushing a Git tag whose name matches `v*.*.*` triggers the container release workflow. The workflow then requires the tag to match the following format exactly:
+Pushing a Git tag whose name matches `v*.*.*` triggers the container release workflow. The workflow can also be run manually from GitHub Actions with `release_tag` set to an existing tag. Both entry points require the tag to match the following format exactly:
 
 ```text
 vMAJOR.MINOR.PATCH
@@ -66,6 +66,8 @@ git push origin v1.2.3
 ```
 
 All container releases share a single concurrency group. Push only one version tag at a time, and wait for its workflow to finish before publishing the next version.
+
+To republish an existing valid tag, use **Actions → Publish container image → Run workflow** and enter that tag. The manual entry point does not bypass tag-format or default-branch ancestry checks.
 
 Do not move or overwrite a version tag that has already been published. To fix a published version, commit the fix and release a higher patch version.
 
