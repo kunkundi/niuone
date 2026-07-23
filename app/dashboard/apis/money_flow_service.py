@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 from dashboard_json_cache import read_json_cache, write_json_cache
 from niuone_paths import get_dashboard_home
+from dashboard.apis.market_retention import market_retention_date_key
 
 if __package__ == "app":
     from .dashboard.apis.cache import load_cached_payload
@@ -66,17 +67,23 @@ def _empty_payload() -> dict[str, Any]:
         "metric_label": METRIC_LABEL,
         "source": SOURCE_NAME,
         "source_url": SOURCE_URL,
-        "retention_date": _beijing_now().strftime("%Y-%m-%d"),
+        "retention_date": market_retention_date_key(_beijing_now()),
         "inflow": [],
         "outflow": [],
     }
 
 
 def _is_current_day_payload(payload: dict[str, Any]) -> bool:
+    retained_day = market_retention_date_key(_beijing_now())
     generated_at = str(payload.get("generated_at") or "")
     if generated_at:
-        return generated_at[:10] == _beijing_now().strftime("%Y-%m-%d")
-    return not payload.get("inflow") and not payload.get("outflow")
+        return generated_at[:10] == retained_day
+    retention_date = str(payload.get("retention_date") or "")
+    return (
+        retention_date in {"", retained_day}
+        and not payload.get("inflow")
+        and not payload.get("outflow")
+    )
 
 
 def _read_current_day_cache(

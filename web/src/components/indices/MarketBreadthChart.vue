@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { previousDayMarketLabel } from '../../utils/marketDisplay.js'
 
 const props = defineProps({
   payload: { type: Object, required: true },
@@ -25,6 +26,7 @@ const hoveredAt = ref('')
 const chartElement = ref(null)
 const chartWrapElement = ref(null)
 const chartWidth = ref(720)
+const chartAvailableHeight = ref(330)
 let chartResizeObserver = null
 
 function nullableNumeric(value, allowNegative = false) {
@@ -133,17 +135,23 @@ const chart = computed(() => {
   const width = chartWidth.value
   const compact = width < 560
   const showSentiment = showBreadth.value || showLimitState.value
-  const height = showSentiment && showVolume.value ? (compact ? 280 : 330) : (compact ? 218 : 236)
+  const baseHeight = showSentiment && showVolume.value ? (compact ? 280 : 330) : (compact ? 218 : 236)
+  const compactMinHeight = showSentiment && showVolume.value ? 220 : 180
+  const height = compact
+    ? Math.max(compactMinHeight, Math.min(baseHeight, chartAvailableHeight.value))
+    : Math.max(baseHeight, chartAvailableHeight.value)
   const margin = compact
     ? { top: 16, right: 88, bottom: 30, left: 42 }
     : { top: 16, right: 92, bottom: 34, left: 50 }
   const plotWidth = width - margin.left - margin.right
+  const sectionGap = showSentiment && showVolume.value ? (compact ? 20 : 24) : 0
+  const drawableHeight = height - margin.top - margin.bottom - sectionGap
   const sentimentHeight = showSentiment
-    ? (showVolume.value ? (compact ? 136 : 166) : (compact ? 172 : 186))
+    ? (showVolume.value ? Math.round(drawableHeight * 0.64) : drawableHeight)
     : 0
   const sentimentBottom = margin.top + sentimentHeight
-  const volumeTop = showSentiment ? sentimentBottom + (compact ? 20 : 24) : margin.top
-  const volumeHeight = showVolume.value ? height - margin.bottom - volumeTop : 0
+  const volumeTop = showSentiment ? sentimentBottom + sectionGap : margin.top
+  const volumeHeight = showVolume.value ? drawableHeight - sentimentHeight : 0
   const plotBottom = showVolume.value ? volumeTop + volumeHeight : sentimentBottom
   const leftPeak = Math.max(
     numeric(latest.value.quote_count),
@@ -300,15 +308,10 @@ const hoveredSample = computed(() => {
   }))
   const tooltipHeight = 42 + rows.length * 14
   const plotRight = current.width - current.margin.right
-  const labelRight = current.labelRailX + Math.max(
-    0,
-    ...current.endLabels.map(label => label.labelWidth),
-  )
-  const tooltipX = labelRight + tooltipWidth + 10 <= plotRight
-    ? Math.max(sample.x + 10, labelRight + 10)
-    : sample.x - tooltipWidth - 10 >= current.margin.left
-      ? sample.x - tooltipWidth - 10
-      : plotRight - tooltipWidth
+  const tooltipGap = 10
+  const tooltipX = sample.x + tooltipWidth + tooltipGap <= plotRight
+    ? sample.x + tooltipGap
+    : Math.max(current.margin.left, sample.x - tooltipWidth - tooltipGap)
   return {
     x: sample.x,
     time: String(sample.point.generated_at || '').slice(11, 19),
@@ -360,31 +363,51 @@ function clearHoverOutside(event) {
   }
 }
 
-function syncChartWidth() {
-  const availableWidth = Math.round(chartWrapElement.value?.getBoundingClientRect().width || 0)
-  if (availableWidth > 0) chartWidth.value = Math.min(720, Math.max(300, availableWidth))
+function syncChartSize() {
+  const bounds = chartWrapElement.value?.getBoundingClientRect()
+  const availableWidth = Math.round(bounds?.width || 0)
+  if (availableWidth > 0) chartWidth.value = Math.max(300, availableWidth)
+  const visualViewport = window.visualViewport
+  const viewportBottom = Math.floor(
+    visualViewport
+      ? visualViewport.height + visualViewport.offsetTop
+      : window.innerHeight || document.documentElement.clientHeight || 0,
+  )
+  const bottomReserve = availableWidth < 560 ? 56 : 40
+  const availableHeight = Math.floor(viewportBottom - (bounds?.top || 0) - bottomReserve)
+  if (availableHeight > 0) chartAvailableHeight.value = availableHeight
 }
 
 watch(chartWrapElement, element => {
   chartResizeObserver?.disconnect()
   chartResizeObserver = null
   if (!element) return
-  syncChartWidth()
+  syncChartSize()
   if (typeof ResizeObserver !== 'undefined') {
-    chartResizeObserver = new ResizeObserver(syncChartWidth)
+    chartResizeObserver = new ResizeObserver(syncChartSize)
     chartResizeObserver.observe(element)
   }
 }, { flush: 'post' })
 
 onMounted(() => {
   window.addEventListener('pointermove', clearHoverOutside, { passive: true })
+  window.addEventListener('resize', syncChartSize, { passive: true })
+  window.visualViewport?.addEventListener('resize', syncChartSize, { passive: true })
 })
 onBeforeUnmount(() => {
   window.removeEventListener('pointermove', clearHoverOutside)
+  window.removeEventListener('resize', syncChartSize)
+  window.visualViewport?.removeEventListener('resize', syncChartSize)
   chartResizeObserver?.disconnect()
 })
 
-const latestTime = computed(() => String(props.payload.generated_at || latest.value.generated_at || '').slice(11, 19))
+const latestGeneratedAt = computed(() => String(
+  props.payload.generated_at || latest.value.generated_at || '',
+).trim())
+const latestTime = computed(() => latestGeneratedAt.value.slice(11, 19))
+const previousDayLabel = computed(() => previousDayMarketLabel(
+  latestGeneratedAt.value,
+))
 const turnoverComparisonText = computed(() => {
   const comparison = turnoverComparison.value
   const previous = nullableNumeric(comparison.previous_turnover_yi)
@@ -404,8 +427,7 @@ const turnoverPreviousText = computed(() => {
   const info = turnoverPreviousActual.value
   const date = String(info.date || '').slice(5)
   if (!date) return ''
-  const points = Number(info.point_count || 0)
-  return `前日同期：${date}${points ? ` · ${points}个采样点` : ''}`
+  return `前日同期：${date}`
 })
 const turnoverEstimateText = computed(() => {
   const info = turnoverEstimate.value
@@ -422,46 +444,68 @@ const turnoverEstimateText = computed(() => {
   const range = start && end ? ` · ${start}—${end}` : ''
   return `量能估算：${model}（${days}日${interval ? ` / ${interval}分钟` : ''}）${range}`
 })
+
 </script>
 
 <template>
   <section class="market-breadth-card" aria-labelledby="market-breadth-title">
     <div class="market-breadth-head">
-      <div>
-        <h3 id="market-breadth-title">A股市场情绪曲线</h3>
-        <p>{{ payload.universe || '沪深A股' }} · 每分钟真实采样</p>
+      <div class="market-breadth-heading">
+        <div class="market-breadth-title-row">
+          <h3 id="market-breadth-title">A股市场情绪曲线</h3>
+          <div class="market-breadth-info">
+            <button
+              class="market-breadth-info-trigger"
+              type="button"
+              aria-label="查看市场情绪数据说明"
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <circle cx="10" cy="10" r="8"></circle>
+                <path d="M10 9v5M10 6.2v.1"></path>
+              </svg>
+            </button>
+            <div class="market-breadth-info-popover" role="tooltip">
+              <strong>数据说明</strong>
+              <span>{{ payload.universe || '沪深A股' }} · 每分钟真实采样</span>
+              <span v-if="latestGeneratedAt">最新采样：{{ latestGeneratedAt }}</span>
+              <span>情绪数据源：{{ payload.source || '腾讯证券沪深A股实时行情' }}</span>
+              <span v-if="showVolume && turnoverSourceText">{{ turnoverSourceText }}</span>
+              <span v-if="showVolume && turnoverPreviousText">{{ turnoverPreviousText }}</span>
+              <span v-if="showVolume && turnoverEstimateText">{{ turnoverEstimateText }}</span>
+              <span v-if="showVolume && turnoverComparisonText">{{ turnoverComparisonText }}</span>
+              <span v-if="axisHint">{{ axisHint }}</span>
+            </div>
+          </div>
+        </div>
       </div>
-      <span v-if="latestTime" class="market-breadth-time">{{ latestTime }}</span>
+      <div class="market-breadth-controls" role="group" aria-label="市场情绪曲线显示设置">
+        <label class="market-breadth-toggle" :class="{ active: showBreadth }">
+          <input v-model="showBreadth" type="checkbox" @change="clearHover">
+          <span class="market-breadth-label-desktop">红盘 / 绿盘</span>
+          <span class="market-breadth-label-mobile">红绿盘</span>
+          <small>左轴</small>
+        </label>
+        <label class="market-breadth-toggle" :class="{ active: showLimitState }">
+          <input v-model="showLimitState" type="checkbox" @change="clearHover">
+          <span class="market-breadth-label-desktop">涨跌停 / 炸板</span>
+          <span class="market-breadth-label-mobile">涨跌停</span>
+          <small>右轴</small>
+        </label>
+        <label class="market-breadth-toggle" :class="{ active: showVolume }">
+          <input v-model="showVolume" type="checkbox" @change="clearHover">
+          <span class="market-breadth-label-desktop">预测 / 今昨实际 / 差额</span>
+          <span class="market-breadth-label-mobile">量能</span>
+          <small>亿元</small>
+        </label>
+      </div>
+      <div class="market-breadth-head-meta">
+        <span v-if="previousDayLabel" class="previous-day-data-badge">{{ previousDayLabel }}</span>
+        <span v-if="latestTime" class="market-breadth-time">{{ latestTime }}</span>
+      </div>
     </div>
 
     <div v-if="payload.error" class="market-breadth-notice" role="status">
       行情源暂时不可用，{{ payload.stale_cache ? '继续展示上一份有效采样' : '等待下一次采样' }}
-    </div>
-
-    <div class="market-breadth-controls" role="group" aria-label="市场情绪曲线显示设置">
-      <label class="market-breadth-toggle" :class="{ active: showBreadth }">
-        <input v-model="showBreadth" type="checkbox" @change="clearHover">
-        <span>红盘 / 绿盘</span>
-        <small>左轴</small>
-      </label>
-      <label class="market-breadth-toggle" :class="{ active: showLimitState }">
-        <input v-model="showLimitState" type="checkbox" @change="clearHover">
-        <span>涨跌停 / 炸板</span>
-        <small>右轴</small>
-      </label>
-      <label class="market-breadth-toggle" :class="{ active: showVolume }">
-        <input v-model="showVolume" type="checkbox" @change="clearHover">
-        <span>预测 / 今昨实际 / 差额</span>
-        <small>亿元</small>
-      </label>
-    </div>
-
-    <div v-if="chart" class="market-breadth-legend" aria-label="市场情绪最新统计">
-      <div v-for="series in visibleSeries" :key="series.key" class="market-breadth-legend-item">
-        <span class="market-breadth-swatch" :style="{ backgroundColor: series.color }"></span>
-        <span>{{ series.label }}</span>
-        <strong>{{ formatSeriesValue(series, latest[series.key]) }}</strong>
-      </div>
     </div>
 
     <div v-if="chart" ref="chartWrapElement" class="market-breadth-chart-wrap">
@@ -661,13 +705,5 @@ const turnoverEstimateText = computed(() => {
       {{ hasSelection ? '市场情绪曲线等待交易时段首个有效采样' : '请至少勾选一组指标' }}
     </div>
 
-    <div class="market-breadth-foot">
-      <span>情绪数据源：{{ payload.source || '腾讯证券沪深A股实时行情' }}</span>
-      <span v-if="showVolume && turnoverSourceText">{{ turnoverSourceText }}</span>
-      <span v-if="showVolume && turnoverPreviousText">{{ turnoverPreviousText }}</span>
-      <span v-if="showVolume && turnoverEstimateText">{{ turnoverEstimateText }}</span>
-      <span v-if="showVolume && turnoverComparisonText">{{ turnoverComparisonText }}</span>
-      <span v-if="axisHint">{{ axisHint }}</span>
-    </div>
   </section>
 </template>

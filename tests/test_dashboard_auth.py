@@ -2216,6 +2216,26 @@ console.log(JSON.stringify([
         self.assertIn('暂无上涨板块', overview)
         self.assertIn('暂无下跌板块', overview)
 
+    def test_previous_day_market_label_uses_beijing_calendar_date(self):
+        source = (
+            ROOT / 'web' / 'src' / 'utils' / 'marketDisplay.js'
+        ).as_uri()
+        scenario = """
+import { previousDayMarketLabel } from SOURCE;
+const afterMidnight = new Date('2026-07-23T16:30:00Z');
+console.log(JSON.stringify([
+  previousDayMarketLabel('2026-07-23 15:00:00', afterMidnight),
+  previousDayMarketLabel('2026-07-24 09:30:00', afterMidnight),
+  previousDayMarketLabel('2026-07-22 15:00:00', afterMidnight),
+]));
+"""
+        output = subprocess.check_output(
+            ['node', '--input-type=module', '-e', scenario.replace('SOURCE', json.dumps(source))],
+            cwd=ROOT,
+            text=True,
+        )
+        self.assertEqual(json.loads(output), ['前一日数据（07-23）', '', ''])
+
     def test_indices_panel_can_put_a_share_or_us_indices_first(self):
         panel = (
             ROOT / 'web' / 'src' / 'components' / 'IndicesPanel.vue'

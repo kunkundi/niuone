@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useIndicesData } from '../composables/useIndicesData.js'
 import { useIndustryFlowData } from '../composables/useIndustryFlowData.js'
+import { previousDayMarketLabel } from '../utils/marketDisplay.js'
 import {
   barScale,
   signedYi,
@@ -43,6 +44,7 @@ const samplingStatus = computed(() => actualPlayback.value
 const progressText = computed(() => actualPlayback.value
   ? `${animation.playing ? '采样' : '已暂停'} ${currentTime.value || '--'}`
   : `${animation.playing ? '播放' : '已暂停'} ${Math.round(displayedProgress.value * 100)}%`)
+const previousDayLabel = computed(() => previousDayMarketLabel(payload.value.generated_at))
 
 function selectPanel(panel) {
   if (!['index', 'market', 'market-breadth'].includes(panel)) return
@@ -108,6 +110,7 @@ onBeforeUnmount(() => {
         <div class="industry-flow-heading">
           <div><h2>行业主力资金流动</h2></div>
           <div class="industry-flow-meta">
+            <span v-if="previousDayLabel" class="previous-day-data-badge">{{ previousDayLabel }}</span>
             <span>更新 {{ payload.generated_at || '--' }}</span>
             <span>{{ payload.source || '行业主力净额即时快照' }}</span>
             <span id="industryFlowSampleTime">{{ samplingStatus }}</span>

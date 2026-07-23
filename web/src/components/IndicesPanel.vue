@@ -55,9 +55,6 @@ const panelMeta = computed(() => {
   if (panel.value === 'market') {
     return `${marketModuleCount.value} ${marketRegion.value === 'us' ? '项' : '组'}`
   }
-  if (panel.value === 'market-breadth') {
-    return `${state.marketBreadth.timeline?.length || 0} 个采样点`
-  }
   return `${indexItems.value.length} 项`
 })
 
@@ -145,7 +142,7 @@ onBeforeUnmount(() => {
             <button type="button" class="market-region-btn" :class="{ active: marketRegion === 'us' }" :aria-pressed="marketRegion === 'us'" @click="setMarketRegion('us')">美股</button>
           </div>
         </div>
-        <div class="indices-part-meta">{{ panelMeta }}</div>
+        <div v-if="panel !== 'market-breadth'" class="indices-part-meta">{{ panelMeta }}</div>
       </div>
       <div :class="panel === 'market' ? 'indices-market-stack' : 'indices-index-stack'">
         <IndexOverview

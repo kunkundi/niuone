@@ -955,6 +955,9 @@ class FastApiDashboardTests(unittest.TestCase):
         market_overview = (
             ROOT / "web" / "src" / "components" / "indices" / "MarketOverview.vue"
         ).read_text(encoding="utf-8")
+        market_display = (
+            ROOT / "web" / "src" / "utils" / "marketDisplay.js"
+        ).read_text(encoding="utf-8")
         indices_data = (
             ROOT / "web" / "src" / "composables" / "useIndicesData.js"
         ).read_text(encoding="utf-8")
@@ -1073,12 +1076,27 @@ class FastApiDashboardTests(unittest.TestCase):
         self.assertIn("<IndexSparkline", index_overview)
         self.assertNotIn("<MarketBreadthChart", index_overview)
         self.assertIn("<MarketBreadthChart", indices)
+        self.assertIn("v-if=\"panel !== 'market-breadth'\"", indices)
+        self.assertNotIn("个采样点", indices)
         self.assertIn("sparkline-zero", index_sparkline)
         self.assertIn("visibleSeries.value.map(series => series.label).join('、')", market_breadth)
         self.assertIn("下方量能区间（亿元）", market_breadth)
         self.assertIn('v-model="showBreadth"', market_breadth)
         self.assertIn('v-model="showLimitState"', market_breadth)
         self.assertIn('v-model="showVolume"', market_breadth)
+        self.assertIn('class="market-breadth-label-mobile">红绿盘</span>', market_breadth)
+        self.assertIn('class="market-breadth-label-mobile">涨跌停</span>', market_breadth)
+        self.assertIn('class="market-breadth-label-mobile">量能</span>', market_breadth)
+        self.assertIn('class="market-breadth-heading"', market_breadth)
+        self.assertIn('class="market-breadth-info-trigger"', market_breadth)
+        self.assertNotIn('title="数据说明"', market_breadth)
+        self.assertNotIn("<span>说明</span>", market_breadth)
+        self.assertIn('viewBox="0 0 20 20"', market_breadth)
+        self.assertIn('class="market-breadth-info-popover" role="tooltip"', market_breadth)
+        self.assertEqual(market_breadth.count("每分钟真实采样"), 1)
+        self.assertNotIn("<p>{{ payload.universe", market_breadth)
+        self.assertNotIn("个采样点", market_breadth)
+        self.assertNotIn('class="market-breadth-foot"', market_breadth)
         self.assertIn("预测 / 今昨实际 / 差额", market_breadth)
         self.assertIn("estimated_turnover_yi", market_breadth)
         self.assertIn("actual_turnover_yi", market_breadth)
@@ -1116,12 +1134,22 @@ class FastApiDashboardTests(unittest.TestCase):
         self.assertIn("const rows = visibleSeries.value.map", market_breadth)
         self.assertIn("42 + rows.length * 14", market_breadth)
         self.assertIn("row.displayValue", market_breadth)
+        self.assertNotIn('aria-label="市场情绪最新统计"', market_breadth)
+        self.assertNotIn("market-breadth-legend", market_breadth)
+        self.assertIn("sample.x + tooltipWidth + tooltipGap <= plotRight", market_breadth)
+        self.assertIn("? sample.x + tooltipGap", market_breadth)
+        self.assertNotIn("const labelRight =", market_breadth)
         self.assertIn("color: 'var(--market-breadth-limit-up, #fb7185)'", market_breadth)
         self.assertIn("color: 'var(--market-breadth-limit-down, #4ade80)'", market_breadth)
         self.assertIn("color: 'var(--market-breadth-red, #e879f9)'", market_breadth)
         self.assertIn("color: 'var(--market-breadth-green, #38bdf8)'", market_breadth)
         self.assertNotIn("stroke-dasharray", market_breadth)
         self.assertIn("主力资金流向", market_overview)
+        self.assertIn("moneyFlowPreviousDayLabel", market_overview)
+        self.assertIn("previousDayLabel", market_breadth)
+        self.assertIn("previousDayLabel", industry_flow)
+        self.assertIn("export function previousDayMarketLabel", market_display)
+        self.assertIn("前一日数据（", market_display)
         self.assertIn("美股板块行情暂不可用", market_overview)
         for endpoint in (
             "/api/indices",
@@ -1281,27 +1309,64 @@ class FastApiDashboardTests(unittest.TestCase):
         )
         self.assertIn("const compact = width < 560", component)
         self.assertIn(
-            "const height = showSentiment && showVolume.value ? (compact ? 280 : 330)",
+            "const baseHeight = showSentiment && showVolume.value ? (compact ? 280 : 330)",
             component,
         )
         self.assertIn(
-            "const volumeTop = showSentiment ? sentimentBottom + (compact ? 20 : 24)",
+            "Math.max(compactMinHeight, Math.min(baseHeight, chartAvailableHeight.value))",
             component,
         )
-        self.assertIn("new ResizeObserver(syncChartWidth)", component)
+        self.assertIn("const visualViewport = window.visualViewport", component)
+        self.assertIn("window.visualViewport?.addEventListener('resize', syncChartSize", component)
+        self.assertIn("visualViewport.height + visualViewport.offsetTop", component)
+        self.assertIn("const bottomReserve = availableWidth < 560 ? 56 : 40", component)
+        self.assertIn("const availableHeight = Math.floor", component)
+        self.assertIn(
+            "const volumeTop = showSentiment ? sentimentBottom + sectionGap : margin.top",
+            component,
+        )
+        self.assertIn("const drawableHeight = height - margin.top - margin.bottom - sectionGap", component)
+        self.assertIn("new ResizeObserver(syncChartSize)", component)
+        self.assertIn("window.addEventListener('resize', syncChartSize", component)
         self.assertIn("watch(chartWrapElement, element =>", component)
         self.assertIn('ref="chartWrapElement"', component)
-        self.assertIn("width:min(100%,720px); max-width:720px;", stylesheet)
+        self.assertIn("chartWidth.value = Math.max(300, availableWidth)", component)
+        self.assertNotIn("Math.min(720", component)
+        self.assertIn(
+            ".market-breadth-chart { display:block; width:100%; max-width:none; min-width:0;",
+            stylesheet,
+        )
+        self.assertNotIn("width:min(100%,720px); max-width:720px;", stylesheet)
         self.assertIn("overflow-x:hidden", stylesheet)
         self.assertIn(
-            ".market-breadth-controls { display:grid; grid-template-columns:repeat(3,minmax(0,1fr));",
+            '.market-breadth-head { display:grid; grid-template-columns:minmax(210px,1fr) auto auto; grid-template-areas:"heading controls meta";',
+            stylesheet,
+        )
+        self.assertIn(
+            ".market-breadth-controls { grid-area:controls; display:grid; grid-template-columns:repeat(3,max-content);",
+            stylesheet,
+        )
+        self.assertIn(".market-breadth-info-popover { position:absolute;", stylesheet)
+        self.assertNotIn("cursor:help", stylesheet)
+        self.assertNotIn("outline:2px solid rgba(129,140,248,.42)", stylesheet)
+        self.assertIn(
+            ".market-breadth-info:hover .market-breadth-info-popover, .market-breadth-info:focus-within .market-breadth-info-popover",
+            stylesheet,
+        )
+        self.assertIn(
+            "box-shadow:inset 0 1px 0 rgba(255,255,255,.035), 0 10px 28px rgba(0,0,0,.14); -webkit-user-select:none; user-select:none;",
+            stylesheet,
+        )
+        self.assertIn(
+            ".market-breadth-controls { width:100%; grid-template-columns:repeat(3,minmax(0,1fr));",
+            stylesheet,
+        )
+        self.assertIn('.market-breadth-toggle.active::before { content:"✓";', stylesheet)
+        self.assertIn(
+            ".market-breadth-toggle input { position:absolute; width:1px; height:1px;",
             stylesheet,
         )
         self.assertIn(".market-breadth-toggle small { display:none; }", stylesheet)
-        self.assertIn(
-            ".market-breadth-chart { width:100%; max-width:none; min-width:0; }",
-            stylesheet,
-        )
 
     def test_mobile_compliance_dialog_is_centered(self):
         stylesheet = (ROOT / "frontend" / "dashboard.css").read_text(encoding="utf-8")

@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { formatAmount, formatNumber, numberValue, signedNumber, toneClass } from '../../utils/marketDisplay.js'
+import { formatAmount, formatNumber, numberValue, previousDayMarketLabel, signedNumber, toneClass } from '../../utils/marketDisplay.js'
 
 const props = defineProps({
   sectors: { type: Object, required: true },
@@ -24,6 +24,7 @@ const hasHotRankings = computed(() => (
 const hotSearchRows = computed(() => (props.hotStocks.items || []).slice(0, 12))
 const hasHotStocks = computed(() => hasHotRankings.value || hotSearchRows.value.length)
 const hasMoneyFlow = computed(() => props.moneyFlow.inflow?.length && props.moneyFlow.outflow?.length)
+const moneyFlowPreviousDayLabel = computed(() => previousDayMarketLabel(props.moneyFlow.generated_at))
 const hasMarketFlow = computed(() => {
   if (props.marketFlow.total_inflow_yi == null) return false
   return Boolean(
@@ -240,6 +241,7 @@ defineExpose({ moduleCount })
     <div v-if="hasMoneyFlow" class="sector-cloud">
       <h3 style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <span>主力资金流向</span>
+        <span v-if="moneyFlowPreviousDayLabel" class="previous-day-data-badge">{{ moneyFlowPreviousDayLabel }}</span>
         <span class="flow-val">1分钟刷新{{ moneyFlow.generated_at ? ` · 更新 ${String(moneyFlow.generated_at).slice(11, 16)}` : '' }}</span>
       </h3>
       <div style="display:flex;gap:16px;flex-wrap:wrap">

@@ -72,6 +72,10 @@ from dashboard.apis.market_breadth import (
     is_market_breadth_session_timestamp,
     roll_market_breadth_history,
 )
+from dashboard.apis.market_retention import (
+    market_retention_date_key,
+    seconds_until_next_market_retention_rollover,
+)
 from market_data.iwencai_client import (
     DEFAULT_BASE_URL as IWENCAI_DEFAULT_BASE_URL,
     normalize_base_url as normalize_iwencai_base_url,
@@ -2130,9 +2134,10 @@ def _empty_money_flow_snapshot(day: str) -> dict[str, Any]:
 
 
 def reset_daily_market_histories(now: datetime | None = None) -> bool:
-    """Roll breadth history and clear current-day-only market-flow data."""
+    """Roll daily market display data at the Beijing-time 09:00 boundary."""
 
-    day = current_cn_date_key(now)
+    current = now or current_cn_datetime()
+    day = market_retention_date_key(current)
     changed = False
     with MARKET_BREADTH_HISTORY_LOCK:
         history = read_json_cache(MARKET_BREADTH_HISTORY_FILE, None)
@@ -2160,6 +2165,8 @@ def reset_daily_market_histories(now: datetime | None = None) -> bool:
 
 
 def seconds_until_next_cn_midnight(now: datetime | None = None) -> float:
+    """Return seconds until midnight; retained for compatibility callers."""
+
     current = now or current_cn_datetime()
     next_midnight = datetime.combine(
         current.date() + timedelta(days=1),
@@ -2173,11 +2180,13 @@ def daily_market_history_reset_loop(
     *,
     stop_event: threading.Event | None = None,
 ) -> None:
-    """Roll or clear daily chart histories at each Beijing midnight."""
+    """Roll or clear daily chart histories at 09:00 Beijing time."""
 
     stop_event = stop_event or threading.Event()
     while not stop_event.is_set():
-        if stop_event.wait(seconds_until_next_cn_midnight()):
+        if stop_event.wait(
+            seconds_until_next_market_retention_rollover(current_cn_datetime())
+        ):
             return
         reset_daily_market_histories(current_cn_datetime())
 
@@ -2196,7 +2205,7 @@ def start_daily_market_history_reset() -> None:
         daemon=True,
     )
     DAILY_MARKET_HISTORY_RESET_THREAD.start()
-    print("Daily market history reset enabled: 00:00 Asia/Shanghai", flush=True)
+    print("Daily market history reset enabled: 09:00 Asia/Shanghai", flush=True)
 
 
 def load_market_breadth_samples(
@@ -2204,7 +2213,7 @@ def load_market_breadth_samples(
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     resolved_now = now or current_cn_datetime()
-    current_day = current_cn_date_key(resolved_now)
+    current_day = market_retention_date_key(resolved_now)
     reset_daily_market_histories(resolved_now)
     with MARKET_BREADTH_HISTORY_LOCK:
         history = read_json_cache(MARKET_BREADTH_HISTORY_FILE, None) or {}
@@ -2225,7 +2234,7 @@ def load_previous_market_turnover_history(
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
     resolved_now = now or current_cn_datetime()
-    current_day = current_cn_date_key(resolved_now)
+    current_day = market_retention_date_key(resolved_now)
     reset_daily_market_histories(resolved_now)
     with MARKET_BREADTH_HISTORY_LOCK:
         history = read_json_cache(MARKET_BREADTH_HISTORY_FILE, None) or {}
@@ -2249,7 +2258,7 @@ def record_market_breadth_sample(
     compact = compact_market_breadth_sample(snapshot)
     if (
         compact is None
-        or compact["generated_at"][:10] != current_cn_date_key(resolved_now)
+        or compact["generated_at"][:10] != market_retention_date_key(resolved_now)
         or not is_market_breadth_session_timestamp(compact["generated_at"])
     ):
         return load_market_breadth_samples(now=resolved_now)
@@ -2344,7 +2353,7 @@ def produce_market_breadth_data() -> dict[str, Any]:
             compact = compact_market_breadth_sample(snapshot)
             if (
                 compact is None
-                or compact["generated_at"][:10] != current_cn_date_key(current)
+                or compact["generated_at"][:10] != market_retention_date_key(current)
             ):
                 return build_market_breadth_payload(
                     {},
@@ -2459,7 +2468,7 @@ def load_industry_flow_samples(
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     resolved_now = now or current_cn_datetime()
-    current_day = current_cn_date_key(resolved_now)
+    current_day = market_retention_date_key(resolved_now)
     reset_daily_market_histories(resolved_now)
     with INDUSTRY_FLOW_HISTORY_LOCK:
         history = read_json_cache(INDUSTRY_FLOW_HISTORY_FILE, None) or {}
@@ -2477,7 +2486,7 @@ def record_industry_flow_sample(
     """Persist one valid sample without replacing earlier same-day observations."""
 
     resolved_now = now or current_cn_datetime()
-    current_day = current_cn_date_key(resolved_now)
+    current_day = market_retention_date_key(resolved_now)
     reset_daily_market_histories(resolved_now)
     generated_at = str(money_flow.get("generated_at") or "")
     try:
@@ -2952,7 +2961,7 @@ def produce_money_flow_data() -> dict[str, Any]:
 
 def produce_industry_flow_data() -> dict[str, Any]:
     current = current_cn_datetime()
-    current_day = current_cn_date_key(current)
+    current_day = market_retention_date_key(current)
     reset_daily_market_histories(current)
     money_flow = cached_json_data(
         "money_flow",

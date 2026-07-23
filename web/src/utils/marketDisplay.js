@@ -27,6 +27,30 @@ export function toneClass(value, prefix = '') {
   return prefix ? `${prefix}-${tone}` : tone
 }
 
+function beijingDateKey(value = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(value)
+  const pick = type => parts.find(part => part.type === type)?.value || ''
+  return `${pick('year')}-${pick('month')}-${pick('day')}`
+}
+
+function previousDateKey(dateKey) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return ''
+  const date = new Date(`${dateKey}T00:00:00Z`)
+  date.setUTCDate(date.getUTCDate() - 1)
+  return date.toISOString().slice(0, 10)
+}
+
+export function previousDayMarketLabel(generatedAt, now = new Date()) {
+  const generatedDate = String(generatedAt || '').slice(0, 10)
+  if (generatedDate !== previousDateKey(beijingDateKey(now))) return ''
+  return `前一日数据（${generatedDate.slice(5)}）`
+}
+
 export function legacyMarketType(item = {}) {
   const key = String(item.key || '')
   const code = String(item.code || '')

@@ -45,7 +45,7 @@ def eastmoney_row(
 
 
 class MoneyFlowServiceTests(unittest.TestCase):
-    def test_yesterday_cache_and_upstream_snapshot_are_empty_after_beijing_midnight(self):
+    def test_yesterday_cache_remains_available_before_beijing_nine(self):
         yesterday = {
             "generated_at": "2026-07-22 15:00:00",
             "inflow": [{"name": "半导体", "net_flow_yi": 12}],
@@ -65,12 +65,39 @@ class MoneyFlowServiceTests(unittest.TestCase):
             ) as compute:
                 payload = money_flow_service.fetch_money_flow()
 
+            compute.assert_not_called()
+            self.assertEqual(payload["inflow"], yesterday["inflow"])
+            self.assertEqual(payload["outflow"], yesterday["outflow"])
+            stored = json.loads(cache_path.read_text(encoding="utf-8"))
+            self.assertEqual(stored, yesterday)
+
+    def test_yesterday_cache_and_upstream_snapshot_are_empty_at_beijing_nine(self):
+        yesterday = {
+            "generated_at": "2026-07-22 15:00:00",
+            "inflow": [{"name": "半导体", "net_flow_yi": 12}],
+            "outflow": [{"name": "银行", "net_flow_yi": -6}],
+        }
+        with tempfile.TemporaryDirectory(prefix="niuone-money-flow-day-") as temp_dir:
+            cache_path = Path(temp_dir) / "money_flow.json"
+            cache_path.write_text(json.dumps(yesterday), encoding="utf-8")
+            with patch.object(money_flow_service, "CACHE_PATH", cache_path), patch.object(
+                money_flow_service,
+                "_beijing_now",
+                return_value=datetime(2026, 7, 23, 9, 0, tzinfo=money_flow_service.BEIJING_TZ),
+            ), patch.object(
+                money_flow_service,
+                "_compute",
+                return_value=yesterday,
+            ) as compute:
+                payload = money_flow_service.fetch_money_flow()
+
             compute.assert_called_once_with()
             self.assertEqual(payload["inflow"], [])
             self.assertEqual(payload["outflow"], [])
             stored = json.loads(cache_path.read_text(encoding="utf-8"))
             self.assertEqual(stored["inflow"], [])
             self.assertEqual(stored["outflow"], [])
+            self.assertEqual(stored["retention_date"], "2026-07-23")
 
     def test_compute_paginates_and_maps_today_main_net_amount(self):
         first_page = [

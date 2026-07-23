@@ -241,7 +241,7 @@ class TencentMarketBreadthTests(unittest.TestCase):
 
 
 class MarketBreadthHistoryTests(unittest.TestCase):
-    def test_midnight_reset_clears_daily_market_files_and_cached_payloads(self):
+    def test_daily_reset_retains_snapshots_until_nine_then_clears_them(self):
         original_breadth_file = dashboard.MARKET_BREADTH_HISTORY_FILE
         original_flow_file = dashboard.INDUSTRY_FLOW_HISTORY_FILE
         original_money_file = dashboard.MONEY_FLOW_SNAPSHOT_FILE
@@ -272,16 +272,33 @@ class MarketBreadthHistoryTests(unittest.TestCase):
                     "outflow": [],
                 }), encoding="utf-8")
 
+                dashboard.reset_daily_market_histories(
+                    datetime(2026, 7, 23, 0, 1, 0)
+                )
+                retained_breadth = json.loads(
+                    dashboard.MARKET_BREADTH_HISTORY_FILE.read_text(encoding="utf-8")
+                )
+                retained_flow = json.loads(
+                    dashboard.INDUSTRY_FLOW_HISTORY_FILE.read_text(encoding="utf-8")
+                )
+                retained_money = json.loads(
+                    dashboard.MONEY_FLOW_SNAPSHOT_FILE.read_text(encoding="utf-8")
+                )
                 changed = dashboard.reset_daily_market_histories(
-                    datetime(2026, 7, 23, 0, 0, 0)
+                    datetime(2026, 7, 23, 9, 0, 0)
                 )
                 repeated = dashboard.reset_daily_market_histories(
-                    datetime(2026, 7, 23, 0, 1, 0)
+                    datetime(2026, 7, 23, 9, 1, 0)
                 )
 
                 breadth = json.loads(dashboard.MARKET_BREADTH_HISTORY_FILE.read_text(encoding="utf-8"))
                 flow = json.loads(dashboard.INDUSTRY_FLOW_HISTORY_FILE.read_text(encoding="utf-8"))
                 money = json.loads(dashboard.MONEY_FLOW_SNAPSHOT_FILE.read_text(encoding="utf-8"))
+                self.assertEqual(retained_breadth["date"], "2026-07-22")
+                self.assertEqual(len(retained_breadth["samples"]), 1)
+                self.assertEqual(retained_flow["date"], "2026-07-22")
+                self.assertEqual(len(retained_flow["samples"]), 1)
+                self.assertEqual(retained_money["generated_at"], "2026-07-22 15:00:00")
                 self.assertTrue(changed)
                 self.assertFalse(repeated)
                 self.assertEqual(breadth["date"], "2026-07-23")
@@ -306,7 +323,7 @@ class MarketBreadthHistoryTests(unittest.TestCase):
             dashboard.INDUSTRY_FLOW_HISTORY_FILE = original_flow_file
             dashboard.MONEY_FLOW_SNAPSHOT_FILE = original_money_file
 
-    def test_after_midnight_apis_do_not_refetch_or_publish_yesterday_data(self):
+    def test_apis_publish_yesterday_before_nine_and_clear_it_at_nine(self):
         original_breadth_file = dashboard.MARKET_BREADTH_HISTORY_FILE
         original_flow_file = dashboard.INDUSTRY_FLOW_HISTORY_FILE
         original_money_file = dashboard.MONEY_FLOW_SNAPSHOT_FILE
@@ -344,28 +361,60 @@ class MarketBreadthHistoryTests(unittest.TestCase):
                     flow_payload = dashboard.produce_industry_flow_data()
 
                 fetch.assert_not_called()
-                self.assertFalse(breadth_payload["available"])
-                self.assertEqual(breadth_payload["timeline"], [])
-                self.assertFalse(flow_payload["available"])
-                self.assertEqual(flow_payload["nodes"], [])
-                self.assertEqual(flow_payload["timeline"], [])
+                self.assertTrue(breadth_payload["available"])
+                self.assertEqual(
+                    breadth_payload["timeline"][-1]["generated_at"],
+                    "2026-07-22 15:00:00",
+                )
+                self.assertTrue(flow_payload["available"])
+                self.assertTrue(flow_payload["nodes"])
+                self.assertEqual(
+                    flow_payload["timeline"][-1]["generated_at"],
+                    "2026-07-22 15:00:00",
+                )
+
+                with patch.object(
+                    dashboard,
+                    "current_cn_datetime",
+                    return_value=datetime(2026, 7, 23, 9, 0, 0),
+                ), patch.object(
+                    dashboard,
+                    "fetch_tencent_market_breadth",
+                ) as fetch_at_nine, patch.object(
+                    dashboard,
+                    "cached_json_data",
+                    return_value=yesterday_flow,
+                ):
+                    breadth_at_nine = dashboard.produce_market_breadth_data()
+                    flow_at_nine = dashboard.produce_industry_flow_data()
+
+                fetch_at_nine.assert_not_called()
+                self.assertFalse(breadth_at_nine["available"])
+                self.assertEqual(breadth_at_nine["timeline"], [])
+                self.assertFalse(flow_at_nine["available"])
+                self.assertEqual(flow_at_nine["nodes"], [])
+                self.assertEqual(flow_at_nine["timeline"], [])
         finally:
             dashboard.MARKET_BREADTH_HISTORY_FILE = original_breadth_file
             dashboard.INDUSTRY_FLOW_HISTORY_FILE = original_flow_file
             dashboard.MONEY_FLOW_SNAPSHOT_FILE = original_money_file
 
-    def test_daily_reset_wait_is_aligned_to_next_beijing_midnight(self):
+    def test_daily_reset_wait_is_aligned_to_next_beijing_nine(self):
         self.assertEqual(
-            dashboard.seconds_until_next_cn_midnight(datetime(2026, 7, 22, 23, 59, 30)),
+            dashboard.seconds_until_next_market_retention_rollover(
+                datetime(2026, 7, 23, 8, 59, 30)
+            ),
             30,
         )
         self.assertEqual(
-            dashboard.seconds_until_next_cn_midnight(datetime(2026, 7, 23, 0, 0, 0)),
+            dashboard.seconds_until_next_market_retention_rollover(
+                datetime(2026, 7, 23, 9, 0, 0)
+            ),
             24 * 60 * 60,
         )
         self.assertEqual(
-            dashboard.seconds_until_next_cn_midnight(
-                datetime(2026, 7, 22, 23, 59, 30, tzinfo=dashboard.CN_TZ)
+            dashboard.seconds_until_next_market_retention_rollover(
+                datetime(2026, 7, 23, 8, 59, 30, tzinfo=dashboard.CN_TZ)
             ),
             30,
         )
