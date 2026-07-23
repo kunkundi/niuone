@@ -1846,6 +1846,60 @@ console.log(JSON.stringify(result));
             dashboard.INDUSTRY_FLOW_HISTORY_FILE = original_history_file
             dashboard.INDUSTRY_FLOW_SAMPLE_INTERVAL_SECONDS = original_interval
 
+    def test_money_flow_fetch_preserves_morning_history_after_afternoon_refresh(self):
+        original_runner = dashboard.run_dashboard_helper
+        original_clock = dashboard.current_cn_datetime
+        original_calendar = dashboard.is_a_share_trading_day_for_dashboard
+        snapshots = iter((
+            {
+                'generated_at': '2026-07-20 11:30:00',
+                'inflow': [{'name': '半导体', 'net_flow_yi': 12}],
+                'outflow': [{'name': '银行', 'net_flow_yi': -3}],
+            },
+            {
+                'generated_at': '2026-07-20 13:00:00',
+                'inflow': [{'name': '软件开发', 'net_flow_yi': 9}],
+                'outflow': [{'name': '银行', 'net_flow_yi': -4}],
+            },
+        ))
+        clocks = iter((
+            datetime(2026, 7, 20, 11, 45),
+            datetime(2026, 7, 20, 13, 0),
+        ))
+        calls = []
+        try:
+            def fake_runner(script_name, fallback, timeout=90, args=()):
+                calls.append((script_name, fallback, timeout, args))
+                return next(snapshots)
+
+            dashboard.run_dashboard_helper = fake_runner
+            dashboard.current_cn_datetime = lambda: next(clocks)
+            dashboard.is_a_share_trading_day_for_dashboard = lambda _now: True
+
+            morning = dashboard.produce_money_flow_data()
+            afternoon = dashboard.produce_money_flow_data()
+        finally:
+            dashboard.run_dashboard_helper = original_runner
+            dashboard.current_cn_datetime = original_clock
+            dashboard.is_a_share_trading_day_for_dashboard = original_calendar
+
+        stored = json.loads(
+            dashboard.INDUSTRY_FLOW_HISTORY_FILE.read_text(encoding='utf-8')
+        )
+        self.assertEqual(morning['generated_at'], '2026-07-20 11:30:00')
+        self.assertEqual(afternoon['generated_at'], '2026-07-20 13:00:00')
+        self.assertEqual(
+            [sample['generated_at'] for sample in stored['samples']],
+            ['2026-07-20 11:30:00', '2026-07-20 13:00:00'],
+        )
+        self.assertEqual(
+            calls,
+            [
+                ('money_flow_dashboard_api.py', {'inflow': [], 'outflow': []}, 120, ()),
+                ('money_flow_dashboard_api.py', {'inflow': [], 'outflow': []}, 120, ()),
+            ],
+        )
+
     def test_industry_flow_sampler_waits_on_a_fixed_minute_cadence(self):
         class StopAfterFirstWait:
             def __init__(self):

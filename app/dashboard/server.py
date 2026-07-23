@@ -2433,16 +2433,30 @@ def record_industry_flow_sample(
         )
 
 
-def refresh_industry_flow_sample() -> bool:
+def fetch_and_record_money_flow(
+    *,
+    force_refresh: bool = False,
+    timeout: int = 120,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Fetch one money-flow snapshot and immediately preserve valid history."""
+
     money_flow = run_dashboard_helper(
         "money_flow_dashboard_api.py",
         {"inflow": [], "outflow": []},
+        timeout=timeout,
+        args=("--force-refresh",) if force_refresh else (),
+    )
+    return money_flow, record_industry_flow_sample(money_flow, now=now)
+
+
+def refresh_industry_flow_sample() -> bool:
+    money_flow, samples = fetch_and_record_money_flow(
+        force_refresh=True,
         # Leave enough time in the minute for the next wall-clock sample even
         # when the upstream request stalls.
         timeout=50,
-        args=("--force-refresh",),
     )
-    samples = record_industry_flow_sample(money_flow)
     generated_at = str(money_flow.get("generated_at") or "")
     recorded = bool(samples and str(samples[-1].get("generated_at") or "") == generated_at)
     if recorded:
@@ -2620,19 +2634,27 @@ def fetch_practice_realtime_market_snapshot(now: datetime) -> dict[str, Any]:
     }
     payloads: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
-        futures = {
-            key: pool.submit(
+        futures = {}
+        for key, (script_name, fallback) in jobs.items():
+            if key == "money_flow":
+                futures[key] = pool.submit(
+                    fetch_and_record_money_flow,
+                    force_refresh=True,
+                    timeout=120,
+                    now=now,
+                )
+                continue
+            futures[key] = pool.submit(
                 run_dashboard_helper,
                 script_name,
                 fallback,
                 120,
                 ("--force-refresh",),
             )
-            for key, (script_name, fallback) in jobs.items()
-        }
         for key, future in futures.items():
             try:
-                payloads[key] = future.result()
+                result = future.result()
+                payloads[key] = result[0] if key == "money_flow" else result
             except Exception as exc:
                 payloads[key] = {**jobs[key][1], "error": f"{type(exc).__name__}: {exc}"}
     return practice_market_summary_impl.build_realtime_market_snapshot(
@@ -2829,11 +2851,8 @@ def produce_us_sector_data() -> dict[str, Any]:
 
 
 def produce_money_flow_data() -> dict[str, Any]:
-    return run_dashboard_helper(
-        "money_flow_dashboard_api.py",
-        {"inflow": [], "outflow": []},
-        timeout=120,
-    )
+    money_flow, _samples = fetch_and_record_money_flow(timeout=120)
+    return money_flow
 
 
 def produce_industry_flow_data() -> dict[str, Any]:
