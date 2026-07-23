@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 from app.dashboard.public_snapshots import SnapshotPublisher, canonical_json_bytes, digest_json
 
@@ -31,6 +32,18 @@ class SnapshotPublisherTests(unittest.TestCase):
         account_digest, account_content = digest_json(sections["account"])
         self.assertEqual(manifest["sections"]["account"]["digest"], account_digest)
         self.assertEqual((self.root / "objects" / f"{account_digest}.json").read_bytes(), account_content)
+
+    def test_unchanged_publish_does_not_rescan_retention_tree(self) -> None:
+        publisher = SnapshotPublisher(self.root, max_revisions=2)
+        sections = {"account": {"cash": 100}}
+        publisher.publish(sections)
+        original_prune = publisher._prune_snapshots
+        publisher._prune_snapshots = Mock(wraps=original_prune)  # type: ignore[method-assign]
+
+        unchanged = publisher.publish(sections)
+
+        self.assertEqual(unchanged["revision"], 1)
+        publisher._prune_snapshots.assert_not_called()
 
     def test_latest_changes_only_after_manifest_and_objects_exist(self) -> None:
         publisher = SnapshotPublisher(self.root)
@@ -117,6 +130,26 @@ class SnapshotPublisherTests(unittest.TestCase):
         self.assertFalse((self.root / "objects" / f"{digests[1]}.json").exists())
         self.assertTrue((self.root / "objects" / f"{digests[2]}.json").exists())
         self.assertTrue((self.root / "objects" / f"{digests[3]}.json").exists())
+
+    def test_pruning_reuses_cached_manifest_object_references(self) -> None:
+        publisher = SnapshotPublisher(self.root, max_revisions=2)
+        for cash in (100, 200, 300):
+            publisher.publish({"account": {"cash": cash}})
+        self.assertEqual(set(publisher._manifest_object_cache), {2, 3})
+        original_read_manifest = publisher.read_manifest
+        read_revisions: list[int] = []
+
+        def tracked_read_manifest(revision: int | str):
+            read_revisions.append(int(revision))
+            return original_read_manifest(revision)
+
+        publisher.read_manifest = tracked_read_manifest  # type: ignore[method-assign]
+        publisher.publish({"account": {"cash": 400}})
+
+        self.assertEqual(read_revisions.count(3), 1)
+        self.assertEqual(read_revisions.count(4), 1)
+        self.assertNotIn(2, read_revisions)
+        self.assertEqual(set(publisher._manifest_object_cache), {3, 4})
 
     def test_canonical_json_is_stable(self) -> None:
         self.assertEqual(canonical_json_bytes({"b": 1, "a": "牛"}), b'{"a":"\xe7\x89\x9b","b":1}\n')

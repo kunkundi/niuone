@@ -42,7 +42,7 @@ class CountingConnection(GuardedConnection):
 
     def execute(self, sql, parameters=()):
         normalized = " ".join(str(sql).lower().split())
-        if "count(distinct dashboard_message_dedupe_key" in normalized:
+        if "count(distinct coalesce(nullif(m.dedupe_key" in normalized:
             object.__setattr__(self, "distinct_count_queries", self.distinct_count_queries + 1)
         return super().execute(sql, parameters)
 
@@ -160,6 +160,35 @@ class PushHistoryQueryTests(unittest.TestCase):
         self.assertIsNotNone(counting_connection)
         self.assertEqual(counting_connection.distinct_count_queries, 1)
 
+    def test_general_message_query_does_not_call_python_dedupe_function(self):
+        con = push_history.connect(self.db_path)
+        try:
+            with con:
+                push_history.upsert_message(
+                    con,
+                    {
+                        "timestamp": 1000,
+                        "category": "market_monitor",
+                        "source_type": "cron",
+                        "source_id": "market",
+                        "content": "market snapshot",
+                    },
+                )
+        finally:
+            con.close()
+
+        original_dedupe = push_history.message_dedupe_key
+        try:
+            push_history.message_dedupe_key = lambda *_args: (_ for _ in ()).throw(
+                AssertionError("query must use the persisted dedupe key")
+            )
+            data = push_history.query_messages(limit=40)
+        finally:
+            push_history.message_dedupe_key = original_dedupe
+
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(len(data["records"]), 1)
+
     def test_x_monitor_fast_page_keeps_preferred_legacy_duplicate(self):
         con = push_history.connect(self.db_path)
         try:
@@ -232,6 +261,64 @@ class PushHistoryQueryTests(unittest.TestCase):
 
         self.assertIn("idx_dashboard_category_external", indexes)
         self.assertEqual(push_history.query_messages(category="x_monitor", limit=10)["records"], [])
+
+    def test_schema_upgrade_backfills_derived_keys_without_rewriting_records(self):
+        con = sqlite3.connect(self.db_path)
+        try:
+            con.executescript(
+                """
+                CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO schema_meta(key, value) VALUES('schema_version', '2');
+                CREATE TABLE dashboard_messages (
+                    id TEXT PRIMARY KEY,
+                    timestamp REAL NOT NULL,
+                    time_text TEXT,
+                    category TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT,
+                    source_label TEXT,
+                    platform TEXT,
+                    platform_label TEXT,
+                    chat TEXT,
+                    chat_label TEXT,
+                    external_id TEXT,
+                    title TEXT,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    chars INTEGER,
+                    matched INTEGER NOT NULL DEFAULT 0,
+                    kind TEXT,
+                    delivery_json TEXT,
+                    metadata_json TEXT,
+                    raw_path TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                INSERT INTO dashboard_messages (
+                    id, timestamp, category, source_type, external_id, content,
+                    content_hash, metadata_json, created_at, updated_at
+                ) VALUES (
+                    'legacy-x', 1000, 'x_monitor', 'legacy', 'tweet-1',
+                    'legacy body', 'hash', '{"post":{}}', 1000, 1000
+                );
+                """
+            )
+            con.commit()
+            push_history.init_db(con)
+            row = con.execute(
+                "SELECT id, content, dedupe_key, x_priority FROM dashboard_messages"
+            ).fetchone()
+        finally:
+            con.close()
+
+        self.assertEqual(row[0], 'legacy-x')
+        self.assertEqual(row[1], 'legacy body')
+        self.assertEqual(row[2], 'x_monitor:tweet-1')
+        self.assertEqual(row[3], 1)
+        self.assertEqual(
+            push_history.query_messages(category='x_monitor', limit=10)['total'],
+            1,
+        )
 
 
 if __name__ == "__main__":

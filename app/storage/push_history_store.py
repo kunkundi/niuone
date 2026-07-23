@@ -40,7 +40,7 @@ else:
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD_HOME = get_dashboard_home(PROJECT_ROOT)
 DB_PATH = Path(os.environ.get("DASHBOARD_PUSH_HISTORY_DB") or str(DASHBOARD_HOME / "push_history.db"))
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MESSAGE_COLUMNS = (
     "id",
     "timestamp",
@@ -147,11 +147,68 @@ def init_db(con: sqlite3.Connection) -> None:
             kind TEXT,
             delivery_json TEXT,
             metadata_json TEXT,
+            dedupe_key TEXT NOT NULL DEFAULT '',
+            x_priority INTEGER NOT NULL DEFAULT 0,
             raw_path TEXT,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
         );
 
+        """
+    )
+    schema_row = con.execute(
+        "SELECT value FROM schema_meta WHERE key='schema_version'"
+    ).fetchone()
+    try:
+        previous_schema_version = int(schema_row[0]) if schema_row else 0
+    except (TypeError, ValueError):
+        previous_schema_version = 0
+    columns = {
+        str(row[1])
+        for row in con.execute("PRAGMA table_info(dashboard_messages)")
+    }
+    derived_columns_added = False
+    if "dedupe_key" not in columns:
+        con.execute(
+            "ALTER TABLE dashboard_messages "
+            "ADD COLUMN dedupe_key TEXT NOT NULL DEFAULT ''"
+        )
+        derived_columns_added = True
+    if "x_priority" not in columns:
+        con.execute(
+            "ALTER TABLE dashboard_messages "
+            "ADD COLUMN x_priority INTEGER NOT NULL DEFAULT 0"
+        )
+        derived_columns_added = True
+    if derived_columns_added or previous_schema_version < SCHEMA_VERSION:
+        derived_rows = con.execute(
+            """
+            SELECT id, category, content, external_id, metadata_json
+            FROM dashboard_messages
+            """
+        ).fetchall()
+        con.executemany(
+            """
+            UPDATE dashboard_messages
+            SET dedupe_key = ?, x_priority = ?
+            WHERE id = ?
+            """,
+            [
+                (
+                    message_dedupe_key(
+                        row[0],
+                        row[1],
+                        row[2],
+                        row[3],
+                    ),
+                    x_metadata_priority(row[1], row[4]),
+                    row[0],
+                )
+                for row in derived_rows
+            ],
+        )
+    con.executescript(
+        """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_dashboard_source_external
             ON dashboard_messages(source_type, source_id, external_id)
             WHERE external_id IS NOT NULL AND external_id != '';
@@ -171,6 +228,12 @@ def init_db(con: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_dashboard_platform_chat
             ON dashboard_messages(platform, chat);
+
+        CREATE INDEX IF NOT EXISTS idx_dashboard_category_dedupe
+            ON dashboard_messages(category, dedupe_key);
+
+        CREATE INDEX IF NOT EXISTS idx_dashboard_dedupe_time
+            ON dashboard_messages(dedupe_key, timestamp DESC);
         """
     )
     con.execute(
@@ -200,6 +263,8 @@ def upsert_message(con: sqlite3.Connection, message: dict[str, Any]) -> str:
     source_id = str(message.get("source_id") or "")
     external_id = str(message.get("external_id") or "")
     raw_path = str(message.get("raw_path") or "")
+    category = str(message.get("category") or "other")
+    metadata_json = dumps(message.get("metadata"))
     base_key_parts = [source_type, source_id, external_id, raw_path]
     if external_id or raw_path:
         msg_id = str(message.get("id") or stable_id(*base_key_parts))
@@ -225,7 +290,7 @@ def upsert_message(con: sqlite3.Connection, message: dict[str, Any]) -> str:
         "id": msg_id,
         "timestamp": timestamp,
         "time_text": message.get("time_text") or message.get("time") or "",
-        "category": str(message.get("category") or "other"),
+        "category": category,
         "source_type": source_type,
         "source_id": source_id,
         "source_label": message.get("source_label") or "",
@@ -241,7 +306,9 @@ def upsert_message(con: sqlite3.Connection, message: dict[str, Any]) -> str:
         "matched": 1 if message.get("matched") else 0,
         "kind": message.get("kind") or "",
         "delivery_json": dumps(message.get("delivery")),
-        "metadata_json": dumps(message.get("metadata")),
+        "metadata_json": metadata_json,
+        "dedupe_key": message_dedupe_key(msg_id, category, content, external_id),
+        "x_priority": x_metadata_priority(category, metadata_json),
         "raw_path": raw_path,
         "created_at": float(message.get("created_at") or now),
         "updated_at": now,
@@ -251,13 +318,13 @@ def upsert_message(con: sqlite3.Connection, message: dict[str, Any]) -> str:
         INSERT INTO dashboard_messages (
             id, timestamp, time_text, category, source_type, source_id, source_label,
             platform, platform_label, chat, chat_label, external_id, title, content,
-            content_hash, chars, matched, kind, delivery_json, metadata_json, raw_path,
-            created_at, updated_at
+            content_hash, chars, matched, kind, delivery_json, metadata_json,
+            dedupe_key, x_priority, raw_path, created_at, updated_at
         ) VALUES (
             :id, :timestamp, :time_text, :category, :source_type, :source_id, :source_label,
             :platform, :platform_label, :chat, :chat_label, :external_id, :title, :content,
-            :content_hash, :chars, :matched, :kind, :delivery_json, :metadata_json, :raw_path,
-            :created_at, :updated_at
+            :content_hash, :chars, :matched, :kind, :delivery_json, :metadata_json,
+            :dedupe_key, :x_priority, :raw_path, :created_at, :updated_at
         )
         ON CONFLICT(id) DO UPDATE SET
             timestamp=excluded.timestamp,
@@ -279,6 +346,8 @@ def upsert_message(con: sqlite3.Connection, message: dict[str, Any]) -> str:
             kind=excluded.kind,
             delivery_json=excluded.delivery_json,
             metadata_json=excluded.metadata_json,
+            dedupe_key=excluded.dedupe_key,
+            x_priority=excluded.x_priority,
             raw_path=excluded.raw_path,
             updated_at=excluded.updated_at
         """,
@@ -330,7 +399,7 @@ def query_messages(
                 """
                 SELECT
                     m.category,
-                    COUNT(DISTINCT dashboard_message_dedupe_key(m.id, m.category, m.content, m.external_id)) AS count
+                    COUNT(DISTINCT COALESCE(NULLIF(m.dedupe_key, ''), m.id)) AS count
                 FROM dashboard_messages m
                 GROUP BY m.category
                 """
@@ -344,7 +413,7 @@ def query_messages(
             matched_total = int(
                 con.execute(
                     f"""
-                    SELECT COUNT(DISTINCT dashboard_message_dedupe_key(m.id, m.category, m.content, m.external_id))
+                    SELECT COUNT(DISTINCT COALESCE(NULLIF(m.dedupe_key, ''), m.id))
                     FROM dashboard_messages m
                     {where_sql}
                     """,
@@ -412,12 +481,8 @@ def query_messages(
                 WITH base AS (
                     SELECT
                         {column_select},
-                        dashboard_message_dedupe_key(m.id, m.category, m.content, m.external_id) AS dedupe_key,
-                        CASE
-                            WHEN m.category = 'x_monitor'
-                            THEN dashboard_x_metadata_priority(m.category, m.metadata_json)
-                            ELSE 0
-                        END AS x_priority,
+                        COALESCE(NULLIF(m.dedupe_key, ''), m.id) AS dedupe_key,
+                        m.x_priority AS x_priority,
                         CASE WHEN m.kind = 'cron_output' THEN 0 ELSE 1 END AS kind_priority,
                         length(COALESCE(m.content, '')) AS content_len
                     FROM dashboard_messages m

@@ -38,6 +38,7 @@ class SnapshotPublisher:
         self.stale_lock_seconds = max(self.lock_timeout_seconds, float(stale_lock_seconds))
         self.max_revisions = max(2, int(max_revisions))
         self._thread_lock = threading.Lock()
+        self._manifest_object_cache: dict[int, frozenset[str]] = {}
 
     @property
     def latest_path(self) -> Path:
@@ -75,7 +76,6 @@ class SnapshotPublisher:
             previous_revision = int(latest.get("revision") or 0)
             previous_manifest = self.read_manifest(previous_revision) if previous_revision else None
             if previous_manifest and previous_manifest.get("sections") == object_refs:
-                self._prune_snapshots()
                 return latest
 
             manifest_revisions = self._manifest_revisions()
@@ -85,7 +85,7 @@ class SnapshotPublisher:
                 orphan = self.read_manifest(orphan_revision)
                 if orphan and orphan.get("sections") == object_refs:
                     next_latest = self._point_latest_at_manifest(orphan)
-                    self._prune_snapshots()
+                    self._prune_snapshots(manifest_revisions)
                     return next_latest
 
             revision = max([previous_revision, *manifest_revisions], default=0) + 1
@@ -99,7 +99,7 @@ class SnapshotPublisher:
             manifest_path = self.root / "manifests" / f"{revision}.json"
             self._write_once(manifest_path, manifest_content)
             next_latest = self._point_latest_at_manifest(manifest)
-            self._prune_snapshots()
+            self._prune_snapshots([*manifest_revisions, revision])
             return next_latest
 
     def _point_latest_at_manifest(self, manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -133,8 +133,22 @@ class SnapshotPublisher:
         except (FileNotFoundError, OSError, ValueError, TypeError):
             return None
 
-    def _prune_snapshots(self) -> None:
-        revisions = self._manifest_revisions()
+    def _manifest_object_digests(self, revision: int) -> frozenset[str]:
+        cached = self._manifest_object_cache.get(revision)
+        if cached is not None:
+            return cached
+        manifest = self.read_manifest(revision) or {}
+        digests = frozenset(
+            str(reference.get("digest") or "")
+            for reference in manifest.get("sections", {}).values()
+            if isinstance(reference, Mapping)
+            and len(str(reference.get("digest") or "")) == 64
+        )
+        self._manifest_object_cache[revision] = digests
+        return digests
+
+    def _prune_snapshots(self, revisions: list[int] | None = None) -> None:
+        revisions = self._manifest_revisions() if revisions is None else sorted(revisions)
         if len(revisions) <= self.max_revisions:
             return
         retained = set(revisions[-self.max_revisions:])
@@ -143,12 +157,7 @@ class SnapshotPublisher:
             retained.add(latest_revision)
         referenced_objects: set[str] = set()
         for revision in retained:
-            manifest = self.read_manifest(revision) or {}
-            for reference in manifest.get("sections", {}).values():
-                if isinstance(reference, Mapping):
-                    digest = str(reference.get("digest") or "")
-                    if len(digest) == 64:
-                        referenced_objects.add(digest)
+            referenced_objects.update(self._manifest_object_digests(revision))
         for revision in revisions:
             if revision in retained:
                 continue
@@ -156,6 +165,7 @@ class SnapshotPublisher:
                 (self.root / "manifests" / f"{revision}.json").unlink()
             except (FileNotFoundError, OSError):
                 pass
+            self._manifest_object_cache.pop(revision, None)
         try:
             object_paths = tuple((self.root / "objects").glob("*.json"))
         except OSError:
