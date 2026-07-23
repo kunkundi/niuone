@@ -147,7 +147,7 @@ def _dragon_tiger_context(
     snapshot: Any,
     members: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-    """Map an exact prior-day archive onto this scan's stock and industry universe."""
+    """Map an exact prior-day snapshot onto this scan's stock and industry universe."""
     source = snapshot if isinstance(snapshot, Mapping) else {}
     items = source.get("items") if isinstance(source.get("items"), list) else []
     available = source.get("available") is True and bool(items)
@@ -195,7 +195,7 @@ def _dragon_tiger_context(
 
     metadata = {
         "available": available,
-        "source": str(source.get("source") or "local_dragon_tiger_archive"),
+        "source": str(source.get("source") or "local_dragon_tiger_snapshot"),
         "as_of_date": str(source.get("date") or ""),
         "requested_date": str(source.get("requested_date") or source.get("date") or ""),
         "archive": source.get("archive") is True,

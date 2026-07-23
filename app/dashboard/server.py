@@ -43,6 +43,7 @@ from dashboard.model_connectivity import (
 from dashboard.apis.iwencai_service import (
     DEFAULT_LIMIT as IWENCAI_DRAGON_TIGER_DEFAULT_LIMIT,
     dragon_tiger_archive_path,
+    expire_dragon_tiger_archives,
     fetch_dragon_tiger,
     normalize_limit as normalize_iwencai_limit,
     normalize_page as normalize_iwencai_page,
@@ -2848,16 +2849,32 @@ def iwencai_dragon_tiger_snapshot_version(
     *,
     include_latest: bool,
 ) -> int:
-    paths = [dragon_tiger_archive_path(iwencai_dragon_tiger_archive_dir(), trade_date)]
-    if include_latest:
-        paths.append(IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE)
-    versions = []
-    for path in paths:
-        try:
-            versions.append(path.stat().st_mtime_ns)
-        except OSError:
-            continue
-    return max(versions, default=0)
+    del trade_date  # Kept in the signature for compatibility with existing callers.
+    if not include_latest:
+        return 0
+    try:
+        return IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+def iwencai_dragon_tiger_retained_date() -> str:
+    """Return the date of the rolling snapshot that remains publicly visible."""
+
+    snapshot = read_dragon_tiger_snapshot(IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE)
+    return str(snapshot.get("date") or "") if snapshot else ""
+
+
+def _iwencai_dragon_tiger_latest_snapshot(
+    trade_date: str,
+) -> dict[str, Any] | None:
+    latest = read_dragon_tiger_snapshot(IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE)
+    if not latest:
+        return None
+    latest["stale"] = str(latest.get("date") or "") != trade_date
+    latest["requested_date"] = trade_date
+    latest["scheduled_refresh_time"] = "18:00"
+    return latest
 
 
 def produce_iwencai_dragon_tiger_data(
@@ -2866,6 +2883,7 @@ def produce_iwencai_dragon_tiger_data(
     page: int,
     limit: int,
     allow_latest_snapshot: bool,
+    fallback_to_latest_on_empty: bool = False,
 ) -> dict[str, Any]:
     use_snapshot = page == 1 and limit == IWENCAI_DRAGON_TIGER_DEFAULT_LIMIT
     if use_snapshot:
@@ -2873,40 +2891,33 @@ def produce_iwencai_dragon_tiger_data(
             IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE,
             trade_date=trade_date,
         )
-        if allow_latest_snapshot and exact_latest:
-            exact_latest["stale"] = False
-            exact_latest["scheduled_refresh_time"] = "18:00"
-            return exact_latest
-        archived = read_dragon_tiger_archive(
-            iwencai_dragon_tiger_archive_dir(),
-            trade_date=trade_date,
-        )
-        if archived:
-            archived["stale"] = False
-            archived["scheduled_refresh_time"] = "18:00"
-            return archived
         if exact_latest:
             exact_latest["stale"] = False
             exact_latest["scheduled_refresh_time"] = "18:00"
             return exact_latest
         if allow_latest_snapshot:
-            latest = read_dragon_tiger_snapshot(IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE)
+            latest = _iwencai_dragon_tiger_latest_snapshot(trade_date)
             if latest:
-                latest["stale"] = str(latest.get("date") or "") != trade_date
-                latest["requested_date"] = trade_date
-                latest["scheduled_refresh_time"] = "18:00"
                 return latest
 
     payload = fetch_dragon_tiger(trade_date, page=page, limit=limit)
     payload["scheduled_refresh_time"] = "18:00"
-    if use_snapshot:
-        if write_dragon_tiger_archive(iwencai_dragon_tiger_archive_dir(), payload):
-            payload["archive_saved"] = True
-        if allow_latest_snapshot and write_dragon_tiger_snapshot(
+    if use_snapshot and fallback_to_latest_on_empty and not payload.get("items"):
+        latest = _iwencai_dragon_tiger_latest_snapshot(trade_date)
+        if latest:
+            return latest
+    if use_snapshot and allow_latest_snapshot:
+        if write_dragon_tiger_snapshot(
             IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE,
             payload,
         ):
             payload["snapshot_saved"] = True
+            try:
+                payload["expired_archive_count"] = expire_dragon_tiger_archives(
+                    iwencai_dragon_tiger_archive_dir()
+                )
+            except OSError as exc:
+                payload["archive_cleanup_error"] = type(exc).__name__
     return payload
 
 

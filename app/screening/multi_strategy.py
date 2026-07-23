@@ -599,31 +599,44 @@ def fetch_sector_tide_money_flow() -> dict[str, Any]:
     return fetch_industry_money_flow()
 
 
-def sector_tide_dragon_tiger_archive_dir() -> Path:
-    """Resolve the archive beside the configured latest-snapshot file."""
-    snapshot_file = Path(
+def sector_tide_dragon_tiger_snapshot_file() -> Path:
+    """Resolve the rolling latest snapshot used as prior-day confirmation."""
+
+    return Path(
         os.environ.get("IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE")
         or B1_OUTPUT_DIR / "iwencai_dragon_tiger_latest.json"
     ).expanduser()
-    return snapshot_file.parent / "iwencai_dragon_tiger"
+
+
+def sector_tide_dragon_tiger_archive_dir() -> Path:
+    """Compatibility path for integrations still injecting an archive reader."""
+
+    return sector_tide_dragon_tiger_snapshot_file().parent / "iwencai_dragon_tiger"
 
 
 def load_previous_sector_tide_dragon_tiger(
     now: datetime | None = None,
     *,
+    snapshot_path: Path | None = None,
+    snapshot_reader: Callable[..., dict[str, Any] | None] | None = None,
     archive_dir: Path | None = None,
     status_loader: Callable[..., dict[str, Any]] | None = None,
     archive_reader: Callable[..., dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
-    """Load only the exact prior A-share trading-day archive; never use same-day data."""
+    """Load the rolling snapshot only when it is the exact prior trading day."""
     if status_loader is None:
         from a_share_calendar import trading_day_status
 
         status_loader = trading_day_status
-    if archive_reader is None:
-        from dashboard.apis.iwencai_service import read_dragon_tiger_archive
+    if snapshot_reader is None and archive_reader is None:
+        if archive_dir is not None:
+            from dashboard.apis.iwencai_service import read_dragon_tiger_archive
 
-        archive_reader = read_dragon_tiger_archive
+            archive_reader = read_dragon_tiger_archive
+        else:
+            from dashboard.apis.iwencai_service import read_dragon_tiger_snapshot
+
+            snapshot_reader = read_dragon_tiger_snapshot
 
     current = now or datetime.now()
     try:
@@ -631,7 +644,7 @@ def load_previous_sector_tide_dragon_tiger(
     except Exception as exc:
         return {
             "available": False,
-            "source": "local_dragon_tiger_archive",
+            "source": "local_dragon_tiger_snapshot",
             "date": "",
             "requested_date": "",
             "items": [],
@@ -640,7 +653,7 @@ def load_previous_sector_tide_dragon_tiger(
     previous_date = str(calendar.get("previous_trading_day") or "")
     unavailable = {
         "available": False,
-        "source": "local_dragon_tiger_archive",
+        "source": "local_dragon_tiger_snapshot",
         "date": previous_date,
         "requested_date": previous_date,
         "items": [],
@@ -650,15 +663,21 @@ def load_previous_sector_tide_dragon_tiger(
         unavailable["error"] = "previous_trading_day_unavailable"
         return unavailable
     try:
-        snapshot = archive_reader(
-            archive_dir or sector_tide_dragon_tiger_archive_dir(),
-            trade_date=previous_date,
-        )
+        if archive_reader is not None:
+            snapshot = archive_reader(
+                archive_dir or sector_tide_dragon_tiger_archive_dir(),
+                trade_date=previous_date,
+            )
+        else:
+            snapshot = snapshot_reader(
+                snapshot_path or sector_tide_dragon_tiger_snapshot_file(),
+                trade_date=previous_date,
+            )
     except Exception as exc:
-        unavailable["error"] = f"archive_read_{type(exc).__name__}"
+        unavailable["error"] = f"snapshot_read_{type(exc).__name__}"
         return unavailable
     if not isinstance(snapshot, dict):
-        unavailable["error"] = "archive_missing"
+        unavailable["error"] = "snapshot_missing"
         return unavailable
     payload = dict(snapshot)
     payload["requested_date"] = previous_date

@@ -36,6 +36,7 @@ class FastApiDashboardTests(unittest.TestCase):
         self.original_legacy_stats_db = self.legacy.LEGACY_STATS_DB
         self.original_stats_signature = self.legacy.VISIT_STATS_INIT_SIGNATURE
         self.original_cron_output_dir = self.legacy.CRON_OUTPUT_DIR
+        self.original_iwencai_snapshot_file = self.legacy.IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE
         self.original_market_breadth_history_file = self.legacy.MARKET_BREADTH_HISTORY_FILE
         self.original_industry_flow_history_file = self.legacy.INDUSTRY_FLOW_HISTORY_FILE
         self.original_money_flow_snapshot_file = self.legacy.MONEY_FLOW_SNAPSHOT_FILE
@@ -46,6 +47,9 @@ class FastApiDashboardTests(unittest.TestCase):
         self.legacy.VISIT_STATS_INIT_SIGNATURE = None
         self.legacy.CRON_OUTPUT_DIR = self.root / "cron-output"
         self.legacy.CRON_OUTPUT_DIR.mkdir()
+        self.legacy.IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE = (
+            self.legacy.CRON_OUTPUT_DIR / "iwencai_dragon_tiger_latest.json"
+        )
         self.legacy.MARKET_BREADTH_HISTORY_FILE = self.legacy.CRON_OUTPUT_DIR / "market_breadth_history.json"
         self.legacy.INDUSTRY_FLOW_HISTORY_FILE = self.legacy.CRON_OUTPUT_DIR / "industry_main_flow_history.json"
         self.legacy.MONEY_FLOW_SNAPSHOT_FILE = self.legacy.CRON_OUTPUT_DIR / "industry_main_money_flow_cache.json"
@@ -70,6 +74,7 @@ class FastApiDashboardTests(unittest.TestCase):
         self.legacy.LEGACY_STATS_DB = self.original_legacy_stats_db
         self.legacy.VISIT_STATS_INIT_SIGNATURE = self.original_stats_signature
         self.legacy.CRON_OUTPUT_DIR = self.original_cron_output_dir
+        self.legacy.IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE = self.original_iwencai_snapshot_file
         self.legacy.MARKET_BREADTH_HISTORY_FILE = self.original_market_breadth_history_file
         self.legacy.INDUSTRY_FLOW_HISTORY_FILE = self.original_industry_flow_history_file
         self.legacy.MONEY_FLOW_SNAPSHOT_FILE = self.original_money_flow_snapshot_file
@@ -198,6 +203,12 @@ class FastApiDashboardTests(unittest.TestCase):
             patch.object(self.legacy, "seed_api_cache_from_json_file", return_value=False),
             patch.object(self.legacy, "reset_daily_market_histories", return_value=False) as reset_daily,
         ):
+            admin_cookie_header = {
+                "Cookie": (
+                    f"{self.legacy.ADMIN_SESSION_COOKIE_NAME}="
+                    f"{self.legacy.new_admin_session()}"
+                ),
+            }
             for path, cache_key in (
                 ("/api/messages?limit=25&offset=50&category=x_monitor", "messages:v4:x_monitor:25:50"),
                 (
@@ -210,7 +221,7 @@ class FastApiDashboardTests(unittest.TestCase):
                 ),
                 (
                     "/api/iwencai/dragon-tiger?date=2026-07-16&page=2&limit=10",
-                    "iwencai_dragon_tiger:2026-07-16:2:10:0:0",
+                    "iwencai_dragon_tiger:2026-07-16:2:10:0:0:0",
                 ),
                 ("/api/practice_candidates", "practice_candidates"),
                 ("/api/b1_screen", "practice_candidates"),
@@ -232,11 +243,21 @@ class FastApiDashboardTests(unittest.TestCase):
                 ("/api/market_flow", "market_flow"),
             ):
                 with self.subTest(path=path):
-                    response = self.client.get(path)
+                    response = self.client.get(
+                        path,
+                        headers=(
+                            admin_cookie_header
+                            if "/dragon-tiger?date=" in path
+                            else None
+                        ),
+                    )
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.json(), {"route": cache_key})
                     self.assertEqual(response.headers["X-Dashboard-Cache"], "HIT")
-                    self.assertIn("max-age=", response.headers["Cache-Control"])
+                    if "/dragon-tiger?date=" in path:
+                        self.assertEqual(response.headers["Cache-Control"], "no-store")
+                    else:
+                        self.assertIn("max-age=", response.headers["Cache-Control"])
                     self.assertIn("CDN-Cache-Control", response.headers)
 
             head = self.client.head("/api/indices")
@@ -250,7 +271,7 @@ class FastApiDashboardTests(unittest.TestCase):
             "messages:v4:x_monitor:25:50",
             "messages-revision:v1:market_monitor",
             "messages-revision:v2:x_monitor:10:20",
-            "iwencai_dragon_tiger:2026-07-16:2:10:0:0",
+            "iwencai_dragon_tiger:2026-07-16:2:10:0:0:0",
             "practice_candidates",
             "practice_candidates",
             "niuniu_practice_fast:v2",
@@ -279,6 +300,80 @@ class FastApiDashboardTests(unittest.TestCase):
         )
         self.assertEqual(forced_candidates.status_code, 405)
         self.assertEqual(forced_candidates.headers["Allow"], "POST")
+
+    def test_dragon_tiger_retained_date_stays_public_until_next_snapshot(self):
+        current_date = self.legacy.normalize_iwencai_trade_date("")
+        historical_date = "2000-01-04"
+        retained_date = "2000-01-05"
+        self.assertTrue(
+            self.legacy.write_dragon_tiger_snapshot(
+                self.legacy.IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE,
+                {
+                    "enabled": True,
+                    "available": True,
+                    "source": "同花顺问财",
+                    "date": retained_date,
+                    "items": [{"code": "000002.SZ"}],
+                },
+            )
+        )
+        payload = {
+            "enabled": True,
+            "available": True,
+            "source": "同花顺问财",
+            "date": historical_date,
+            "items": [{"code": "000001.SZ"}],
+        }
+        with patch.object(
+            self.legacy,
+            "produce_iwencai_dragon_tiger_data",
+            return_value=payload,
+        ) as produce:
+            locked = self.client.get(
+                f"/api/iwencai/dragon-tiger?date={historical_date}"
+            )
+            locked_head = self.client.head(
+                f"/api/iwencai/dragon-tiger?date={historical_date}"
+            )
+            retained = self.client.get(
+                f"/api/iwencai/dragon-tiger?date={retained_date}"
+            )
+            retained_head = self.client.head(
+                f"/api/iwencai/dragon-tiger?date={retained_date}"
+            )
+            current = self.client.get(
+                f"/api/iwencai/dragon-tiger?date={current_date}"
+            )
+            unlocked = self.client.get(
+                f"/api/iwencai/dragon-tiger?date={historical_date}",
+                headers={
+                    "Cookie": (
+                        f"{self.legacy.ADMIN_SESSION_COOKIE_NAME}="
+                        f"{self.legacy.new_admin_session()}"
+                    ),
+                },
+            )
+
+        self.assertEqual(locked.status_code, 403)
+        self.assertEqual(locked.json(), {"error": "admin_password_required"})
+        self.assertEqual(locked.headers["Cache-Control"], "no-store")
+        self.assertEqual(locked_head.status_code, 403)
+        self.assertEqual(retained.status_code, 200)
+        self.assertEqual(retained.headers["Cache-Control"], "no-store")
+        self.assertEqual(retained_head.status_code, 200)
+        self.assertEqual(current.status_code, 200)
+        self.assertEqual(unlocked.status_code, 200)
+        self.assertEqual(unlocked.headers["Cache-Control"], "no-store")
+        self.assertEqual(produce.call_count, 3)
+        self.assertFalse(
+            produce.call_args_list[0].kwargs["fallback_to_latest_on_empty"]
+        )
+        self.assertTrue(
+            produce.call_args_list[1].kwargs["fallback_to_latest_on_empty"]
+        )
+        self.assertFalse(
+            produce.call_args_list[2].kwargs["fallback_to_latest_on_empty"]
+        )
 
     def test_message_revision_projection_omits_full_history_content(self):
         revision = messages_revision_payload(
@@ -950,6 +1045,9 @@ class FastApiDashboardTests(unittest.TestCase):
         admin_config = (
             ROOT / "web" / "src" / "composables" / "useAdminConfig.js"
         ).read_text(encoding="utf-8")
+        admin_session = (
+            ROOT / "web" / "src" / "utils" / "adminSession.js"
+        ).read_text(encoding="utf-8")
         self.assertIn('id="complianceDialog"', compliance)
         self.assertIn('id="versionStatus"', version)
         self.assertIn(':id="buttonId"', theme)
@@ -1152,8 +1250,9 @@ class FastApiDashboardTests(unittest.TestCase):
         self.assertIn("notification_remove__", admin_notifications)
         self.assertIn("defineExpose({ applySavedConfig })", admin_notifications)
         self.assertIn("fetch('/api/admin/config'", admin_config)
-        self.assertIn("fetch('/api/admin/session'", admin_config)
-        self.assertIn("credentials: 'same-origin'", admin_config)
+        self.assertIn("authenticateAdmin(credential)", admin_config)
+        self.assertIn("fetch('/api/admin/session'", admin_session)
+        self.assertIn("credentials: 'same-origin'", admin_session)
         self.assertNotIn("useLegacyController", dashboard)
         self.assertNotIn("/static/dashboard.js", dashboard)
         self.assertNotIn("niuone:category-select", tabs + indices + industry_flow)
@@ -1215,6 +1314,44 @@ class FastApiDashboardTests(unittest.TestCase):
             ".compliance-dialog-backdrop { align-items:end; padding:12px; }",
             stylesheet,
         )
+
+    def test_mobile_dragon_tiger_names_are_not_truncated_by_seat_counts(self):
+        component = (
+            ROOT / "web" / "src" / "components" / "DragonTigerPanel.vue"
+        ).read_text(encoding="utf-8")
+        stylesheet = (ROOT / "frontend" / "dashboard.css").read_text(encoding="utf-8")
+
+        self.assertNotIn("seatBadge", component)
+        self.assertNotIn("dragon-tiger-seat-badge", component + stylesheet)
+        self.assertIn(
+            ".dragon-tiger-list-name { align-items:flex-start; gap:3px; "
+            "overflow:visible; white-space:normal; }",
+            stylesheet,
+        )
+        self.assertIn(
+            ".dragon-tiger-list-name > span { overflow:visible; text-overflow:clip; "
+            "white-space:normal; overflow-wrap:anywhere; }",
+            stylesheet,
+        )
+        self.assertIn("最近一次成功查询会保留至下次成功更新", component)
+        self.assertNotIn("每日成功数据按交易日归档", component)
+        self.assertIn("当日及当前保留的最近数据无需密码", component)
+        self.assertIn("await authenticateAdmin(adminAuth.credential)", component)
+
+    def test_dragon_tiger_foreground_query_exposes_loading_state(self):
+        component = (
+            ROOT / "web" / "src" / "components" / "DragonTigerPanel.vue"
+        ).read_text(encoding="utf-8")
+        stylesheet = (ROOT / "frontend" / "dashboard.css").read_text(encoding="utf-8")
+
+        self.assertIn("if (payload.value.loading) return '实时回源查询中…'", component)
+        self.assertIn("{{ payload.loading ? '查询中…' : '查看' }}", component)
+        self.assertIn('v-if="payload.available || payload.loading"', component)
+        self.assertIn('querying: payload.loading', component)
+        self.assertIn('role="status"', component)
+        self.assertIn('aria-live="polite"', component)
+        self.assertGreaterEqual(component.count(':disabled="payload.loading"'), 3)
+        self.assertIn(".dragon-tiger-status.querying", stylesheet)
 
     def test_http_boundaries_remain_split_into_fastapi_routers(self):
         composition = (

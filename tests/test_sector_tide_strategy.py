@@ -205,12 +205,12 @@ class SectorTideStrategyTests(unittest.TestCase):
                 "date": "2026-07-16",
                 "requested_date": "2026-07-16",
                 "items": [],
-                "error": "archive_missing",
+                "error": "snapshot_missing",
             },
         )
 
         self.assertFalse(context["dragon_tiger"]["available"])
-        self.assertEqual(context["dragon_tiger"]["error"], "archive_missing")
+        self.assertEqual(context["dragon_tiger"]["error"], "snapshot_missing")
         self.assertEqual(context["sectors"]["半导体"]["dragon_tiger_adjustment"], 0)
         self.assertEqual(context["sectors"]["半导体"]["score"], context["sectors"]["半导体"]["base_score"])
         self.assertTrue(all(not stock["dragon_tiger_listed"] for stock in context["stocks"].values()))

@@ -160,7 +160,7 @@ class MultiStrategyRuleTests(unittest.TestCase):
 
         self.assertEqual(calls, [2])
 
-    def test_sector_tide_loads_only_exact_previous_trading_day_archive(self):
+    def test_sector_tide_loads_only_exact_previous_trading_day_snapshot(self):
         calls = {}
 
         def status_loader(value, *, allow_refresh=True):
@@ -171,48 +171,48 @@ class MultiStrategyRuleTests(unittest.TestCase):
                 "source": "test_calendar",
             }
 
-        def archive_reader(path, *, trade_date):
-            calls["archive_path"] = path
+        def snapshot_reader(path, *, trade_date):
+            calls["snapshot_path"] = path
             calls["trade_date"] = trade_date
             return {
                 "available": True,
-                "archive": True,
+                "snapshot": True,
                 "source": "同花顺问财",
                 "date": trade_date,
                 "items": [{"code": "600000.SH"}],
             }
 
-        archive_dir = Path("/tmp/niuone-sector-tide-dragon-tiger")
+        snapshot_path = Path("/tmp/niuone-sector-tide-dragon-tiger-latest.json")
         payload = screen.load_previous_sector_tide_dragon_tiger(
             datetime(2026, 7, 17, 10, 0, 0),
-            archive_dir=archive_dir,
+            snapshot_path=snapshot_path,
             status_loader=status_loader,
-            archive_reader=archive_reader,
+            snapshot_reader=snapshot_reader,
         )
 
         self.assertFalse(calls["allow_refresh"])
         self.assertEqual(calls["trade_date"], "2026-07-16")
-        self.assertEqual(calls["archive_path"], archive_dir)
+        self.assertEqual(calls["snapshot_path"], snapshot_path)
         self.assertEqual(payload["date"], "2026-07-16")
         self.assertEqual(payload["requested_date"], "2026-07-16")
         self.assertEqual(payload["calendar_source"], "test_calendar")
 
-    def test_sector_tide_missing_previous_archive_degrades_without_latest_fallback(self):
+    def test_sector_tide_missing_previous_snapshot_degrades_to_neutral(self):
         requested = []
 
         payload = screen.load_previous_sector_tide_dragon_tiger(
             datetime(2026, 7, 17, 10, 0, 0),
-            archive_dir=Path("/tmp/niuone-sector-tide-dragon-tiger"),
+            snapshot_path=Path("/tmp/niuone-sector-tide-dragon-tiger-latest.json"),
             status_loader=lambda _value, **_kwargs: {
                 "previous_trading_day": "2026-07-16",
                 "source": "test_calendar",
             },
-            archive_reader=lambda _path, *, trade_date: requested.append(trade_date),
+            snapshot_reader=lambda _path, *, trade_date: requested.append(trade_date),
         )
 
         self.assertEqual(requested, ["2026-07-16"])
         self.assertFalse(payload["available"])
-        self.assertEqual(payload["error"], "archive_missing")
+        self.assertEqual(payload["error"], "snapshot_missing")
         self.assertEqual(payload["items"], [])
 
     def test_sector_tide_loads_validated_overnight_us_cache(self):

@@ -215,6 +215,31 @@ def write_dragon_tiger_archive(archive_dir: Path, payload: Mapping[str, Any]) ->
     return True
 
 
+def expire_dragon_tiger_archives(archive_dir: Path) -> int:
+    """Remove legacy dated snapshots after a newer latest snapshot is durable."""
+
+    try:
+        candidates = list(archive_dir.iterdir())
+    except FileNotFoundError:
+        return 0
+    removed = 0
+    for path in candidates:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}\.json", path.name):
+            continue
+        try:
+            if not path.is_file():
+                continue
+            path.unlink()
+            removed += 1
+        except FileNotFoundError:
+            continue
+    try:
+        archive_dir.rmdir()
+    except OSError:
+        pass
+    return removed
+
+
 def normalize_trade_date(value: str | None, *, now: datetime | None = None) -> str:
     raw = str(value or "").strip()
     if not raw:

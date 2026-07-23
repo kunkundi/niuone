@@ -1,6 +1,7 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useDashboardTabs } from '../composables/useDashboardTabs.js'
+import { authenticateAdmin } from '../utils/adminSession.js'
 import { startVisiblePolling } from '../utils/visiblePolling.js'
 
 const REFRESH_INTERVAL_MS = 60 * 1000
@@ -11,10 +12,13 @@ const selectedDate = ref(/^\d{4}-\d{2}-\d{2}$/.test(initialDate) ? initialDate :
 const dateInput = ref(selectedDate.value)
 const payload = ref({ loading: true, loaded: false, available: false, items: [] })
 const sort = reactive({ key: 'net_amount_yuan', direction: 'desc' })
+const adminAuth = reactive({ open: false, credential: '', error: '', submitting: false })
+const adminCredentialInput = ref(null)
 const { setCategoryCount } = useDashboardTabs()
 let requestController = null
 let loadSequence = 0
 let stopRefreshPolling = null
+let pendingLoadOptions = null
 
 function numberValue(value) {
   const number = Number(value)
@@ -138,16 +142,6 @@ function streak(item) {
   return null
 }
 
-function seatBadge(item) {
-  const count = Math.max(0, Math.trunc(Number(item?.seat_record_count) || 0))
-  const institutions = Math.max(0, Math.trunc(Number(item?.institution_record_count) || 0))
-  if (!count) return null
-  return {
-    label: `席位${count}`,
-    title: `买卖前五席位 ${count} 条${institutions ? `，其中机构 ${institutions} 条` : ''}`,
-  }
-}
-
 function seatRank(record, side) {
   const sideRank = Math.max(0, Math.trunc(Number(record?.[`${side}_rank`]) || 0))
   if (sideRank) return sideRank
@@ -203,8 +197,8 @@ function errorText(error) {
 
 const refreshTime = computed(() => payload.value.scheduled_refresh_time || '18:00')
 const statusText = computed(() => {
+  if (payload.value.loading) return '实时回源查询中…'
   if (payload.value.stale) return `当前展示最近成功快照 · 原计划 ${payload.value.requested_date || ''}`
-  if (payload.value.archive) return '交易日历史归档'
   if (payload.value.snapshot) return `${refreshTime.value} 定时快照`
   return '实时回源数据'
 })
@@ -224,6 +218,44 @@ function publishStatus(nextPayload) {
   }))
 }
 
+async function requestAdminAuthentication(options) {
+  pendingLoadOptions = options
+  adminAuth.open = true
+  adminAuth.error = ''
+  adminAuth.credential = ''
+  await nextTick()
+  adminCredentialInput.value?.focus()
+}
+
+function cancelAdminAuthentication() {
+  pendingLoadOptions = null
+  adminAuth.open = false
+  adminAuth.credential = ''
+  adminAuth.error = ''
+  loadLatest()
+}
+
+async function submitAdminAuthentication() {
+  if (adminAuth.submitting) return
+  adminAuth.submitting = true
+  adminAuth.error = ''
+  try {
+    await authenticateAdmin(adminAuth.credential)
+    const retryOptions = pendingLoadOptions || {}
+    pendingLoadOptions = null
+    adminAuth.open = false
+    adminAuth.credential = ''
+    await load(retryOptions)
+  } catch (error) {
+    adminAuth.error = error instanceof Error ? error.message : '管理员凭据错误'
+    adminAuth.credential = ''
+    await nextTick()
+    adminCredentialInput.value?.focus()
+  } finally {
+    adminAuth.submitting = false
+  }
+}
+
 async function load({ background = false } = {}) {
   const sequence = ++loadSequence
   requestController?.abort()
@@ -237,8 +269,15 @@ async function load({ background = false } = {}) {
       credentials: 'same-origin',
       cache: 'no-store',
     })
+    const responsePayload = await response.json().catch(() => null)
+    if (response.status === 403 && responsePayload?.error === 'admin_password_required') {
+      if (sequence !== loadSequence) return
+      payload.value = { ...payload.value, loading: false }
+      await requestAdminAuthentication({ background })
+      return
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const nextPayload = { ...(await response.json()), loading: false, loaded: true }
+    const nextPayload = { ...responsePayload, loading: false, loaded: true }
     if (sequence !== loadSequence) return
     payload.value = nextPayload
     if (!selectedDate.value) dateInput.value = String(nextPayload.date || '')
@@ -284,6 +323,7 @@ onBeforeUnmount(() => {
   requestController?.abort()
   stopRefreshPolling?.()
   stopRefreshPolling = null
+  pendingLoadOptions = null
 })
 </script>
 
@@ -300,11 +340,20 @@ onBeforeUnmount(() => {
       </div>
       <div class="dragon-tiger-head-actions">
         <div class="dragon-tiger-date-controls">
-          <input v-model="dateInput" type="date" aria-label="龙虎榜交易日">
-          <button type="button" @click.stop="loadSelectedDate">查看</button>
-          <button type="button" @click.stop="loadLatest">最新</button>
+          <input v-model="dateInput" type="date" aria-label="龙虎榜交易日" :disabled="payload.loading">
+          <button type="button" :disabled="payload.loading" @click.stop="loadSelectedDate">
+            {{ payload.loading ? '查询中…' : '查看' }}
+          </button>
+          <button type="button" :disabled="payload.loading" @click.stop="loadLatest">最新</button>
         </div>
-        <div v-if="payload.available" class="dragon-tiger-status" :class="{stale: payload.stale}">
+        <div
+          v-if="payload.available || payload.loading"
+          class="dragon-tiger-status"
+          :class="{stale: payload.stale && !payload.loading, querying: payload.loading}"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
           {{ statusText }}
         </div>
       </div>
@@ -349,9 +398,6 @@ onBeforeUnmount(() => {
                 :class="streak(item).className"
                 :title="streak(item).title"
               >{{ streak(item).label }}</small>
-              <small v-if="seatBadge(item)" class="dragon-tiger-seat-badge" :title="seatBadge(item).title">
-                {{ seatBadge(item).label }}
-              </small>
             </span>
             <span class="dragon-tiger-list-sector" :title="item.sector_path || item.sector || '--'">
               {{ item.sector || '--' }}
@@ -410,7 +456,7 @@ onBeforeUnmount(() => {
                 本次席位明细更新失败，当前显示同一交易日已归档记录。
               </div>
               <div v-if="(item.seats || []).length && payload.seat_data_complete === false" class="dragon-tiger-seat-notice">
-                当前历史快照仅含已归档的部分席位记录。
+                当前快照仅含已保留的部分席位记录。
               </div>
               <div v-if="seatSourceFailed(item)" class="dragon-tiger-seat-empty">
                 本次买卖席位明细获取失败；已有归档记录会继续保留。
@@ -453,7 +499,7 @@ onBeforeUnmount(() => {
                 </section>
               </div>
               <div v-else class="dragon-tiger-seat-empty">
-                {{ payload.seat_available == null && !payload.seat_query ? '当前历史快照暂无完整买卖席位数据。' : '当日未披露买卖前五席位记录。' }}
+                {{ payload.seat_available == null && !payload.seat_query ? '当前快照暂无完整买卖席位数据。' : '当日未披露买卖前五席位记录。' }}
               </div>
             </section>
           </div>
@@ -461,8 +507,46 @@ onBeforeUnmount(() => {
       </div>
       <div v-else class="empty">当日暂无龙虎榜记录</div>
       <div class="dragon-tiger-foot">
-        列表按股票去重，净买入优先采用单日榜；点击股票可查看上榜理由、买卖前五机构及营业部席位与榜单明细。每日成功数据按交易日归档。数据仅用于研究和信息展示，不构成投资建议。
+        列表按股票去重，净买入优先采用单日榜；点击股票可查看上榜理由、买卖前五机构及营业部席位与榜单明细。最近一次成功查询会保留至下次成功更新。数据仅用于研究和信息展示，不构成投资建议。
       </div>
     </template>
   </section>
+
+  <Teleport to="body">
+    <div
+      v-if="adminAuth.open"
+      class="dragon-tiger-admin-backdrop"
+      role="presentation"
+      @click.self="cancelAdminAuthentication"
+    >
+      <form
+        class="dragon-tiger-admin-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="dragonTigerAdminTitle"
+        @submit.prevent="submitAdminAuthentication"
+      >
+        <h2 id="dragonTigerAdminTitle">查看历史龙虎榜</h2>
+        <p>当日及当前保留的最近数据无需密码；更早日期需要管理员密码。</p>
+        <div v-if="adminAuth.error" class="dragon-tiger-admin-error">{{ adminAuth.error }}</div>
+        <label for="dragonTigerAdminCredential">管理员密码</label>
+        <input
+          id="dragonTigerAdminCredential"
+          ref="adminCredentialInput"
+          v-model="adminAuth.credential"
+          name="admin_password"
+          type="password"
+          autocomplete="current-password"
+          required
+          :disabled="adminAuth.submitting"
+        >
+        <div class="dragon-tiger-admin-actions">
+          <button type="button" :disabled="adminAuth.submitting" @click="cancelAdminAuthentication">取消</button>
+          <button type="submit" :disabled="adminAuth.submitting">
+            {{ adminAuth.submitting ? '验证中…' : '验证并查询' }}
+          </button>
+        </div>
+      </form>
+    </div>
+  </Teleport>
 </template>

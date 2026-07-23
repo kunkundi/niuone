@@ -557,6 +557,17 @@
     .practice-calendar-no-data { align-self:end; color:#708099; font-size:10px; line-height:1; }
     .practice-calendar-day.weekend .practice-calendar-no-data { display:none; }
     .dragon-tiger-panel { width:100%; max-width:900px; margin-inline:auto; padding:0; }
+    .dragon-tiger-admin-backdrop { position:fixed; inset:0; z-index:120; display:grid; place-items:center; padding:20px; background:rgba(15,23,42,.62); }
+    .dragon-tiger-admin-dialog { display:grid; width:min(420px,100%); gap:11px; border:1px solid var(--line); border-radius:12px; padding:22px; background:var(--panel); color:var(--text); box-shadow:0 22px 70px rgba(15,23,42,.30); }
+    .dragon-tiger-admin-dialog h2 { margin:0; font-size:19px; }
+    .dragon-tiger-admin-dialog p { margin:0; color:var(--muted); font-size:13px; line-height:1.6; }
+    .dragon-tiger-admin-dialog label { margin-top:2px; font-size:12px; font-weight:800; }
+    .dragon-tiger-admin-dialog input { width:100%; }
+    .dragon-tiger-admin-error { border:1px solid var(--red-border); border-radius:8px; padding:8px 10px; background:var(--red-soft); color:var(--red-text); font-size:12px; }
+    .dragon-tiger-admin-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:4px; }
+    .dragon-tiger-admin-actions button { min-width:88px; }
+    .dragon-tiger-admin-actions button[type="submit"] { border-color:var(--accent); background:var(--accent); color:#fff; font-weight:800; }
+    .dragon-tiger-admin-actions button:disabled { cursor:not-allowed; opacity:.62; }
     .dragon-tiger-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:18px 20px 15px; border-bottom:1px solid rgba(148,163,184,.12); background:linear-gradient(135deg, rgba(124,92,255,.12), rgba(36,198,220,.06)); }
     .dragon-tiger-head h2 { margin:0; color:#f8fafc; font-size:20px; line-height:1.25; font-weight:900; letter-spacing:-.02em; }
     .dragon-tiger-sub { margin-top:5px; color:#8290a5; font-size:12px; }
@@ -565,8 +576,10 @@
     .dragon-tiger-date-controls input { min-width:132px; width:132px; border:1px solid rgba(148,163,184,.18); border-radius:8px; padding:5px 7px; color:#dbe5f2; background:rgba(15,23,42,.72); font-size:11px; color-scheme:dark; }
     .dragon-tiger-date-controls button { min-width:0; border:1px solid rgba(124,92,255,.28); border-radius:8px; padding:5px 8px; color:#ddd6fe; background:rgba(124,92,255,.10); font-size:11px; font-weight:800; }
     .dragon-tiger-date-controls button:hover { background:rgba(124,92,255,.20); }
+    .dragon-tiger-date-controls :disabled { cursor:wait; opacity:.62; }
     .dragon-tiger-status { flex:0 0 auto; border:1px solid rgba(52,211,153,.24); border-radius:999px; padding:5px 9px; color:#a7f3d0; background:rgba(6,78,59,.17); font-size:11px; font-weight:800; white-space:nowrap; }
     .dragon-tiger-status.stale { border-color:rgba(251,191,36,.28); color:#fde68a; background:rgba(120,53,15,.18); }
+    .dragon-tiger-status.querying { border-color:rgba(96,165,250,.32); color:#bfdbfe; background:rgba(30,64,175,.20); }
     .dragon-tiger-list .up { color:#fb7185; }
     .dragon-tiger-list .down { color:#34d399; }
     .dragon-tiger-list { min-width:0; border-top:1px solid rgba(148,163,184,.10); overflow:hidden; }
@@ -593,7 +606,6 @@
     .dragon-tiger-streak { flex:0 0 auto; border:1px solid currentColor; border-radius:999px; padding:1px 4px; font-size:9px; font-weight:850; line-height:1.25; }
     .dragon-tiger-streak.limit-up { color:#fb7185; background:rgba(190,24,93,.10); }
     .dragon-tiger-streak.limit-down { color:#34d399; background:rgba(5,150,105,.10); }
-    .dragon-tiger-seat-badge { flex:0 0 auto; border:1px solid rgba(96,165,250,.40); border-radius:999px; padding:1px 4px; color:#bfdbfe; background:rgba(30,64,175,.14); font-size:9px; font-weight:850; line-height:1.25; }
     .dragon-tiger-list-sector { min-width:0; overflow:hidden; color:#a9b6c8; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
     .dragon-tiger-list-number { font-size:13px; font-weight:850; font-variant-numeric:tabular-nums; white-space:nowrap; }
     .dragon-tiger-detail { padding:12px 20px 16px; background:rgba(2,6,23,.30); }
@@ -1165,6 +1177,10 @@
       main { padding:8px 8px 28px; }
       .feed { gap:11px; }
       .dragon-tiger-head { display:grid; gap:9px; padding:13px 12px 11px; }
+      .dragon-tiger-admin-backdrop { padding:12px; }
+      .dragon-tiger-admin-dialog { gap:10px; padding:18px; }
+      .dragon-tiger-admin-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .dragon-tiger-admin-actions button { width:100%; min-width:0; }
       .dragon-tiger-head h2 { font-size:17px; }
       .dragon-tiger-sub { font-size:10.5px; line-height:1.5; }
       .dragon-tiger-head-actions { justify-items:start; width:100%; }
@@ -1178,7 +1194,8 @@
       .dragon-tiger-sort-indicator { font-size:9px; }
       .dragon-tiger-item > summary::after { right:9px; font-size:17px; }
       .dragon-tiger-list-name, .dragon-tiger-list-number { font-size:11.5px; }
-      .dragon-tiger-list-name { gap:3px; }
+      .dragon-tiger-list-name { align-items:flex-start; gap:3px; overflow:visible; white-space:normal; }
+      .dragon-tiger-list-name > span { overflow:visible; text-overflow:clip; white-space:normal; overflow-wrap:anywhere; }
       .dragon-tiger-streak { padding:1px 3px; font-size:8px; }
       .dragon-tiger-list-sector { font-size:10.5px; }
       .dragon-tiger-detail { width:100%; min-width:0; padding:3px 10px 12px; }
@@ -1917,11 +1934,6 @@
     html:not([data-theme="dark"]) .dragon-tiger-item > summary::after { color:#667085; }
     html:not([data-theme="dark"]) .dragon-tiger-item[open] > summary::after { color:#2457c5; }
     html:not([data-theme="dark"]) .dragon-tiger-list-sector { color:#475467; }
-    html:not([data-theme="dark"]) .dragon-tiger-seat-badge {
-      border-color:#8fabdc;
-      background:#edf3ff;
-      color:#214b9c;
-    }
     html:not([data-theme="dark"]) .dragon-tiger-streak.limit-up {
       border-color:#d77972;
       background:#fff3f2;

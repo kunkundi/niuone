@@ -325,6 +325,15 @@ def create_app(
             },
         )
 
+    admin_access = AdminAccess(
+        services=legacy,
+        rate_limit=lambda request, **kwargs: _rate_limit_response(
+            request,
+            legacy,
+            **kwargs,
+        ),
+    )
+
     app.include_router(
         create_system_router(
             services=legacy,
@@ -345,16 +354,8 @@ def create_app(
             services=legacy,
             cached_response=cached_native_api_response,
             enforce_api_limits=enforce_native_api_limits,
+            admin_session_valid=admin_access.session_valid,
         )
-    )
-
-    admin_access = AdminAccess(
-        services=legacy,
-        rate_limit=lambda request, **kwargs: _rate_limit_response(
-            request,
-            legacy,
-            **kwargs,
-        ),
     )
     app.include_router(
         create_admin_router(

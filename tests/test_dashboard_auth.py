@@ -4668,9 +4668,16 @@ process.stdout.write(JSON.stringify({{
         try:
             dashboard.fetch_dragon_tiger = fake_fetch
             dashboard.API_TTLS['iwencai_dragon_tiger'] = 60
-            first = FakeHandler('/api/iwencai/dragon-tiger?date=2026-07-16&page=2&limit=10')
+            auth_headers = {'Cookie': self.admin_cookie()}
+            first = FakeHandler(
+                '/api/iwencai/dragon-tiger?date=2026-07-16&page=2&limit=10',
+                headers=auth_headers,
+            )
             first.do_GET()
-            second = FakeHandler('/api/iwencai/dragon-tiger?date=2026-07-16&page=2&limit=10')
+            second = FakeHandler(
+                '/api/iwencai/dragon-tiger?date=2026-07-16&page=2&limit=10',
+                headers=auth_headers,
+            )
             second.do_GET()
             invalid = FakeHandler('/api/iwencai/dragon-tiger?page=1&limit=101')
             invalid.do_GET()
@@ -4724,8 +4731,53 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(payload['requested_date'], '2026-07-17')
         self.assertEqual(payload['scheduled_refresh_time'], '18:00')
 
-    def test_iwencai_dashboard_reads_exact_trading_day_archive_without_upstream_call(self):
-        archive = {
+    def test_iwencai_dashboard_current_empty_query_falls_back_to_latest_snapshot(self):
+        current_date = dashboard.normalize_iwencai_trade_date('')
+        snapshot = {
+            'enabled': True,
+            'available': True,
+            'source': '同花顺问财',
+            'date': '2000-01-05',
+            'generated_at': '2000-01-05T18:00:00+08:00',
+            'items': [{'code': '000001.SZ', 'name': '平安银行'}],
+        }
+        self.assertTrue(
+            dashboard.write_dragon_tiger_snapshot(
+                dashboard.IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE,
+                snapshot,
+            )
+        )
+        calls = []
+        original_fetch = dashboard.fetch_dragon_tiger
+        try:
+            dashboard.fetch_dragon_tiger = lambda trade_date, **kwargs: calls.append(
+                (trade_date, kwargs)
+            ) or {
+                'enabled': True,
+                'available': True,
+                'source': '同花顺问财',
+                'date': trade_date,
+                'items': [],
+            }
+            payload = dashboard.produce_iwencai_dragon_tiger_data(
+                current_date,
+                page=1,
+                limit=dashboard.IWENCAI_DRAGON_TIGER_DEFAULT_LIMIT,
+                allow_latest_snapshot=False,
+                fallback_to_latest_on_empty=True,
+            )
+        finally:
+            dashboard.fetch_dragon_tiger = original_fetch
+
+        self.assertEqual(calls, [(current_date, {'page': 1, 'limit': 100})])
+        self.assertTrue(payload['snapshot'])
+        self.assertTrue(payload['stale'])
+        self.assertEqual(payload['date'], '2000-01-05')
+        self.assertEqual(payload['requested_date'], current_date)
+        self.assertEqual(payload['items'][0]['code'], '000001.SZ')
+
+    def test_iwencai_dashboard_historical_query_ignores_legacy_archive(self):
+        legacy_archive = {
             'enabled': True,
             'available': True,
             'source': '同花顺问财',
@@ -4747,12 +4799,21 @@ process.stdout.write(JSON.stringify({{
         self.assertTrue(
             dashboard.write_dragon_tiger_archive(
                 dashboard.iwencai_dragon_tiger_archive_dir(),
-                archive,
+                legacy_archive,
             )
         )
+        calls = []
         original_fetch = dashboard.fetch_dragon_tiger
         try:
-            dashboard.fetch_dragon_tiger = lambda *_args, **_kwargs: self.fail('must not call upstream')
+            dashboard.fetch_dragon_tiger = lambda trade_date, **kwargs: calls.append(
+                (trade_date, kwargs)
+            ) or {
+                'enabled': True,
+                'available': True,
+                'source': '同花顺问财',
+                'date': trade_date,
+                'items': [{'code': '600000.SH', 'name': '浦发银行'}],
+            }
             payload = dashboard.produce_iwencai_dragon_tiger_data(
                 '2026-07-15',
                 page=1,
@@ -4762,12 +4823,59 @@ process.stdout.write(JSON.stringify({{
         finally:
             dashboard.fetch_dragon_tiger = original_fetch
 
-        self.assertTrue(payload['archive'])
-        self.assertFalse(payload['stale'])
+        self.assertEqual(len(calls), 1)
         self.assertEqual(payload['date'], '2026-07-15')
-        self.assertFalse(payload['seat_data_complete'])
-        self.assertEqual(payload['items'][0]['seat_record_count'], 1)
-        self.assertEqual(payload['items'][0]['institution_record_count'], 1)
+        self.assertEqual(payload['items'][0]['code'], '600000.SH')
+        self.assertNotIn('archive', payload)
+        self.assertFalse(dashboard.IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE.exists())
+        self.assertTrue(
+            dashboard.dragon_tiger_archive_path(
+                dashboard.iwencai_dragon_tiger_archive_dir(),
+                '2026-07-15',
+            ).is_file()
+        )
+
+    def test_iwencai_dashboard_latest_success_expires_legacy_archives(self):
+        legacy_archive = {
+            'enabled': True,
+            'available': True,
+            'source': '同花顺问财',
+            'date': '2026-07-16',
+            'items': [{'code': '000001.SZ', 'name': '平安银行'}],
+        }
+        self.assertTrue(
+            dashboard.write_dragon_tiger_archive(
+                dashboard.iwencai_dragon_tiger_archive_dir(),
+                legacy_archive,
+            )
+        )
+        original_fetch = dashboard.fetch_dragon_tiger
+        try:
+            dashboard.fetch_dragon_tiger = lambda trade_date, **_kwargs: {
+                'enabled': True,
+                'available': True,
+                'source': '同花顺问财',
+                'date': trade_date,
+                'items': [{'code': '600000.SH', 'name': '浦发银行'}],
+            }
+            payload = dashboard.produce_iwencai_dragon_tiger_data(
+                '2026-07-17',
+                page=1,
+                limit=dashboard.IWENCAI_DRAGON_TIGER_DEFAULT_LIMIT,
+                allow_latest_snapshot=True,
+            )
+        finally:
+            dashboard.fetch_dragon_tiger = original_fetch
+
+        self.assertTrue(payload['snapshot_saved'])
+        self.assertEqual(payload['expired_archive_count'], 1)
+        self.assertFalse(dashboard.iwencai_dragon_tiger_archive_dir().exists())
+        latest = dashboard.read_dragon_tiger_snapshot(
+            dashboard.IWENCAI_DRAGON_TIGER_SNAPSHOT_FILE,
+            trade_date='2026-07-17',
+        )
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest['items'][0]['code'], '600000.SH')
 
     def test_contest_routes_are_removed(self):
         get_handler = FakeHandler('/api/contest/status')

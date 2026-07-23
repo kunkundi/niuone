@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.dashboard.apis.iwencai_service import (
     dragon_tiger_archive_path,
+    expire_dragon_tiger_archives,
     fetch_dragon_tiger,
     normalize_trade_date,
     read_dragon_tiger_archive,
@@ -563,6 +564,19 @@ class IwencaiDragonTigerTests(unittest.TestCase):
             self.assertEqual(preserved["items"][0]["seat_record_count"], 2)
             self.assertEqual(preserved["items"][0]["institution_record_count"], 1)
             self.assertIsNone(read_dragon_tiger_archive(archive_dir, trade_date="2026-07-17"))
+
+    def test_expire_legacy_archives_removes_only_dated_snapshot_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_dir = Path(tmp) / "iwencai_dragon_tiger"
+            archive_dir.mkdir()
+            for name in ("2026-07-15.json", "2026-07-16.json"):
+                (archive_dir / name).write_text("{}", encoding="utf-8")
+            marker = archive_dir / "README.txt"
+            marker.write_text("keep", encoding="utf-8")
+
+            self.assertEqual(expire_dragon_tiger_archives(archive_dir), 2)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+            self.assertEqual(expire_dragon_tiger_archives(archive_dir), 0)
 
 
 if __name__ == "__main__":

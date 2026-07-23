@@ -8,8 +8,8 @@ import sys
 from pathlib import Path
 
 from dashboard.apis.iwencai_service import (
+    expire_dragon_tiger_archives,
     fetch_dragon_tiger,
-    write_dragon_tiger_archive,
     write_dragon_tiger_snapshot,
 )
 from niuone_paths import get_dashboard_home
@@ -25,8 +25,14 @@ SNAPSHOT_FILE = Path(
 
 def refresh_snapshot(path: Path = SNAPSHOT_FILE) -> tuple[dict[str, object], bool]:
     payload = fetch_dragon_tiger()
-    archived = write_dragon_tiger_archive(path.parent / "iwencai_dragon_tiger", payload)
-    saved = write_dragon_tiger_snapshot(path, payload) and archived
+    saved = write_dragon_tiger_snapshot(path, payload)
+    if saved:
+        try:
+            payload["expired_archive_count"] = expire_dragon_tiger_archives(
+                path.parent / "iwencai_dragon_tiger"
+            )
+        except OSError as exc:
+            payload["archive_cleanup_error"] = type(exc).__name__
     return payload, saved
 
 
@@ -34,9 +40,14 @@ def main() -> int:
     payload, saved = refresh_snapshot()
     if saved:
         print(
-            f"问财龙虎榜快照及交易日归档已更新：{payload.get('date')}，"
+            f"问财龙虎榜最新快照已更新：{payload.get('date')}，"
             f"{len(payload.get('items') or [])} 条"
         )
+        if payload.get("archive_cleanup_error"):
+            print(
+                f"[WARN] 旧龙虎榜归档清理失败：{payload['archive_cleanup_error']}",
+                file=sys.stderr,
+            )
         return 0
     if payload.get("error") == "iwencai_disabled":
         print("问财数据源未启用，跳过龙虎榜快照更新")

@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 
 CachedResponder = Callable[..., Awaitable[Response]]
 LimitEnforcer = Callable[[Request], Awaitable[Response | None]]
+AdminSessionValidator = Callable[[Request], Awaitable[bool]]
 
 
 def compact_industry_flow_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -61,6 +62,7 @@ def create_market_router(
     services: Any,
     cached_response: CachedResponder,
     enforce_api_limits: LimitEnforcer,
+    admin_session_valid: AdminSessionValidator,
 ) -> APIRouter:
     """Create native read routes for Chinese and US market data."""
 
@@ -79,15 +81,10 @@ def create_market_router(
         limited = await enforce_api_limits(request)
         if limited is not None:
             return limited
-        if request.method == "HEAD":
-            return Response(
-                status_code=200,
-                media_type="application/json",
-                headers={"Cache-Control": "no-store"},
-            )
         raw_trade_date = str(request.query_params.get("date") or "").strip()
         try:
             trade_date = services.normalize_iwencai_trade_date(raw_trade_date)
+            current_trade_date = services.normalize_iwencai_trade_date("")
             page = services.normalize_iwencai_page(request.query_params.get("page") or "1")
             limit = services.normalize_iwencai_limit(
                 request.query_params.get("limit")
@@ -99,11 +96,35 @@ def create_market_router(
                 status_code=400,
                 headers={"Cache-Control": "no-store"},
             )
+        is_non_current_date = trade_date != current_trade_date
+        retained_trade_date = (
+            services.iwencai_dragon_tiger_retained_date()
+            if is_non_current_date
+            else ""
+        )
+        requires_admin = (
+            is_non_current_date and trade_date != retained_trade_date
+        )
+        if requires_admin and not await admin_session_valid(request):
+            return JSONResponse(
+                {"error": "admin_password_required"},
+                status_code=403,
+                headers={"Cache-Control": "no-store"},
+            )
+        if request.method == "HEAD":
+            return Response(
+                status_code=200,
+                media_type="application/json",
+                headers={"Cache-Control": "no-store"},
+            )
         allow_latest_snapshot = not raw_trade_date
+        fallback_to_latest_on_empty = bool(raw_trade_date) and not is_non_current_date
         snapshot_version = (
             services.iwencai_dragon_tiger_snapshot_version(
                 trade_date,
-                include_latest=allow_latest_snapshot,
+                include_latest=(
+                    allow_latest_snapshot or fallback_to_latest_on_empty
+                ),
             )
             if page == 1 and limit == services.IWENCAI_DRAGON_TIGER_DEFAULT_LIMIT
             else 0
@@ -113,7 +134,8 @@ def create_market_router(
             request,
             cache_key=(
                 f"iwencai_dragon_tiger:{trade_date}:{page}:{limit}:"
-                f"{int(allow_latest_snapshot)}:{snapshot_version}"
+                f"{int(allow_latest_snapshot)}:"
+                f"{int(fallback_to_latest_on_empty)}:{snapshot_version}"
             ),
             ttl=ttl,
             producer=lambda: services.produce_iwencai_dragon_tiger_data(
@@ -121,9 +143,10 @@ def create_market_router(
                 page=page,
                 limit=limit,
                 allow_latest_snapshot=allow_latest_snapshot,
+                fallback_to_latest_on_empty=fallback_to_latest_on_empty,
             ),
-            edge_ttl=ttl,
-            browser_ttl=min(30, ttl),
+            edge_ttl=0 if is_non_current_date else ttl,
+            browser_ttl=0 if is_non_current_date else min(30, ttl),
             enforce_limits=False,
         )
 
