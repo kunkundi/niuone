@@ -156,6 +156,7 @@ class FastApiDashboardTests(unittest.TestCase):
             first.json()["message_counts"],
             {"market_monitor": 6, "x_monitor": 108, "us_ratings": 4},
         )
+        self.assertIs(first.json()["message_counts_available"], True)
         self.assertIn(f"{self.legacy.VISITOR_COOKIE_NAME}=nvst_", first.headers["Set-Cookie"])
         self.assertIn("SameSite=Lax", first.headers["Set-Cookie"])
         self.assertNotIn("Set-Cookie", second.headers)
@@ -165,6 +166,24 @@ class FastApiDashboardTests(unittest.TestCase):
         self.assertEqual(head.content, b"")
         self.assertEqual(merge_records.call_count, 2)
         merge_records.assert_called_with(limit=0)
+
+    def test_dashboard_bootstrap_degrades_when_message_counts_are_unavailable(self):
+        with (
+            patch.object(
+                self.legacy,
+                "merge_records_from_db",
+                side_effect=RuntimeError("message store unavailable"),
+            ),
+            patch.object(self.legacy, "us_features_enabled", return_value=True),
+        ):
+            response = self.client.get("/api/dashboard/bootstrap")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["visits"], 1)
+        self.assertEqual(response.json()["unique"], 1)
+        self.assertIs(response.json()["us_features_enabled"], True)
+        self.assertEqual(response.json()["message_counts"], {})
+        self.assertIs(response.json()["message_counts_available"], False)
 
     def test_cached_read_routes_are_native_and_keep_cache_metadata(self):
         seen_keys = []

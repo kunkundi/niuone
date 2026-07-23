@@ -99,15 +99,24 @@ def create_system_router(
         if new_visitor:
             visitor_id = "nvst_" + secrets.token_urlsafe(24)
         visit_stats = await run_in_threadpool(services.increment_visit_count, visitor_id)
-        message_payload = await run_in_threadpool(
-            services.merge_records_from_db,
-            limit=0,
-        )
+        try:
+            message_payload = await run_in_threadpool(
+                services.merge_records_from_db,
+                limit=0,
+            )
+            message_counts = dashboard_message_counts(message_payload)
+            message_counts_available = True
+        except Exception:
+            # Navigation counts are optional. Keep feature flags and visitor
+            # bootstrap available when the independent message store is down.
+            message_counts = {}
+            message_counts_available = False
         payload = {
             "visits": visit_stats["visits"],
             "unique": visit_stats["unique"],
             "us_features_enabled": services.us_features_enabled(),
-            "message_counts": dashboard_message_counts(message_payload),
+            "message_counts": message_counts,
+            "message_counts_available": message_counts_available,
         }
         response = json_response(request, payload, cache_control="no-store")
         if new_visitor:
