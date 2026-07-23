@@ -89,14 +89,15 @@ Each feature below has its own dark-theme, 1200-pixel-wide animation, using eith
 
 <p align="center"><sub>Compare current and target prices and implied upside, then inspect the institution, analyst, catalysts, risks, and historical daily reports.</sub></p>
 
-<details>
-  <summary><strong>Local Configuration Center</strong></summary>
-  <br />
-  <p align="center"><img width="1200" alt="Local business configuration and settings center" src="docs/assets/readme/dashboard-settings.jpg" /></p>
-  <p align="center"><sub>Manage models, data sources, strategies, risk controls, notifications, and scheduled tasks in one place.</sub></p>
-</details>
+### Local Configuration Center
 
-> Market and simulated-portfolio values in these animations are for interface demonstration only and are not investment advice. The settings screenshot comes from an isolated temporary runtime and contains no secrets or private runtime data.
+<p align="center">
+  <img width="1200" alt="Local-configuration interaction: browse groups, switch trading strategies, and open market and capital-flow settings" src="docs/assets/readme/dashboard-settings.gif" />
+</p>
+
+<p align="center"><sub>Open strategy settings and switch strategies, return to browse every configuration group, then open market and capital-flow settings.</sub></p>
+
+> Market and simulated-portfolio values in these animations are for interface demonstration only and are not investment advice. The configuration-center animation comes from an isolated temporary runtime and contains no secrets or private runtime data.
 
 ## Feature Overview
 

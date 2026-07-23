@@ -1,11 +1,11 @@
 # README GIF 更新流程
 
-本文记录仓库主页六个功能 GIF 的录制、生成、压缩和验收方式，供功能界面或演示数据更新后复用。
+本文记录仓库主页七个功能 GIF 的录制、生成、压缩和验收方式，供功能界面或演示数据更新后复用。
 
 ## 目标与约束
 
 - 使用真实页面交互，不用静态截图轮播代替点击、滚动或图表悬停。
-- 六个 GIF 统一使用暗色主题，避免同一组素材出现明暗主题混用。
+- 七个 GIF 统一使用暗色主题，避免同一组素材出现明暗主题混用。
 - 每个 GIF 只讲一个主要功能，避免不同动图重复展示同一页面。
 - 输出宽度统一为 1200 像素；常规页面使用 1200 × 750，图表悬停使用 1200 × 675 的 16:9 比例。
 - 鼠标移动、点击和滚动必须先在浏览器中真实发生；后期只补充截图工具无法捕获的鼠标箭头和点击波纹。
@@ -23,6 +23,7 @@
 | `market-monitor.gif` | `/market-monitor` | 1200 × 750 | 8 fps | 6–8 秒 | 展开盘后总结并滚动查看完整详情 |
 | `twitter-monitor.gif` | `/x-monitor` | 1200 × 675 | 10 fps | 7–9 秒 | 展开文本与图文推文，并打开图片预览 |
 | `us-ratings.gif` | `/us-ratings` | 1200 × 675 | 8 fps | 7–9 秒 | 展开个股评级详情并切换历史日期 |
+| `dashboard-settings.gif` | `/admin` | 1200 × 750 | 8 fps | 9–11 秒 | 浏览配置分组、切换并恢复策略、打开行情与资金流设置 |
 
 帧率和时长是建议值，不要求逐帧保持一致；优先保证操作可看清且循环不拖沓。
 
@@ -85,7 +86,7 @@ output_y = source_y × output_height / source_height
 
 如果截图工具排除了滚动条，实际截图尺寸可能略小于设置的视口。生成前必须读取第一帧的真实尺寸，并用真实尺寸换算，不能直接假定截图等于视口。
 
-## 六个 GIF 的分镜
+## 七个 GIF 的分镜
 
 ### 主力资金流入与流出
 
@@ -170,6 +171,18 @@ hoverX: 300 → 930，步长约 30；再折返至 570
 
 源帧建议固定命名为 `list.png`、`detail.png`、`collapsed.png` 和 `earlier.png`，再按本文的通用帧处理与 GIF 编码步骤生成。
 
+### 本地配置中心
+
+录制视口为 1600 × 1000，输出为 1200 × 750。必须使用隔离的临时运行目录，并在录制前确认所有密钥、Webhook 和本机路径均未进入画面。
+
+1. 从暗色主题的“业务配置”总览开始，完整展示分组数量、配置项数量和主要设置分组。
+2. 点击“选股与交易策略”，展示独立策略列表和当前状态。
+3. 点击另一套策略，让“有未保存修改”状态出现；随后点击原策略恢复初始值，不保存演示改动。
+4. 点击“全部设置”返回总览，连续向下滚动，展示盘面监控、任务调度及行情与资金流设置。
+5. 点击“行情与资金流设置”，回到页面顶部，完整展示刷新间隔、播放速度、展示数量和采样时间等配置项。
+
+源帧建议包括 `overview-start.png`、`strategy-detail.png`、`strategy-changed.png`、`strategy-restored.png`、一组连续滚动帧和 `indices-detail.png`。策略切换必须在离开分组前恢复初始值，不能点击“保存本组设置”。
+
 ## 帧处理原则
 
 - 使用 Lanczos 将源帧缩放到目标尺寸。
@@ -204,7 +217,7 @@ ffmpeg -y -loglevel error \
 
 10 fps 图表悬停动图将 `-framerate 8` 改为 `-framerate 10`，并可将 `max_colors` 提高到 `160`，保证小字号浮层的可读性。
 
-推荐控制六个 GIF 总体积在 7 MB 左右。单个文件明显偏大时，依次尝试：
+推荐控制七个 GIF 总体积在 7 MB 左右。单个文件明显偏大时，依次尝试：
 
 1. 删除冗余停留帧；
 2. 减少大面积淡入淡出；
@@ -233,7 +246,7 @@ ffmpeg -y -loglevel error \
 - 图表浮层的时间和数值是否随鼠标移动；
 - 页面滚动是否连续，是否出现白屏或加载态；
 - 最后一帧停留是否足够，循环回第一帧是否突兀；
-- 六个 GIF 之间是否存在重复分镜。
+- 七个 GIF 之间是否存在重复分镜。
 
 ## 替换素材与同步 README
 
@@ -246,6 +259,7 @@ cp "$GIF_WORK_DIR/practice-trading.gif" docs/assets/readme/practice-trading.gif
 cp "$GIF_WORK_DIR/market-monitor.gif" docs/assets/readme/market-monitor.gif
 cp "$GIF_WORK_DIR/twitter-monitor.gif" docs/assets/readme/twitter-monitor.gif
 cp "$GIF_WORK_DIR/us-ratings.gif" docs/assets/readme/us-ratings.gif
+cp "$GIF_WORK_DIR/dashboard-settings.gif" docs/assets/readme/dashboard-settings.gif
 ```
 
 只更新单个 GIF 时，仅复制对应文件。随后同步检查：
