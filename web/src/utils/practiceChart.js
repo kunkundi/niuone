@@ -139,7 +139,7 @@ export function normalizePracticeTradeMarkers(payload) {
     .sort((left, right) => left.time.localeCompare(right.time))
 }
 
-function axisBounds(values) {
+function axisBounds(values, clampOneSidedAtZero = false) {
   const finite = values.map(Number).filter(Number.isFinite)
   if (!finite.length) return { min: -0.01, max: 0.01, digits: 3 }
   const dataMin = Math.min(...finite)
@@ -158,8 +158,10 @@ function axisBounds(values) {
     min = Math.min(min, -0.01)
     max = Math.max(max, 0.01)
   }
-  if (dataMax > 0 && dataMin >= 0) min = Math.max(0, min)
-  else if (dataMin < 0 && dataMax <= 0) max = Math.min(0, max)
+  if (clampOneSidedAtZero) {
+    if (dataMax > 0 && dataMin >= 0) min = Math.max(0, min)
+    else if (dataMin < 0 && dataMax <= 0) max = Math.min(0, max)
+  }
   return { min, max, digits: max - min < 0.05 ? 3 : 2 }
 }
 
@@ -225,7 +227,7 @@ export function buildPracticeChartModel(payload, mode = 'intraday') {
   const innerHeight = height - top - bottom
   const values = points.map(point => Number(point.equity))
   const percentages = values.map(value => baseEquity ? (value / baseEquity - 1) * 100 : 0)
-  const bounds = axisBounds(dailyMode ? percentages : [0, ...percentages])
+  const bounds = axisBounds(dailyMode ? percentages : [0, ...percentages], !dailyMode)
   const yFor = value => top + (bounds.max - value) / Math.max(0.0001, bounds.max - bounds.min) * innerHeight
   const yTicks = axisTicks(bounds, yFor)
   const xFor = (point, index) => dailyMode

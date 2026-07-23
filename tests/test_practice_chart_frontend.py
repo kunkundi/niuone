@@ -14,19 +14,38 @@ CHART_CSS_PATH = ROOT / 'frontend' / 'dashboard.css'
 
 
 class PracticeChartFrontendTests(unittest.TestCase):
-    def build_chart(self, equity_values):
-        rows = [
-            {'time': f'2026-07-23 09:{31 + index:02d}:00', 'equity': equity}
-            for index, equity in enumerate(equity_values)
-        ]
+    def build_chart(self, equity_values, mode='intraday'):
+        if mode == 'daily':
+            payload = {
+                'initial_cash': 1000,
+                'current_date': '2026-07-23',
+                'equity_history': [],
+                'daily_equity_history': [
+                    {
+                        'time': f'2026-07-{21 + index:02d} 15:00:00',
+                        'equity': equity,
+                    }
+                    for index, equity in enumerate(equity_values)
+                ],
+            }
+        else:
+            payload = {
+                'initial_cash': 1000,
+                'current_date': '2026-07-23',
+                'equity_history': [
+                    {
+                        'time': f'2026-07-23 09:{31 + index:02d}:00',
+                        'equity': equity,
+                    }
+                    for index, equity in enumerate(equity_values)
+                ],
+                'daily_equity_history': [
+                    {'time': '2026-07-22 15:00:00', 'equity': 1000},
+                ],
+            }
         scenario = f"""
 import {{ buildPracticeChartModel }} from {json.dumps(CHART_UTILS_PATH.as_uri())};
-const chart = buildPracticeChartModel({{
-  initial_cash: 1000,
-  current_date: '2026-07-23',
-  equity_history: {json.dumps(rows)},
-  daily_equity_history: [{{time:'2026-07-22 15:00:00', equity:1000}}],
-}}, 'intraday');
+const chart = buildPracticeChartModel({json.dumps(payload)}, {json.dumps(mode)});
 process.stdout.write(JSON.stringify({{
   bounds: chart.bounds,
   zeroY: chart.zeroY,
@@ -66,6 +85,13 @@ process.stdout.write(JSON.stringify({{
         self.assertLess(flat['bounds']['min'], 0)
         self.assertGreater(flat['bounds']['max'], 0)
         self.assertEqual(sum(tick['isZero'] for tick in flat['ticks']), 1)
+
+    def test_daily_axis_preserves_padding_for_single_sided_data(self):
+        positive = self.build_chart([1000.1, 1000.2], 'daily')
+        self.assertLess(positive['bounds']['min'], 0)
+
+        negative = self.build_chart([999.9, 999.8], 'daily')
+        self.assertGreater(negative['bounds']['max'], 0)
 
     def test_axis_labels_and_grid_lines_share_chart_tick_coordinates(self):
         component = CHART_COMPONENT_PATH.read_text(encoding='utf-8')
