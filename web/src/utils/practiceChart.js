@@ -158,7 +158,28 @@ function axisBounds(values) {
     min = Math.min(min, -0.01)
     max = Math.max(max, 0.01)
   }
+  if (dataMax > 0 && dataMin >= 0) min = Math.max(0, min)
+  else if (dataMin < 0 && dataMax <= 0) max = Math.min(0, max)
   return { min, max, digits: max - min < 0.05 ? 3 : 2 }
+}
+
+function axisTicks(bounds, yFor) {
+  const span = Math.max(0.0001, bounds.max - bounds.min)
+  const tolerance = Math.max(1e-9, span * 1e-9)
+  const minIsZero = Math.abs(bounds.min) <= tolerance
+  const maxIsZero = Math.abs(bounds.max) <= tolerance
+  let values
+  if (minIsZero && bounds.max > 0) values = [bounds.max, bounds.max / 2, 0]
+  else if (maxIsZero && bounds.min < 0) values = [0, bounds.min / 2, bounds.min]
+  else if (bounds.min < 0 && bounds.max > 0) values = [bounds.max, 0, bounds.min]
+  else values = [bounds.max, (bounds.max + bounds.min) / 2, bounds.min]
+
+  const unique = []
+  for (const rawValue of values) {
+    const value = Math.abs(rawValue) <= tolerance ? 0 : rawValue
+    if (!unique.some(existing => Math.abs(existing - value) <= tolerance)) unique.push(value)
+  }
+  return unique.map(value => ({ value, y: yFor(value), isZero: value === 0 }))
 }
 
 function straightPath(points) {
@@ -206,6 +227,7 @@ export function buildPracticeChartModel(payload, mode = 'intraday') {
   const percentages = values.map(value => baseEquity ? (value / baseEquity - 1) * 100 : 0)
   const bounds = axisBounds(dailyMode ? percentages : [0, ...percentages])
   const yFor = value => top + (bounds.max - value) / Math.max(0.0001, bounds.max - bounds.min) * innerHeight
+  const yTicks = axisTicks(bounds, yFor)
   const xFor = (point, index) => dailyMode
     ? left + index / Math.max(1, points.length - 1) * innerWidth
     : left + clampedTradingClockMinuteOfDay(point.time) / 240 * innerWidth
@@ -262,6 +284,7 @@ export function buildPracticeChartModel(payload, mode = 'intraday') {
     top,
     bottom,
     bounds,
+    yTicks,
     zeroY,
     line,
     area,

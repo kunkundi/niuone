@@ -41,11 +41,6 @@ const tradeMarkers = computed(() => (chart.value.trades || []).map(trade => {
     yPct: nearest ? nearest.y / chart.value.height * 100 : 50,
   }
 }))
-const gridYValues = computed(() => {
-  if (!chart.value.available) return []
-  return [chart.value.bounds.max, (chart.value.bounds.max + chart.value.bounds.min) / 2, chart.value.bounds.min]
-    .map(value => chart.value.top + (chart.value.bounds.max - value) / Math.max(0.0001, chart.value.bounds.max - chart.value.bounds.min) * (chart.value.height - chart.value.top - chart.value.bottom))
-})
 
 function setMode(nextMode) {
   mode.value = nextMode === 'daily' ? 'daily' : 'intraday'
@@ -140,16 +135,29 @@ onBeforeUnmount(() => window.removeEventListener('popstate', restoreFromUrl))
       @pointermove="updateHover"
       @pointerleave="hoverActive = false"
     >
-      <span class="practice-axis-label top">{{ formatPracticeNumber(chart.bounds.max, chart.bounds.digits) }}%</span>
-      <span class="practice-axis-label bot">{{ formatPracticeNumber(chart.bounds.min, chart.bounds.digits) }}%</span>
-      <span v-if="chart.bounds.min <= 0 && chart.bounds.max >= 0" class="practice-zero-axis-label" :style="`top:${chart.zeroY / chart.height * 100}%`">0%</span>
+      <span
+        v-for="tick in chart.yTicks"
+        :key="`axis-${tick.value}`"
+        class="practice-axis-label"
+        :class="{ zero: tick.isZero }"
+        :style="`top:${tick.y / chart.height * 100}%`"
+      >{{ formatPracticeNumber(tick.value, chart.bounds.digits) }}%</span>
       <svg class="practice-chart-svg" :viewBox="`0 0 ${chart.width} ${chart.height}`" preserveAspectRatio="none">
         <defs>
           <linearGradient id="practiceFillVue" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" :stop-color="markerColor" stop-opacity="0.30"/><stop offset="100%" :stop-color="markerColor" stop-opacity="0.02"/></linearGradient>
         </defs>
-        <line v-for="gridY in gridYValues" :key="gridY" :x1="chart.left" :x2="chart.width-chart.right" :y1="gridY" :y2="gridY" stroke="var(--chart-grid)" stroke-dasharray="4 6" />
+        <line
+          v-for="tick in chart.yTicks"
+          :key="`grid-${tick.value}`"
+          :x1="chart.left"
+          :x2="chart.width-chart.right"
+          :y1="tick.y"
+          :y2="tick.y"
+          :stroke="tick.isZero ? 'var(--chart-zero)' : 'var(--chart-grid)'"
+          :stroke-width="tick.isZero ? 1.2 : 1"
+          :stroke-dasharray="tick.isZero ? '7 5' : '4 6'"
+        />
         <line v-for="tick in chart.timeTicks" :key="`${tick.label}-${tick.x}`" :x1="tick.x" :x2="tick.x" :y1="chart.top" :y2="chart.height-chart.bottom" stroke="var(--chart-grid-soft)" />
-        <line v-if="chart.bounds.min <= 0 && chart.bounds.max >= 0" :x1="chart.left" :x2="chart.width-chart.right" :y1="chart.zeroY" :y2="chart.zeroY" stroke="var(--chart-zero)" stroke-width="1.2" stroke-dasharray="7 5" />
         <path :d="chart.area" fill="url(#practiceFillVue)" />
         <path :d="chart.line" fill="none" :stroke="markerColor" stroke-width="2.2" vector-effect="non-scaling-stroke" />
       </svg>
