@@ -192,10 +192,13 @@ class FastApiDashboardTests(unittest.TestCase):
 
     def test_cached_read_routes_are_native_and_keep_cache_metadata(self):
         seen_keys = []
+        non_cacheable_keys = []
 
-        def cached_payload(cache_key, ttl, producer):
+        def cached_payload(cache_key, ttl, producer, *, cacheable=None):
             del ttl, producer
             seen_keys.append(cache_key)
+            if cacheable is not None:
+                non_cacheable_keys.append(cache_key)
             return json.dumps({"route": cache_key}).encode("utf-8"), True
 
         with (
@@ -291,6 +294,10 @@ class FastApiDashboardTests(unittest.TestCase):
             "industry_flow:compact:v1",
             "market_flow",
         ])
+        self.assertEqual(
+            non_cacheable_keys,
+            ["money_flow", "industry_flow", "industry_flow:compact:v1"],
+        )
         self.assertEqual(head.status_code, 200)
         self.assertEqual(head.content, b"")
         self.assertEqual(invalid_dragon_tiger.status_code, 400)
@@ -1169,9 +1176,19 @@ class FastApiDashboardTests(unittest.TestCase):
         self.assertIn("/api/industry-flow?compact=1", industry_flow_data)
         self.assertIn("REFRESH_INTERVAL_MS = 60 * 1000", industry_flow_data)
         self.assertIn("REQUEST_TIMEOUT_MS = 15 * 1000", industry_flow_data)
+        self.assertIn("INDUSTRY_FLOW_EMPTY_RETRY_DELAYS_MS", industry_flow_data)
+        self.assertIn("scheduleEmptyRetry()", industry_flow_data)
+        self.assertIn("mergeIndustryFlowPayload(state.payload, payload)", industry_flow_data)
         self.assertIn("adoptMoneyFlow", industry_flow_data)
         self.assertIn('id="industryFlowStage"', industry_flow)
         self.assertIn('id="industryFlowSeek"', industry_flow)
+        self.assertIn('class="industry-flow-info-trigger"', industry_flow)
+        self.assertIn('aria-label="查看行业资金流数据说明"', industry_flow)
+        self.assertIn('class="industry-flow-info-popover" role="tooltip"', industry_flow)
+        self.assertIn('<div v-if="previousDayLabel" class="industry-flow-meta">', industry_flow)
+        self.assertNotIn('<div class="industry-flow-meta">', industry_flow)
+        self.assertEqual(industry_flow.count("更新 {{ payload.generated_at || '--' }}"), 1)
+        self.assertEqual(industry_flow.count("{{ payload.source || '行业主力净额即时快照' }}"), 1)
         self.assertIn("<TransitionGroup", industry_flow)
         self.assertIn("path: '/indices'", industry_flow)
         self.assertIn("@click=\"selectPanel('market-breadth')\">市场情绪</button>", industry_flow)
@@ -1353,6 +1370,7 @@ class FastApiDashboardTests(unittest.TestCase):
             ".market-breadth-info:hover .market-breadth-info-popover, .market-breadth-info:focus-within .market-breadth-info-popover",
             stylesheet,
         )
+        self.assertIn("header { position:sticky; top:0; z-index:20;", stylesheet)
         self.assertIn(
             "box-shadow:inset 0 1px 0 rgba(255,255,255,.035), 0 10px 28px rgba(0,0,0,.14); -webkit-user-select:none; user-select:none;",
             stylesheet,

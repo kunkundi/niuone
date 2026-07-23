@@ -2,6 +2,12 @@ import { reactive } from 'vue'
 import { configureIndustryFlowAnimation } from './useIndustryFlowAnimation.js'
 import { useIndicesData } from './useIndicesData.js'
 import { startVisiblePolling } from '../utils/visiblePolling.js'
+import {
+  hasIndustryFlowNodes,
+  hasIndustryMoneyFlowRows,
+  INDUSTRY_FLOW_EMPTY_RETRY_DELAYS_MS,
+  mergeIndustryFlowPayload,
+} from '../utils/industryFlowData.js'
 
 const REFRESH_INTERVAL_MS = 60 * 1000
 const REQUEST_TIMEOUT_MS = 15 * 1000
@@ -13,6 +19,29 @@ let users = 0
 let stopRefreshPolling = null
 let requestController = null
 let loadSequence = 0
+let emptyRetryTimer = 0
+let emptyRetryAttempt = 0
+
+function clearEmptyRetry({ resetAttempt = false } = {}) {
+  if (emptyRetryTimer) window.clearTimeout(emptyRetryTimer)
+  emptyRetryTimer = 0
+  if (resetAttempt) emptyRetryAttempt = 0
+}
+
+function scheduleEmptyRetry() {
+  if (
+    !users
+    || emptyRetryTimer
+    || emptyRetryAttempt >= INDUSTRY_FLOW_EMPTY_RETRY_DELAYS_MS.length
+  ) return
+  const delay = INDUSTRY_FLOW_EMPTY_RETRY_DELAYS_MS[emptyRetryAttempt]
+  emptyRetryAttempt += 1
+  emptyRetryTimer = window.setTimeout(() => {
+    emptyRetryTimer = 0
+    if (!users || document.visibilityState === 'hidden') return
+    loadIndustryFlow({ background: hasIndustryFlowNodes(state.payload) })
+  }, delay)
+}
 
 function publishLastUpdated(payload) {
   window.dispatchEvent(new CustomEvent('niuone:last-updated', {
@@ -40,11 +69,15 @@ async function loadIndustryFlow({ background = false } = {}) {
     if (!response.ok) throw new Error(`industry flow failed: ${response.status}`)
     const payload = await response.json()
     if (sequence !== loadSequence) return
-    if (payload?.money_flow && (Array.isArray(payload.money_flow.inflow) || Array.isArray(payload.money_flow.outflow))) {
-      useIndicesData().adoptMoneyFlow(payload.money_flow)
+    const hadData = hasIndustryFlowNodes(state.payload)
+    const merged = mergeIndustryFlowPayload(state.payload, payload)
+    state.payload = merged.payload
+    if (!merged.receivedData) {
+      scheduleEmptyRetry()
+      return
     }
-    const hadData = state.payload.loaded === true && state.payload.nodes?.length > 0
-    state.payload = { ...(payload || {}), loading: false, loaded: true }
+    clearEmptyRetry({ resetAttempt: true })
+    if (hasIndustryMoneyFlowRows(payload)) useIndicesData().adoptMoneyFlow(payload.money_flow)
     configureIndustryFlowAnimation(state.payload, hadData)
     publishLastUpdated(state.payload)
   } catch (error) {
@@ -56,6 +89,7 @@ async function loadIndustryFlow({ background = false } = {}) {
       loaded: true,
       error: timedOut ? '行业资金流请求超时' : String(error),
     }
+    scheduleEmptyRetry()
   } finally {
     window.clearTimeout(timeout)
     if (requestController === controller) requestController = null
@@ -65,7 +99,8 @@ async function loadIndustryFlow({ background = false } = {}) {
 function activateIndustryFlow() {
   users += 1
   if (users > 1) return
-  loadIndustryFlow({ background: state.payload.nodes?.length > 0 })
+  clearEmptyRetry({ resetAttempt: true })
+  loadIndustryFlow({ background: hasIndustryFlowNodes(state.payload) })
   stopRefreshPolling = startVisiblePolling(
     () => loadIndustryFlow({ background: true }),
     REFRESH_INTERVAL_MS,
@@ -77,6 +112,7 @@ function deactivateIndustryFlow() {
   if (users) return
   stopRefreshPolling?.()
   stopRefreshPolling = null
+  clearEmptyRetry({ resetAttempt: true })
   loadSequence += 1
   requestController?.abort()
   requestController = null

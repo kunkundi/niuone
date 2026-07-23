@@ -2554,7 +2554,8 @@ def refresh_industry_flow_sample() -> bool:
     generated_at = str(money_flow.get("generated_at") or "")
     recorded = bool(samples and str(samples[-1].get("generated_at") or "") == generated_at)
     if recorded:
-        invalidate_api_cache("money_flow", "industry_flow")
+        invalidate_api_cache("money_flow")
+        invalidate_api_cache_prefix("industry_flow")
     return recorded
 
 
@@ -2782,7 +2783,13 @@ def _store_api_cache_payload(cache_key: str, payload: bytes, generation: int) ->
     )
 
 
-def _refresh_api_cache(cache_key: str, producer, generation: int, key_lock: threading.Lock) -> None:
+def _refresh_api_cache(
+    cache_key: str,
+    producer,
+    generation: int,
+    key_lock: threading.Lock,
+    cacheable=None,
+) -> None:
     response_cache_impl.refresh_payload(
         cache_key,
         producer,
@@ -2790,10 +2797,11 @@ def _refresh_api_cache(cache_key: str, producer, generation: int, key_lock: thre
         key_lock,
         store=_store_api_cache_payload,
         warn=lambda message: print(message, file=sys.stderr),
+        cacheable=cacheable,
     )
 
 
-def cache_get_json(cache_key: str, ttl: int, producer) -> tuple[bytes, bool]:
+def cache_get_json(cache_key: str, ttl: int, producer, *, cacheable=None) -> tuple[bytes, bool]:
     return response_cache_impl.get_json(
         cache_key,
         ttl,
@@ -2805,10 +2813,18 @@ def cache_get_json(cache_key: str, ttl: int, producer) -> tuple[bytes, bool]:
         stale_while_refresh_seconds=API_STALE_WHILE_REFRESH_SECONDS,
         store=_store_api_cache_payload,
         refresh=_refresh_api_cache,
+        cacheable=cacheable,
     )
 
 
-def seed_api_cache_from_json_file(cache_key: str, path: Path, ttl: int, transform=None) -> bool:
+def seed_api_cache_from_json_file(
+    cache_key: str,
+    path: Path,
+    ttl: int,
+    transform=None,
+    *,
+    cacheable=None,
+) -> bool:
     """Seed a cold in-memory cache from the latest durable dashboard snapshot.
 
     The entry is deliberately marked just past its TTL: the first request gets
@@ -2822,6 +2838,7 @@ def seed_api_cache_from_json_file(cache_key: str, path: Path, ttl: int, transfor
         entries=API_RESPONSE_CACHE,
         entries_lock=API_RESPONSE_LOCK,
         transform=transform,
+        cacheable=cacheable,
     )
 
 
@@ -2844,8 +2861,20 @@ def invalidate_api_cache_prefix(prefix: str) -> None:
     )
 
 
-def cached_json_data(cache_key: str, ttl: int, producer, fallback: dict[str, Any]) -> dict[str, Any]:
-    payload, _ = cache_get_json(cache_key, ttl, producer)
+def cached_json_data(
+    cache_key: str,
+    ttl: int,
+    producer,
+    fallback: dict[str, Any],
+    *,
+    cacheable=None,
+) -> dict[str, Any]:
+    payload, _ = cache_get_json(
+        cache_key,
+        ttl,
+        producer,
+        cacheable=cacheable,
+    )
     return response_cache_impl.decode_json_data(payload, fallback)
 
 
@@ -2968,6 +2997,9 @@ def produce_industry_flow_data() -> dict[str, Any]:
         API_TTLS["money_flow"],
         produce_money_flow_data,
         {"inflow": [], "outflow": []},
+        cacheable=lambda payload: bool(
+            payload.get("inflow") or payload.get("outflow")
+        ),
     )
     history_samples = record_industry_flow_sample(money_flow, now=current)
     if str(money_flow.get("generated_at") or "")[:10] != current_day:

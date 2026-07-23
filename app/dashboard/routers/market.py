@@ -68,12 +68,16 @@ def create_market_router(
 
     router = APIRouter(include_in_schema=False)
 
+    def money_flow_available(payload: dict[str, Any]) -> bool:
+        return bool(payload.get("inflow") or payload.get("outflow"))
+
     def prepare_daily_money_flow_cache(ttl: int) -> None:
         services.reset_daily_market_histories()
         services.seed_api_cache_from_json_file(
             "money_flow",
             services.MONEY_FLOW_SNAPSHOT_FILE,
             ttl,
+            cacheable=money_flow_available,
         )
 
     @router.api_route("/api/iwencai/dragon-tiger", methods=["GET", "HEAD"])
@@ -345,6 +349,7 @@ def create_market_router(
             edge_ttl=ttl,
             browser_ttl=15,
             before_cache=lambda: prepare_daily_money_flow_cache(ttl),
+            cacheable=money_flow_available,
         )
 
     @router.api_route("/api/industry-flow", methods=["GET", "HEAD"])
@@ -367,6 +372,7 @@ def create_market_router(
             edge_ttl=ttl,
             browser_ttl=10,
             before_cache=lambda: prepare_daily_money_flow_cache(money_flow_ttl),
+            cacheable=lambda payload: bool(payload.get("nodes")),
         )
 
     @router.api_route("/api/market_flow", methods=["GET", "HEAD"])

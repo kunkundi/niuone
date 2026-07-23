@@ -277,6 +277,7 @@ def create_app(
         edge_ttl: int,
         browser_ttl: int,
         before_cache: Callable[[], Any] | None = None,
+        cacheable: Callable[[dict[str, Any]], bool] | None = None,
         enforce_limits: bool = True,
     ) -> Response:
         if enforce_limits:
@@ -293,7 +294,14 @@ def create_app(
         def load_payload() -> tuple[bytes, bool]:
             if before_cache is not None:
                 before_cache()
-            return legacy.cache_get_json(cache_key, ttl, producer)
+            if cacheable is None:
+                return legacy.cache_get_json(cache_key, ttl, producer)
+            return legacy.cache_get_json(
+                cache_key,
+                ttl,
+                producer,
+                cacheable=cacheable,
+            )
 
         payload, cache_hit = await run_in_threadpool(load_payload)
         resolved_browser_ttl = min(browser_ttl, ttl)

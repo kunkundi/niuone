@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 
 PayloadProducer = Callable[[], dict[str, Any]]
+PayloadCachePredicate = Callable[[dict[str, Any]], bool]
 CacheEntry = dict[str, Any]
 CacheStore = dict[str, CacheEntry]
 KeyLocks = dict[str, threading.Lock]
@@ -56,13 +57,15 @@ def refresh_payload(
     *,
     store: Callable[[str, bytes, int], bool],
     warn: Callable[[str], None],
+    cacheable: PayloadCachePredicate | None = None,
 ) -> None:
     """Refresh one stale entry and always release its claimed key lock."""
 
     try:
         result = producer()
         payload = json.dumps(result, ensure_ascii=False).encode("utf-8")
-        store(cache_key, payload, generation)
+        if cacheable is None or cacheable(result):
+            store(cache_key, payload, generation)
     except Exception as exc:
         warn(
             f"dashboard cache refresh failed for {cache_key}: "
@@ -83,7 +86,8 @@ def get_json(
     generations: Generations,
     stale_while_refresh_seconds: int,
     store: Callable[[str, bytes, int], bool],
-    refresh: Callable[[str, PayloadProducer, int, threading.Lock], None],
+    refresh: Callable[..., None],
+    cacheable: PayloadCachePredicate | None = None,
     now: Callable[[], float] = time.time,
 ) -> tuple[bytes, bool]:
     """Return fresh JSON or one stale value while a single refresh runs."""
@@ -106,7 +110,7 @@ def get_json(
             try:
                 threading.Thread(
                     target=refresh,
-                    args=(cache_key, producer, generation, key_lock),
+                    args=(cache_key, producer, generation, key_lock, cacheable),
                     name=f"dashboard-cache-{cache_key[:32]}",
                     daemon=True,
                 ).start()
@@ -124,7 +128,8 @@ def get_json(
             generation = generations.get(cache_key, 0)
         result = producer()
         payload = json.dumps(result, ensure_ascii=False).encode("utf-8")
-        store(cache_key, payload, generation)
+        if cacheable is None or cacheable(result):
+            store(cache_key, payload, generation)
         return payload, False
 
 
@@ -136,6 +141,7 @@ def seed_from_json_file(
     entries: CacheStore,
     entries_lock: Any,
     transform: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    cacheable: PayloadCachePredicate | None = None,
     now: Callable[[], float] = time.time,
 ) -> bool:
     """Seed a cold entry just beyond its TTL for stale-while-refresh use."""
@@ -151,6 +157,8 @@ def seed_from_json_file(
         if transform is not None:
             data = transform(data)
         if not isinstance(data, dict):
+            return False
+        if cacheable is not None and not cacheable(data):
             return False
         data["stale_cache"] = True
         payload = json.dumps(data, ensure_ascii=False).encode("utf-8")

@@ -1,11 +1,13 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useIndicesData } from '../composables/useIndicesData.js'
 import { useIndustryFlowData } from '../composables/useIndustryFlowData.js'
 import { previousDayMarketLabel } from '../utils/marketDisplay.js'
+import { responsiveStageHeight } from '../utils/responsiveStage.js'
 import {
   barScale,
+  seekValueFromClientX,
   signedYi,
   useIndustryFlowAnimation,
 } from '../composables/useIndustryFlowAnimation.js'
@@ -45,6 +47,11 @@ const progressText = computed(() => actualPlayback.value
   ? `${animation.playing ? '采样' : '已暂停'} ${currentTime.value || '--'}`
   : `${animation.playing ? '播放' : '已暂停'} ${Math.round(displayedProgress.value * 100)}%`)
 const previousDayLabel = computed(() => previousDayMarketLabel(payload.value.generated_at))
+const stageElement = ref(null)
+const progressElement = ref(null)
+const stageHeight = ref(0)
+let stageLayoutFrame = 0
+let stageLayoutObserver = null
 
 function selectPanel(panel) {
   if (!['index', 'market', 'market-breadth'].includes(panel)) return
@@ -56,8 +63,77 @@ function rowLabel(node, role) {
   return `${node.name}：主力${role === 'inflow' ? '净流入' : '净流出'} ${signedYi(node.net_flow_yi)}`
 }
 
+function updateStageHeight() {
+  const stage = stageElement.value
+  const progress = progressElement.value
+  if (!stage || !progress) return
+  const viewport = window.visualViewport
+  const viewportBottom = viewport
+    ? Number(viewport.offsetTop || 0) + Number(viewport.height || window.innerHeight)
+    : window.innerHeight
+  const main = stage.closest('main')
+  const bottomPadding = main
+    ? Number.parseFloat(window.getComputedStyle(main).paddingBottom) || 0
+    : 0
+  const nextHeight = responsiveStageHeight({
+    viewportBottom,
+    stageTop: stage.getBoundingClientRect().top,
+    footerHeight: progress.getBoundingClientRect().height,
+    bottomPadding,
+    mobile: window.matchMedia('(max-width: 720px)').matches,
+  })
+  if (stageHeight.value !== nextHeight) stageHeight.value = nextHeight
+}
+
+function scheduleStageHeight() {
+  if (stageLayoutFrame) window.cancelAnimationFrame(stageLayoutFrame)
+  stageLayoutFrame = window.requestAnimationFrame(() => {
+    stageLayoutFrame = 0
+    updateStageHeight()
+  })
+}
+
 function handleSeek(event) {
   seek(event.target.value)
+}
+
+function seekFromPointer(event) {
+  const track = event.currentTarget.parentElement
+  if (!track) return
+  const rect = track.getBoundingClientRect()
+  seek(seekValueFromClientX(event.clientX, rect.left, rect.width))
+}
+
+function beginPointerSeek(event) {
+  beginSeek()
+  try {
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+  } catch {
+    // Native range controls may already own pointer capture.
+  }
+  seekFromPointer(event)
+}
+
+function movePointerSeek(event) {
+  if (!animation.seeking) return
+  seekFromPointer(event)
+}
+
+function finishPointerSeek(event) {
+  if (!animation.seeking) return
+  seekFromPointer(event)
+  try {
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  } catch {
+    // The browser may release capture before dispatching pointerup.
+  }
+  endSeek()
+}
+
+function cancelPointerSeek() {
+  endSeek()
 }
 
 function pinLeavingRow(element) {
@@ -78,14 +154,33 @@ watch(
   async nextPayload => {
     if (!nextPayload.loaded || !nextPayload.nodes?.length) return
     await nextTick()
+    scheduleStageHeight()
     start()
   },
 )
 
-onMounted(() => activateIndustryFlow())
+onMounted(async () => {
+  activateIndustryFlow()
+  await nextTick()
+  window.addEventListener('resize', scheduleStageHeight)
+  window.visualViewport?.addEventListener('resize', scheduleStageHeight)
+  if (typeof ResizeObserver !== 'undefined') {
+    stageLayoutObserver = new ResizeObserver(scheduleStageHeight)
+    const header = document.querySelector('header')
+    if (header) stageLayoutObserver.observe(header)
+    if (progressElement.value) stageLayoutObserver.observe(progressElement.value)
+  }
+  scheduleStageHeight()
+})
 onBeforeUnmount(() => {
   stop()
   deactivateIndustryFlow()
+  if (stageLayoutFrame) window.cancelAnimationFrame(stageLayoutFrame)
+  stageLayoutFrame = 0
+  stageLayoutObserver?.disconnect()
+  stageLayoutObserver = null
+  window.removeEventListener('resize', scheduleStageHeight)
+  window.visualViewport?.removeEventListener('resize', scheduleStageHeight)
 })
 </script>
 
@@ -108,12 +203,29 @@ onBeforeUnmount(() => {
       <div v-if="payload.error" class="industry-flow-notice warning">实时更新失败，继续展示可用快照：{{ payload.error }}</div>
       <section class="industry-flow-hero">
         <div class="industry-flow-heading">
-          <div><h2>行业主力资金流动</h2></div>
-          <div class="industry-flow-meta">
-            <span v-if="previousDayLabel" class="previous-day-data-badge">{{ previousDayLabel }}</span>
-            <span>更新 {{ payload.generated_at || '--' }}</span>
-            <span>{{ payload.source || '行业主力净额即时快照' }}</span>
-            <span id="industryFlowSampleTime">{{ samplingStatus }}</span>
+          <div class="industry-flow-title-row">
+            <h2>行业主力资金流动</h2>
+            <div class="industry-flow-info">
+              <button
+                class="industry-flow-info-trigger"
+                type="button"
+                aria-label="查看行业资金流数据说明"
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <circle cx="10" cy="10" r="8"></circle>
+                  <path d="M10 9v5M10 6.2v.1"></path>
+                </svg>
+              </button>
+              <div class="industry-flow-info-popover" role="tooltip">
+                <strong>数据说明</strong>
+                <span>更新 {{ payload.generated_at || '--' }}</span>
+                <span>{{ payload.source || '行业主力净额即时快照' }}</span>
+                <span id="industryFlowSampleTime">{{ samplingStatus }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-if="previousDayLabel" class="industry-flow-meta">
+            <span class="previous-day-data-badge">{{ previousDayLabel }}</span>
           </div>
         </div>
         <div class="industry-flow-toolbar">
@@ -130,7 +242,9 @@ onBeforeUnmount(() => {
         </div>
         <div
           id="industryFlowStage"
+          ref="stageElement"
           class="flow-bars-stage"
+          :style="stageHeight ? { '--industry-flow-stage-height': `${stageHeight}px` } : undefined"
           :data-actual-playback="actualPlayback"
           role="img"
           aria-label="行业主力资金中心对称条形图：左侧主力净流出，右侧主力净流入，均按主力净额绝对值从大到小排序"
@@ -179,7 +293,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-        <div class="industry-flow-progress" aria-label="动画进度">
+        <div ref="progressElement" class="industry-flow-progress" aria-label="动画进度">
           <div class="industry-flow-progress-main">
             <div class="industry-flow-progress-track">
               <span id="industryFlowProgressBar" :style="{ width: `${(displayedProgress * 100).toFixed(1)}%` }" />
@@ -193,9 +307,10 @@ onBeforeUnmount(() => {
                 :value="Math.round(displayedProgress * 1000)"
                 aria-label="拖动资金流播放进度"
                 :aria-valuetext="progressText"
-                @pointerdown="beginSeek"
-                @pointerup="endSeek"
-                @pointercancel="endSeek"
+                @pointerdown="beginPointerSeek"
+                @pointermove="movePointerSeek"
+                @pointerup="finishPointerSeek"
+                @pointercancel="cancelPointerSeek"
                 @keydown="beginSeek"
                 @keyup="endSeek"
                 @blur="endSeek"

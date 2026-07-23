@@ -1,4 +1,5 @@
 import { reactive } from 'vue'
+import { applyPayloadAsReady } from '../utils/asyncPayload.js'
 import { startVisiblePolling } from '../utils/visiblePolling.js'
 
 const REFRESH_INTERVAL_MS = 15 * 1000
@@ -76,30 +77,54 @@ async function loadIndices({ background = false } = {}) {
       || Date.now() - moneyFlowLastFetchAt >= MONEY_FLOW_REFRESH_INTERVAL_MS
     const marketBreadthDue = !state.marketBreadth.timeline?.length
       || Date.now() - marketBreadthLastFetchAt >= MARKET_BREADTH_REFRESH_INTERVAL_MS
-    const requests = [
-      marketBreadthDue
-        ? fetchJson('/api/market_breadth', { latest: {}, timeline: [] }, controller.signal)
-        : Promise.resolve(state.marketBreadth),
-      fetchJson('/api/sectors', { sectors: [] }, controller.signal),
-      fetchJson('/api/us_sectors', { items: [] }, controller.signal),
-      fetchJson('/api/hot_stocks', { items: [] }, controller.signal),
-      moneyFlowDue
-        ? fetchJson('/api/money_flow', { inflow: [], outflow: [] }, controller.signal)
-        : Promise.resolve(state.moneyFlow),
-      fetchJson('/api/market_flow', { total_inflow_yi: null }, controller.signal),
-    ]
-    const [marketBreadth, sectors, usSectors, hotStocks, moneyFlow, marketFlow] = await Promise.all(requests)
-    if (sequence !== loadSequence) return
-    state.marketBreadth = marketBreadth.error && state.marketBreadth.timeline?.length
-      ? { ...state.marketBreadth, error: marketBreadth.error }
-      : marketBreadth
-    state.sectors = sectors
-    state.usSectors = usSectors
-    state.hotStocks = hotStocks
-    state.moneyFlow = moneyFlow
-    state.marketFlow = marketFlow
-    if (moneyFlowDue && !moneyFlow.error) moneyFlowLastFetchAt = Date.now()
-    if (marketBreadthDue && !marketBreadth.error) marketBreadthLastFetchAt = Date.now()
+    const isCurrent = () => sequence === loadSequence
+    const requests = []
+    if (marketBreadthDue) {
+      requests.push(applyPayloadAsReady(
+        fetchJson('/api/market_breadth', { latest: {}, timeline: [] }, controller.signal),
+        (marketBreadth) => {
+          state.marketBreadth = marketBreadth.error && state.marketBreadth.timeline?.length
+            ? { ...state.marketBreadth, error: marketBreadth.error }
+            : marketBreadth
+          if (!marketBreadth.error) marketBreadthLastFetchAt = Date.now()
+        },
+        isCurrent,
+      ))
+    }
+    requests.push(
+      applyPayloadAsReady(
+        fetchJson('/api/sectors', { sectors: [] }, controller.signal),
+        (sectors) => { state.sectors = sectors },
+        isCurrent,
+      ),
+      applyPayloadAsReady(
+        fetchJson('/api/us_sectors', { items: [] }, controller.signal),
+        (usSectors) => { state.usSectors = usSectors },
+        isCurrent,
+      ),
+      applyPayloadAsReady(
+        fetchJson('/api/hot_stocks', { items: [] }, controller.signal),
+        (hotStocks) => { state.hotStocks = hotStocks },
+        isCurrent,
+      ),
+      applyPayloadAsReady(
+        fetchJson('/api/market_flow', { total_inflow_yi: null }, controller.signal),
+        (marketFlow) => { state.marketFlow = marketFlow },
+        isCurrent,
+      ),
+    )
+    if (moneyFlowDue) {
+      requests.push(applyPayloadAsReady(
+        fetchJson('/api/money_flow', { inflow: [], outflow: [] }, controller.signal),
+        (moneyFlow) => {
+          state.moneyFlow = moneyFlow
+          if (!moneyFlow.error) moneyFlowLastFetchAt = Date.now()
+        },
+        isCurrent,
+      ))
+    }
+    await Promise.all(requests)
+    if (!isCurrent()) return
     lastLoadedAt = Date.now()
   } catch (error) {
     if (error?.name === 'AbortError') return

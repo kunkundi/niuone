@@ -124,6 +124,13 @@ export function playbackDuration(frameCount) {
   return Math.max(MIN_PLAYBACK_MS, Math.min(MAX_PLAYBACK_MS, intervals * SAMPLE_PLAYBACK_MS))
 }
 
+export function seekValueFromClientX(clientX, trackLeft, trackWidth) {
+  const width = Number(trackWidth)
+  const position = Number(clientX) - Number(trackLeft)
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(position)) return 0
+  return Math.round(Math.max(0, Math.min(1, position / width)) * 1000)
+}
+
 export function configureIndustryFlowAnimation(payload, hadData) {
   const configuredSpeed = Number(payload?.settings?.playback_speed)
   if (!animation.speedUserOverride && SPEED_OPTIONS.includes(configuredSpeed)) animation.speed = configuredSpeed

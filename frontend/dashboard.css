@@ -19,7 +19,7 @@
     .compliance-dialog-close { min-width:84px; border:1px solid var(--text); border-radius:7px; padding:8px 16px; background:var(--text); color:var(--panel); font-weight:700; }
     .compliance-dialog-close:hover { opacity:.86; }
     .compliance-dialog-close:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-    header { position:sticky; top:0; z-index:2; background:rgba(255,255,255,.97); border-bottom:1px solid var(--line); padding:16px max(clamp(16px, 4vw, 42px), calc((100vw - 1440px) / 2)); }
+    header { position:sticky; top:0; z-index:20; background:rgba(255,255,255,.97); border-bottom:1px solid var(--line); padding:16px max(clamp(16px, 4vw, 42px), calc((100vw - 1440px) / 2)); }
     .header-row { display:flex; align-items:center; justify-content:space-between; gap:14px; }
     .header-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
     h1 { margin:0; font-size:clamp(24px, 3vw, 34px); letter-spacing:-.03em; font-weight:760; white-space:nowrap; }
@@ -721,13 +721,23 @@
     html[data-theme="dark"] .industry-flow-hero,
     html[data-theme="dark"] .industry-flow-details { box-shadow:none; }
     .industry-flow-heading {
+      position:relative;
+      z-index:4;
       display:flex;
-      align-items:flex-start;
+      align-items:center;
       justify-content:space-between;
       gap:20px;
       padding:20px 22px 16px;
       border-bottom:1px solid var(--line);
     }
+    .industry-flow-title-row { position:relative; display:flex; align-items:center; gap:6px; min-width:0; }
+    .industry-flow-info { flex:0 0 auto; }
+    .industry-flow-info-trigger { display:inline-grid; place-items:center; width:24px; height:24px; min-width:24px; margin:0; padding:0; border:0; border-radius:0; color:#c7d2fe; background:transparent; box-shadow:none; line-height:1; cursor:pointer; }
+    .industry-flow-info-trigger svg { width:19px; height:19px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; }
+    .industry-flow-info-trigger:hover, .industry-flow-info-trigger:focus-visible { color:#eef2ff; background:transparent; outline:none; filter:drop-shadow(0 0 4px rgba(165,180,252,.58)); }
+    .industry-flow-info-popover { position:absolute; top:calc(100% + 7px); left:0; z-index:8; width:min(360px, calc(100vw - 44px)); display:grid; gap:5px; padding:10px 12px; visibility:hidden; opacity:0; pointer-events:none; transform:translateY(-3px); border:1px solid rgba(148,163,184,.24); border-radius:10px; color:#94a3b8; background:rgba(2,6,23,.97); box-shadow:0 14px 36px rgba(0,0,0,.34); font-size:10px; line-height:1.5; transition:opacity .12s ease, transform .12s ease, visibility .12s ease; }
+    .industry-flow-info-popover strong { color:#e2e8f0; font-size:11px; }
+    .industry-flow-info:hover .industry-flow-info-popover, .industry-flow-info:focus-within .industry-flow-info-popover { visibility:visible; opacity:1; pointer-events:auto; transform:translateY(0); }
     .industry-flow-eyebrow {
       display:block;
       margin-bottom:6px;
@@ -753,9 +763,9 @@
       line-height:1.55;
     }
     .industry-flow-meta {
-      display:grid;
-      justify-items:end;
-      gap:5px;
+      display:flex;
+      align-items:center;
+      justify-content:flex-end;
       flex:0 0 auto;
       color:var(--muted);
       font-size:11px;
@@ -845,6 +855,8 @@
       font-size:11px;
     }
     .flow-bars-stage {
+      display:flex;
+      height:var(--industry-flow-stage-height, clamp(220px, calc(100dvh - 430px), 840px));
       min-width:0;
       margin:4px 18px 0;
       padding:4px 4px 8px;
@@ -879,7 +891,9 @@
       display:grid;
       grid-template-columns:minmax(0,1fr) 20px minmax(0,1fr);
       gap:0;
-      align-items:start;
+      align-items:stretch;
+      flex:1;
+      height:100%;
       min-width:0;
     }
     .flow-bars-axis {
@@ -896,18 +910,24 @@
       min-height:100%;
       background:var(--line);
     }
-    .flow-bars-col { position:relative; z-index:1; min-width:0; }
+    .flow-bars-col { position:relative; z-index:1; min-width:0; height:100%; }
     .flow-bars-col-list {
       display:flex;
       flex-direction:column;
-      gap:12px;
+      justify-content:space-between;
+      gap:clamp(2px, .6dvh, 10px);
+      height:100%;
       min-width:0;
     }
     .flow-bar-row {
+      flex:1 1 0;
+      grid-template-rows:auto minmax(2px, 1fr);
+      max-height:48px;
       min-width:0;
+      min-height:0;
       display:grid;
-      gap:5px;
-      padding:2px 4px;
+      gap:clamp(2px, .5dvh, 5px);
+      padding:0 4px;
       background:transparent;
       border:0;
     }
@@ -926,6 +946,7 @@
       overflow:hidden;
       color:var(--text);
       font-size:13px;
+      line-height:1;
       font-weight:750;
       letter-spacing:-.01em;
       text-overflow:ellipsis;
@@ -934,6 +955,7 @@
     .flow-bar-value {
       flex:0 0 auto;
       font-size:12px;
+      line-height:1;
       font-weight:800;
       font-variant-numeric:tabular-nums;
       white-space:nowrap;
@@ -941,7 +963,9 @@
     .flow-bar-row.outflow .flow-bar-value { color:var(--flow-out); }
     .flow-bar-row.inflow .flow-bar-value { color:var(--flow-in); }
     .flow-bar-track {
-      height:14px;
+      height:auto;
+      min-height:2px;
+      max-height:14px;
       overflow:hidden;
       border-radius:0;
       background:transparent;
@@ -984,7 +1008,8 @@
     }
     .industry-flow-progress-track {
       position:relative;
-      height:4px;
+      height:2px;
+      margin-top:3px;
       flex:1;
       border-radius:999px;
       background:var(--line);
@@ -997,29 +1022,34 @@
       transition:width .08s linear;
       pointer-events:none;
     }
-    .industry-flow-progress-seek {
+    .industry-flow-progress-track .industry-flow-progress-seek {
       position:absolute;
       z-index:2;
-      inset:-10px -2px;
-      width:calc(100% + 4px);
-      height:24px;
+      top:50%;
+      left:-8px;
+      width:calc(100% + 16px);
+      height:28px;
       margin:0;
       padding:0;
       border:0;
+      border-radius:0;
       appearance:none;
       -webkit-appearance:none;
       background:transparent;
+      box-shadow:none;
       cursor:ew-resize;
+      transform:translateY(-50%);
       touch-action:none;
+      user-select:none;
     }
     .industry-flow-progress-seek::-webkit-slider-runnable-track {
-      height:4px;
+      height:2px;
       background:transparent;
     }
     .industry-flow-progress-seek::-webkit-slider-thumb {
       width:16px;
       height:16px;
-      margin-top:-6px;
+      margin-top:-7px;
       border:2px solid var(--panel);
       border-radius:50%;
       -webkit-appearance:none;
@@ -1028,7 +1058,7 @@
       box-shadow:0 0 0 1px var(--accent-border),0 2px 6px rgba(15,23,42,.18);
     }
     .industry-flow-progress-seek::-moz-range-track {
-      height:4px;
+      height:2px;
       background:transparent;
     }
     .industry-flow-progress-seek::-moz-range-progress { background:transparent; }
@@ -1058,7 +1088,7 @@
       grid-template-columns:1fr auto 1fr;
       align-items:center;
       gap:8px;
-      margin-top:8px;
+      margin-top:16px;
       color:var(--muted);
       font-size:10px;
       line-height:1;
@@ -1109,9 +1139,9 @@
       .industry-flow-progress-track span { transition:none; }
     }
     @media (max-width: 720px) {
-      .industry-flow-heading { display:grid; gap:10px; padding:15px 14px 12px; }
+      .industry-flow-heading { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:8px; padding:15px 14px 12px; }
       .industry-flow-heading h2 { font-size:19px; }
-      .industry-flow-meta { justify-items:start; }
+      .industry-flow-meta { justify-content:flex-end; }
       .industry-flow-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; padding:10px 12px; }
       .industry-flow-kpi { padding:9px 10px; }
       .industry-flow-kpi b { font-size:15px; }
@@ -1120,7 +1150,7 @@
       .industry-flow-legend { gap:8px 12px; }
       .industry-flow-controls { width:100%; }
       .industry-flow-controls button { flex:1; }
-      .flow-bars-stage { margin:2px 10px 0; padding:2px 2px 6px; }
+      .flow-bars-stage { height:var(--industry-flow-stage-height, clamp(236px, calc(100dvh - 460px), 520px)); margin:2px 10px 0; padding:2px 2px 6px; }
       .flow-bars-head {
         grid-template-columns:minmax(0,1fr) 12px minmax(0,1fr);
         gap:0;
@@ -1130,14 +1160,14 @@
       .flow-bars-head-center { visibility:hidden; overflow:hidden; width:12px; font-size:0; }
       .flow-bars-split { grid-template-columns:minmax(0,1fr) 12px minmax(0,1fr); gap:0; }
       .flow-bars-axis { display:flex; }
-      .flow-bars-col-list { gap:11px; }
-      .flow-bar-row { gap:3px; padding:1px 2px; }
+      .flow-bars-col-list { gap:clamp(2px, .5dvh, 7px); }
+      .flow-bar-row { gap:3px; padding:0 2px; }
       .flow-bar-meta { gap:4px; }
       .flow-bar-row.outflow .flow-bar-meta { flex-direction:row-reverse; justify-content:flex-start; }
       .flow-bar-row.inflow .flow-bar-meta { flex-direction:row; justify-content:flex-start; }
       .flow-bar-name { font-size:11px; }
       .flow-bar-value { font-size:10px; }
-      .flow-bar-track { height:10px; }
+      .flow-bar-track { height:auto; min-height:6px; max-height:10px; }
       .flow-bar-row.outflow .flow-bar-track { justify-content:flex-end; }
       .industry-flow-progress { gap:8px; padding:8px 12px 10px; }
       .industry-flow-progress-times { gap:4px; font-size:9px; }
@@ -1191,7 +1221,7 @@
       select { min-width:0; width:100%; padding:8px; font-size:13px; }
       #chat { display:none; }
       button { width:auto; min-width:78px; padding:8px 9px; font-size:13px; }
-      main { padding:8px 8px 28px; }
+      main { padding:8px 8px max(28px, env(safe-area-inset-bottom)); }
       .feed { gap:11px; }
       .dragon-tiger-head { display:grid; gap:9px; padding:13px 12px 11px; }
       .dragon-tiger-admin-backdrop { padding:12px; }
@@ -1538,6 +1568,9 @@
     html:not([data-theme="dark"]) .market-breadth-info-trigger { color:#315aa8; background:transparent; box-shadow:none; }
     html:not([data-theme="dark"]) .market-breadth-info-popover { border-color:#cfd8e6; color:#667085; background:rgba(255,255,255,.98); box-shadow:0 14px 36px rgba(15,23,42,.16); }
     html:not([data-theme="dark"]) .market-breadth-info-popover strong { color:#172033; }
+    html:not([data-theme="dark"]) .industry-flow-info-trigger { color:#315aa8; background:transparent; box-shadow:none; }
+    html:not([data-theme="dark"]) .industry-flow-info-popover { border-color:#cfd8e6; color:#667085; background:rgba(255,255,255,.98); box-shadow:0 14px 36px rgba(15,23,42,.16); }
+    html:not([data-theme="dark"]) .industry-flow-info-popover strong { color:#172033; }
     html:not([data-theme="dark"]) .previous-day-data-badge { border-color:#f2c46d; color:#9a5b00; background:#fff7e6; }
     html:not([data-theme="dark"]) .market-breadth-controls { border-color:#d7dfec; background:#f8fafc; }
     html:not([data-theme="dark"]) .market-breadth-toggle { border-color:transparent; color:#667085; background:transparent; }

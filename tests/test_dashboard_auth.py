@@ -60,6 +60,9 @@ MARKET_MONITOR_COMPONENTS = '\n'.join(
         ROOT / 'web' / 'src' / 'components' / 'market-monitor' / 'UsMarketSummaryCard.vue',
     )
 )
+INDUSTRY_FLOW_DATA_UTIL_PATH = ROOT / 'web' / 'src' / 'utils' / 'industryFlowData.js'
+RESPONSIVE_STAGE_UTIL_PATH = ROOT / 'web' / 'src' / 'utils' / 'responsiveStage.js'
+ASYNC_PAYLOAD_UTIL_PATH = ROOT / 'web' / 'src' / 'utils' / 'asyncPayload.js'
 US_RATING_UTILS_PATH = ROOT / 'web' / 'src' / 'utils' / 'usRatingDisplay.js'
 US_RATING_UTILS = US_RATING_UTILS_PATH.read_text(encoding='utf-8')
 US_RATING_DATA = (
@@ -1872,10 +1875,46 @@ console.log(JSON.stringify(result));
         self.assertIn('useIndustryFlowAnimation(payload)', component)
         self.assertIn('<TransitionGroup', component)
         self.assertIn('id="industryFlowSeek"', component)
-        self.assertIn('@pointerdown="beginSeek"', component)
+        self.assertIn('@pointerdown="beginPointerSeek"', component)
+        self.assertIn('@pointermove="movePointerSeek"', component)
+        self.assertIn('@pointerup="finishPointerSeek"', component)
+        self.assertIn('setPointerCapture?.(event.pointerId)', component)
         self.assertIn('export function frameAt', animation_source)
+        self.assertIn('export function seekValueFromClientX', animation_source)
         self.assertIn('export function splitSortedNodes', animation_source)
         self.assertIn('const SPEED_OPTIONS = [0.5, 0.75, 1, 1.5, 2]', animation_source)
+
+    def test_industry_flow_seek_track_is_thin_and_pointer_position_is_clamped(self):
+        stylesheet = (ROOT / 'frontend' / 'dashboard.css').read_text(encoding='utf-8')
+        self.assertIn('.industry-flow-progress-track .industry-flow-progress-seek {', stylesheet)
+        self.assertIn('width:calc(100% + 16px);', stylesheet)
+        self.assertIn('height:28px;', stylesheet)
+        self.assertIn('top:50%;', stylesheet)
+        self.assertIn('transform:translateY(-50%);', stylesheet)
+        self.assertIn('background:transparent;', stylesheet)
+        self.assertRegex(
+            stylesheet,
+            r'\.industry-flow-progress-track \{[^}]*height:2px;',
+        )
+
+        scenario = r"""
+const {seekValueFromClientX} = await import(SOURCE);
+console.log(JSON.stringify([
+  seekValueFromClientX(10, 20, 100),
+  seekValueFromClientX(20, 20, 100),
+  seekValueFromClientX(70, 20, 100),
+  seekValueFromClientX(120, 20, 100),
+  seekValueFromClientX(180, 20, 100),
+]));
+"""
+        output = subprocess.check_output(
+            ['node', '--input-type=module', '-e', scenario.replace(
+                'SOURCE', json.dumps(INDUSTRY_FLOW_ANIMATION_PATH.as_uri()),
+            )],
+            cwd=ROOT,
+            text=True,
+        )
+        self.assertEqual(json.loads(output), [0, 0, 500, 1000, 1000])
 
     def test_industry_flow_sampling_window_and_history_file_are_bounded_to_local_data(self):
         original_calendar = dashboard.is_a_share_trading_day_for_dashboard
@@ -2018,6 +2057,236 @@ console.log(JSON.stringify(result));
             dashboard.is_industry_flow_sampling_window = original_window
             dashboard.refresh_industry_flow_sample = original_refresh
             dashboard.time.monotonic = original_monotonic
+
+    def test_industry_flow_refresh_invalidates_full_and_compact_caches(self):
+        original_fetch = dashboard.fetch_and_record_money_flow
+        original_invalidate = dashboard.invalidate_api_cache
+        original_invalidate_prefix = dashboard.invalidate_api_cache_prefix
+        invalidated = []
+        prefixes = []
+        sample = {'generated_at': '2026-07-20 10:00:00'}
+        try:
+            dashboard.fetch_and_record_money_flow = lambda **_kwargs: (sample, [sample])
+            dashboard.invalidate_api_cache = lambda *keys: invalidated.append(keys)
+            dashboard.invalidate_api_cache_prefix = lambda prefix: prefixes.append(prefix)
+
+            self.assertTrue(dashboard.refresh_industry_flow_sample())
+        finally:
+            dashboard.fetch_and_record_money_flow = original_fetch
+            dashboard.invalidate_api_cache = original_invalidate
+            dashboard.invalidate_api_cache_prefix = original_invalidate_prefix
+
+        self.assertEqual(invalidated, [('money_flow',)])
+        self.assertEqual(prefixes, ['industry_flow'])
+
+    def test_api_cache_can_skip_empty_industry_flow_payloads(self):
+        cache_key = 'industry_flow:compact:skip-empty-test'
+        dashboard.invalidate_api_cache(cache_key)
+        empty, empty_hit = dashboard.cache_get_json(
+            cache_key,
+            30,
+            lambda: {'available': False, 'nodes': []},
+            cacheable=lambda payload: bool(payload.get('nodes')),
+        )
+        self.assertFalse(empty_hit)
+        self.assertEqual(json.loads(empty)['nodes'], [])
+        self.assertNotIn(cache_key, dashboard.API_RESPONSE_CACHE)
+
+        populated, populated_hit = dashboard.cache_get_json(
+            cache_key,
+            30,
+            lambda: {'available': True, 'nodes': [{'id': 'semi'}]},
+            cacheable=lambda payload: bool(payload.get('nodes')),
+        )
+        self.assertFalse(populated_hit)
+        self.assertEqual(json.loads(populated)['nodes'][0]['id'], 'semi')
+        self.assertIn(cache_key, dashboard.API_RESPONSE_CACHE)
+        dashboard.invalidate_api_cache(cache_key)
+
+    def test_cold_money_flow_cache_skips_empty_durable_snapshot(self):
+        cache_key = 'money_flow:skip-empty-seed-test'
+        cache_path = self.tmp_path / 'money-flow-seed.json'
+        usable = lambda payload: bool(payload.get('inflow') or payload.get('outflow'))
+        dashboard.invalidate_api_cache(cache_key)
+
+        cache_path.write_text(
+            json.dumps({'retention_date': '2026-07-23', 'inflow': [], 'outflow': []}),
+            encoding='utf-8',
+        )
+        self.assertFalse(dashboard.seed_api_cache_from_json_file(
+            cache_key,
+            cache_path,
+            60,
+            cacheable=usable,
+        ))
+        self.assertNotIn(cache_key, dashboard.API_RESPONSE_CACHE)
+
+        cache_path.write_text(json.dumps({
+            'generated_at': '2026-07-23 15:00:00',
+            'inflow': [{'name': '半导体', 'net_flow_yi': 12}],
+            'outflow': [{'name': '银行', 'net_flow_yi': -6}],
+        }), encoding='utf-8')
+        self.assertTrue(dashboard.seed_api_cache_from_json_file(
+            cache_key,
+            cache_path,
+            60,
+            cacheable=usable,
+        ))
+        stored = json.loads(dashboard.API_RESPONSE_CACHE[cache_key]['payload'])
+        self.assertEqual(len(stored['inflow']), 1)
+        self.assertTrue(stored['stale_cache'])
+        dashboard.invalidate_api_cache(cache_key)
+
+    def test_industry_flow_empty_response_preserves_data_and_retries_quickly(self):
+        scenario = r"""
+const {
+  INDUSTRY_FLOW_EMPTY_RETRY_DELAYS_MS,
+  hasIndustryMoneyFlowRows,
+  mergeIndustryFlowPayload,
+} = await import(SOURCE);
+const current = {
+  loaded:true,
+  nodes:[{id:'semi', name:'半导体', net_flow_yi:12}],
+  generated_at:'2026-07-20 10:00:00',
+};
+const merged = mergeIndustryFlowPayload(current, {
+  available:false,
+  nodes:[],
+  money_flow:{inflow:[], outflow:[]},
+});
+console.log(JSON.stringify({
+  delays:INDUSTRY_FLOW_EMPTY_RETRY_DELAYS_MS,
+  nodes:merged.payload.nodes,
+  preserved:merged.preservedData,
+  stale:merged.payload.stale_cache,
+  hasMoneyFlow:hasIndustryMoneyFlowRows({money_flow:{inflow:[], outflow:[]}}),
+}));
+"""
+        output = subprocess.check_output(
+            ['node', '--input-type=module', '-e', scenario.replace(
+                'SOURCE', json.dumps(INDUSTRY_FLOW_DATA_UTIL_PATH.as_uri()),
+            )],
+            cwd=ROOT,
+            text=True,
+        )
+        result = json.loads(output)
+        self.assertEqual(result['delays'], [1000, 2500, 5000])
+        self.assertEqual(result['nodes'][0]['name'], '半导体')
+        self.assertTrue(result['preserved'])
+        self.assertTrue(result['stale'])
+        self.assertFalse(result['hasMoneyFlow'])
+
+    def test_industry_flow_stage_height_tracks_desktop_and_mobile_viewports(self):
+        scenario = r"""
+const {responsiveStageHeight} = await import(SOURCE);
+const height = options => responsiveStageHeight(options);
+console.log(JSON.stringify({
+  compactDesktop:height({
+    viewportBottom:720,
+    stageTop:332,
+    footerHeight:50,
+    bottomPadding:48,
+  }),
+  tallDesktop:height({
+    viewportBottom:1080,
+    stageTop:332,
+    footerHeight:50,
+    bottomPadding:48,
+  }),
+  mobile:height({
+    viewportBottom:844,
+    stageTop:430,
+    footerHeight:50,
+    bottomPadding:28,
+    mobile:true,
+  }),
+  mobileMinimum:height({
+    viewportBottom:520,
+    stageTop:400,
+    footerHeight:50,
+    bottomPadding:28,
+    mobile:true,
+  }),
+  desktopMinimum:height({
+    viewportBottom:520,
+    stageTop:400,
+    footerHeight:50,
+    bottomPadding:48,
+  }),
+  desktopMaximum:height({
+    viewportBottom:1800,
+    stageTop:200,
+    footerHeight:50,
+    bottomPadding:48,
+  }),
+}));
+"""
+        output = subprocess.check_output(
+            ['node', '--input-type=module', '-e', scenario.replace(
+                'SOURCE', json.dumps(RESPONSIVE_STAGE_UTIL_PATH.as_uri()),
+            )],
+            cwd=ROOT,
+            text=True,
+        )
+        result = json.loads(output)
+        self.assertEqual(result['compactDesktop'], 288)
+        self.assertEqual(result['tallDesktop'], 648)
+        self.assertEqual(result['mobile'], 334)
+        self.assertEqual(result['mobileMinimum'], 236)
+        self.assertEqual(result['desktopMinimum'], 220)
+        self.assertEqual(result['desktopMaximum'], 840)
+
+        component = (
+            ROOT / 'web' / 'src' / 'components' / 'IndustryFlowPanel.vue'
+        ).read_text(encoding='utf-8')
+        styles = (ROOT / 'frontend' / 'dashboard.css').read_text(encoding='utf-8')
+        self.assertIn('window.visualViewport', component)
+        self.assertIn('new ResizeObserver(scheduleStageHeight)', component)
+        self.assertIn('--industry-flow-stage-height', component)
+        self.assertIn('calc(100dvh - 430px)', styles)
+        self.assertIn('calc(100dvh - 460px)', styles)
+
+    def test_indices_apply_market_breadth_before_unrelated_requests_finish(self):
+        scenario = r"""
+const {applyPayloadAsReady} = await import(SOURCE);
+const events = [];
+let releaseSlow;
+const slow = new Promise(resolve => {
+  releaseSlow = () => resolve({name:'us-sectors'});
+});
+const breadthTask = applyPayloadAsReady(
+  Promise.resolve({name:'market-breadth'}),
+  payload => events.push(payload.name),
+);
+const slowTask = applyPayloadAsReady(
+  slow,
+  payload => events.push(payload.name),
+);
+await breadthTask;
+const beforeSlowFinished = [...events];
+releaseSlow();
+await slowTask;
+console.log(JSON.stringify({beforeSlowFinished, afterAll:events}));
+"""
+        output = subprocess.check_output(
+            ['node', '--input-type=module', '-e', scenario.replace(
+                'SOURCE', json.dumps(ASYNC_PAYLOAD_UTIL_PATH.as_uri()),
+            )],
+            cwd=ROOT,
+            text=True,
+        )
+        result = json.loads(output)
+        self.assertEqual(result['beforeSlowFinished'], ['market-breadth'])
+        self.assertEqual(
+            result['afterAll'],
+            ['market-breadth', 'us-sectors'],
+        )
+        indices_data = (
+            ROOT / 'web' / 'src' / 'composables' / 'useIndicesData.js'
+        ).read_text(encoding='utf-8')
+        self.assertIn("fetchJson('/api/market_breadth'", indices_data)
+        self.assertIn('applyPayloadAsReady(', indices_data)
+        self.assertIn('state.marketBreadth = marketBreadth.error', indices_data)
 
     def test_industry_flow_timeline_interpolates_node_amounts(self):
         scenario = r"""
