@@ -11,16 +11,39 @@ const SERIES = [
   { key: 'broken_limit', label: '炸板', color: 'var(--market-breadth-broken-limit, #fbbf24)', axis: 'right', group: 'limit' },
   { key: 'red', label: '红盘', color: 'var(--market-breadth-red, #e879f9)', axis: 'left', group: 'breadth', muted: true },
   { key: 'green', label: '绿盘', color: 'var(--market-breadth-green, #38bdf8)', axis: 'left', group: 'breadth', muted: true },
+  { key: 'estimated_turnover_yi', label: '预测全天量能', color: 'var(--market-breadth-estimated-turnover, #f59e0b)', axis: 'volume', group: 'volume' },
+  { key: 'actual_turnover_yi', label: '实际量能', color: 'var(--market-breadth-actual-turnover, #818cf8)', axis: 'volume', group: 'volume', muted: true },
+  { key: 'turnover_increment_yi', label: '增量', color: 'var(--market-breadth-turnover-increment, #2dd4bf)', axis: 'volume', group: 'volume', signed: true },
 ]
 
 const showBreadth = ref(true)
 const showLimitState = ref(true)
+const showVolume = ref(true)
 const hoveredAt = ref('')
 const chartElement = ref(null)
 
-function numeric(value) {
+function nullableNumeric(value, allowNegative = false) {
   const parsed = Number(value)
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+  return Number.isFinite(parsed) && (allowNegative || parsed >= 0) ? parsed : null
+}
+
+function numeric(value) {
+  return nullableNumeric(value) ?? 0
+}
+
+function formatSeriesValue(series, value, withCountUnit = false) {
+  const parsed = nullableNumeric(value, series.signed)
+  if (parsed == null) return '--'
+  if (series.axis === 'volume') {
+    const sign = series.signed && parsed > 0 ? '+' : ''
+    const absolute = Math.abs(parsed)
+    if (absolute >= 10_000) {
+      return `${sign}${(parsed / 10_000).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}万亿`
+    }
+    return `${sign}${parsed.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}亿`
+  }
+  const formatted = Math.round(parsed).toLocaleString('zh-CN')
+  return withCountUnit ? `${formatted}只` : formatted
 }
 
 function tradeProgress(value) {
@@ -37,6 +60,14 @@ function tradeProgress(value) {
 
 function roundedCeiling(value, step, minimum) {
   return Math.max(minimum, Math.ceil(value / step) * step)
+}
+
+function turnoverStep(value) {
+  if (value > 30_000) return 5_000
+  if (value > 15_000) return 2_000
+  if (value > 5_000) return 1_000
+  if (value > 1_000) return 500
+  return 100
 }
 
 function spreadEndLabels(paths, top, bottom) {
@@ -65,35 +96,44 @@ function spreadEndLabels(paths, top, bottom) {
 }
 
 const latest = computed(() => props.payload.latest || {})
+const turnoverComparison = computed(() => props.payload.turnover_comparison || {})
+const turnoverActual = computed(() => props.payload.turnover_actual || {})
+const turnoverEstimate = computed(() => props.payload.turnover_estimate || {})
 const timeline = computed(() => (Array.isArray(props.payload.timeline) ? props.payload.timeline : [])
   .filter(point => tradeProgress(point.generated_at) != null))
 const visibleSeries = computed(() => SERIES.filter(series => (
-  series.group === 'breadth' ? showBreadth.value : showLimitState.value
+  series.group === 'breadth'
+    ? showBreadth.value
+    : series.group === 'limit'
+      ? showLimitState.value
+      : showVolume.value
 )))
 const drawSeries = computed(() => [
   ...visibleSeries.value.filter(series => series.muted),
   ...visibleSeries.value.filter(series => !series.muted),
 ])
-const hasSelection = computed(() => showBreadth.value || showLimitState.value)
-const chartAriaLabel = computed(() => {
-  if (showBreadth.value && showLimitState.value) return '跌停板、涨停板、炸板、红盘和绿盘数量日内曲线'
-  if (showBreadth.value) return '红盘和绿盘数量日内曲线'
-  return '跌停板、涨停板和炸板数量日内曲线'
-})
+const hasSelection = computed(() => showBreadth.value || showLimitState.value || showVolume.value)
+const chartAriaLabel = computed(() => `${visibleSeries.value.map(series => series.label).join('、')}日内曲线`)
 const axisHint = computed(() => {
-  if (showBreadth.value && showLimitState.value) return '左轴看红绿盘，右轴看涨跌停与炸板'
-  if (showBreadth.value) return '当前显示左轴红绿盘'
-  if (showLimitState.value) return '当前显示右轴涨跌停与炸板'
-  return ''
+  const hints = []
+  if (showBreadth.value) hints.push('左轴红绿盘')
+  if (showLimitState.value) hints.push('右轴涨跌停与炸板')
+  if (showVolume.value) hints.push('下方量能区间（亿元）')
+  return hints.length ? `当前显示：${hints.join('，')}` : ''
 })
 
 const chart = computed(() => {
   if (!timeline.value.length || !hasSelection.value) return null
   const width = 720
-  const height = 286
+  const showSentiment = showBreadth.value || showLimitState.value
+  const height = showSentiment && showVolume.value ? 420 : 286
   const margin = { top: 16, right: 92, bottom: 34, left: 50 }
   const plotWidth = width - margin.left - margin.right
-  const plotHeight = height - margin.top - margin.bottom
+  const sentimentHeight = showSentiment ? 236 : 0
+  const sentimentBottom = margin.top + sentimentHeight
+  const volumeTop = showSentiment ? sentimentBottom + 34 : margin.top
+  const volumeHeight = showVolume.value ? height - margin.bottom - volumeTop : 0
+  const plotBottom = showVolume.value ? volumeTop + volumeHeight : sentimentBottom
   const leftPeak = Math.max(
     numeric(latest.value.quote_count),
     ...timeline.value.flatMap(point => [numeric(point.red), numeric(point.green)]),
@@ -109,32 +149,82 @@ const chart = computed(() => {
   const leftMax = roundedCeiling(leftPeak * 1.04, 500, 1000)
   const rightStep = rightPeak > 100 ? 20 : rightPeak > 40 ? 10 : 5
   const rightMax = roundedCeiling(rightPeak * 1.15, rightStep, 10)
+  const volumeValues = timeline.value.flatMap(point => (
+    SERIES.filter(series => series.axis === 'volume').flatMap(series => {
+      const value = nullableNumeric(point[series.key], series.signed)
+      return value == null ? [] : [value]
+    })
+  ))
+  const volumeLow = Math.min(0, ...volumeValues)
+  const volumeHigh = Math.max(0, ...volumeValues)
+  const volumeMagnitude = Math.max(Math.abs(volumeLow), Math.abs(volumeHigh))
+  const volumeStep = turnoverStep(volumeMagnitude)
+  const volumeMin = volumeLow < 0 ? Math.floor(volumeLow * 1.06 / volumeStep) * volumeStep : 0
+  const volumeMax = roundedCeiling(volumeHigh * 1.06, volumeStep, 100)
+  const volumeRange = Math.max(100, volumeMax - volumeMin)
   const x = point => margin.left + tradeProgress(point.generated_at) / 240 * plotWidth
-  const y = (value, axis) => margin.top + plotHeight
-    - numeric(value) / (axis === 'left' ? leftMax : rightMax) * plotHeight
-  const paths = drawSeries.value.map(series => ({
-    ...series,
-    path: timeline.value.map((point, index) => (
-      `${index ? 'L' : 'M'}${x(point).toFixed(1)} ${y(point[series.key], series.axis).toFixed(1)}`
-    )).join(' '),
-    lastX: x(timeline.value.at(-1)).toFixed(1),
-    lastY: y(timeline.value.at(-1)[series.key], series.axis).toFixed(1),
-  }))
-  const latestX = Number(paths[0]?.lastX ?? (width - margin.right))
-  const labelRailX = Math.min(latestX + 14, width - margin.right + 11)
-  const endLabels = spreadEndLabels(
-    paths,
-    margin.top + 6,
-    height - margin.bottom - 6,
+  const y = (value, axis, allowNegative = false) => {
+    const parsed = nullableNumeric(value, allowNegative)
+    if (parsed == null) return null
+    if (axis === 'volume') {
+      return volumeTop + (volumeMax - parsed) / volumeRange * volumeHeight
+    }
+    const axisMax = axis === 'left' ? leftMax : rightMax
+    return margin.top + sentimentHeight - parsed / axisMax * sentimentHeight
+  }
+  const paths = drawSeries.value.map(series => {
+    const points = timeline.value.flatMap(point => {
+      const value = nullableNumeric(point[series.key], series.signed)
+      const pointY = y(value, series.axis, series.signed)
+      return value == null || pointY == null ? [] : [{ x: x(point), y: pointY, value }]
+    })
+    const last = points.at(-1)
+    return {
+      ...series,
+      path: points.map((point, index) => (
+        `${index ? 'L' : 'M'}${point.x.toFixed(1)} ${point.y.toFixed(1)}`
+      )).join(' '),
+      lastX: last?.x.toFixed(1),
+      lastY: last?.y.toFixed(1),
+      lastValue: last?.value,
+      labelWidth: Math.max(31, series.label.length * 10 + 9),
+    }
+  }).filter(series => series.path)
+  const latestX = Math.max(
+    margin.left,
+    ...paths.map(path => Number(path.lastX)),
   )
-  const grid = Array.from({ length: 5 }, (_, index) => {
+  const labelRailX = Math.min(latestX + 14, width - margin.right + 11)
+  const endLabels = [
+    ...spreadEndLabels(
+      paths.filter(path => path.axis !== 'volume'),
+      margin.top + 6,
+      sentimentBottom - 6,
+    ),
+    ...spreadEndLabels(
+      paths.filter(path => path.axis === 'volume'),
+      volumeTop + 6,
+      plotBottom - 6,
+    ),
+  ]
+  const grid = showSentiment ? Array.from({ length: 5 }, (_, index) => {
     const ratio = index / 4
     return {
-      y: (margin.top + plotHeight - ratio * plotHeight).toFixed(1),
+      y: (sentimentBottom - ratio * sentimentHeight).toFixed(1),
       left: Math.round(leftMax * ratio).toLocaleString('zh-CN'),
       right: Math.round(rightMax * ratio).toLocaleString('zh-CN'),
     }
-  })
+  }) : []
+  const volumeTickValues = volumeMin < 0
+    ? [volumeMin, 0, volumeMax]
+    : [0, volumeMax / 2, volumeMax]
+  const volumeGrid = showVolume.value ? volumeTickValues.map(value => {
+    return {
+      y: y(value, 'volume', true).toFixed(1),
+      value: Math.round(value).toLocaleString('zh-CN'),
+      zero: value === 0,
+    }
+  }) : []
   const xTicks = [
     { minute: 0, label: '09:30' },
     { minute: 60, label: '10:30' },
@@ -149,7 +239,12 @@ const chart = computed(() => {
   const missingMorning = sampleTimes.some(value => value >= '13:00:00')
     && !sampleTimes.some(value => value <= '11:30:59')
   const morningNotice = missingMorning
-    ? { x: margin.left + plotWidth / 4, y: margin.top + plotHeight / 2 }
+    ? {
+        x: margin.left + plotWidth / 4,
+        y: showSentiment
+          ? margin.top + sentimentHeight / 2
+          : volumeTop + volumeHeight / 2,
+      }
     : null
   const samples = timeline.value.map(point => ({ point, x: x(point) }))
   return {
@@ -157,12 +252,17 @@ const chart = computed(() => {
     height,
     margin,
     plotWidth,
-    plotHeight,
+    sentimentBottom,
+    volumeTop,
+    volumeHeight,
+    volumeMin,
+    plotBottom,
     paths,
     endLabels,
     labelRailX,
     morningNotice,
     grid,
+    volumeGrid,
     xTicks,
     samples,
     y,
@@ -174,16 +274,23 @@ const hoveredSample = computed(() => {
   if (!current || !hoveredAt.value) return null
   const sample = current.samples.find(item => item.point.generated_at === hoveredAt.value)
   if (!sample) return null
-  const tooltipWidth = 138
+  const tooltipWidth = 166
   const rows = visibleSeries.value.map(series => ({
     ...series,
-    value: numeric(sample.point[series.key]),
+    value: nullableNumeric(sample.point[series.key], series.signed),
+    displayValue: formatSeriesValue(series, sample.point[series.key]),
   }))
   const tooltipHeight = 42 + rows.length * 14
   const plotRight = current.width - current.margin.right
-  const tooltipX = sample.x + tooltipWidth + 10 <= plotRight
-    ? sample.x + 10
-    : sample.x - tooltipWidth - 10
+  const labelRight = current.labelRailX + Math.max(
+    0,
+    ...current.endLabels.map(label => label.labelWidth),
+  )
+  const tooltipX = labelRight + tooltipWidth + 10 <= plotRight
+    ? Math.max(sample.x + 10, labelRight + 10)
+    : sample.x - tooltipWidth - 10 >= current.margin.left
+      ? sample.x - tooltipWidth - 10
+      : plotRight - tooltipWidth
   return {
     x: sample.x,
     time: String(sample.point.generated_at || '').slice(11, 19),
@@ -192,10 +299,10 @@ const hoveredSample = computed(() => {
     tooltipWidth,
     tooltipHeight,
     rows,
-    markers: visibleSeries.value.map(series => ({
-      ...series,
-      y: current.y(sample.point[series.key], series.axis),
-    })),
+    markers: visibleSeries.value.flatMap(series => {
+      const markerY = current.y(sample.point[series.key], series.axis, series.signed)
+      return markerY == null ? [] : [{ ...series, y: markerY }]
+    }),
   }
 })
 
@@ -239,6 +346,36 @@ onMounted(() => window.addEventListener('pointermove', clearHoverOutside, { pass
 onBeforeUnmount(() => window.removeEventListener('pointermove', clearHoverOutside))
 
 const latestTime = computed(() => String(props.payload.generated_at || latest.value.generated_at || '').slice(11, 19))
+const turnoverComparisonText = computed(() => {
+  const comparison = turnoverComparison.value
+  const previous = nullableNumeric(comparison.previous_turnover_yi)
+  if (previous == null || !comparison.date) return ''
+  const value = formatSeriesValue(SERIES.find(series => series.key === 'actual_turnover_yi'), previous)
+  const date = String(comparison.date).slice(5)
+  const source = String(comparison.source || '').trim()
+  return `增量基准：${date} 全天 ${value}${source ? ` · ${source}` : ''}`
+})
+const turnoverSourceText = computed(() => {
+  const source = String(
+    turnoverActual.value.source || latest.value.turnover_actual_source || '',
+  ).trim()
+  return source ? `实际量能：${source}` : ''
+})
+const turnoverEstimateText = computed(() => {
+  const info = turnoverEstimate.value
+  const warning = String(latest.value.turnover_estimate_warning || '').trim()
+  if (!info.model && warning) return `量能估算：${warning}`
+  const days = Number(info.profile_days || latest.value.turnover_profile_days)
+  const interval = Number(info.interval_minutes || latest.value.turnover_profile_interval_minutes)
+  const start = String(info.profile_start || latest.value.turnover_profile_start || '').slice(5)
+  const end = String(info.profile_end || latest.value.turnover_profile_end || '').slice(5)
+  const model = String(
+    info.model_label || latest.value.turnover_estimate_model_label || '同分钟成交占比中位数',
+  ).trim()
+  if (!days) return ''
+  const range = start && end ? ` · ${start}—${end}` : ''
+  return `量能估算：${model}（${days}日${interval ? ` / ${interval}分钟` : ''}）${range}`
+})
 </script>
 
 <template>
@@ -266,13 +403,18 @@ const latestTime = computed(() => String(props.payload.generated_at || latest.va
         <span>涨跌停 / 炸板</span>
         <small>右轴</small>
       </label>
+      <label class="market-breadth-toggle" :class="{ active: showVolume }">
+        <input v-model="showVolume" type="checkbox" @change="clearHover">
+        <span>预测 / 实际 / 增量</span>
+        <small>亿元</small>
+      </label>
     </div>
 
     <div v-if="chart" class="market-breadth-legend" aria-label="市场情绪最新统计">
       <div v-for="series in visibleSeries" :key="series.key" class="market-breadth-legend-item">
         <span class="market-breadth-swatch" :style="{ backgroundColor: series.color }"></span>
         <span>{{ series.label }}</span>
-        <strong>{{ numeric(latest[series.key]).toLocaleString('zh-CN') }}</strong>
+        <strong>{{ formatSeriesValue(series, latest[series.key]) }}</strong>
       </div>
     </div>
 
@@ -303,7 +445,7 @@ const latestTime = computed(() => String(props.payload.generated_at || latest.va
             :x1="tick.x"
             :x2="tick.x"
             :y1="chart.margin.top"
-            :y2="chart.height - chart.margin.bottom"
+            :y2="chart.plotBottom"
           />
           <text class="market-breadth-axis-label" :x="tick.x" :y="chart.height - 10" text-anchor="middle">{{ tick.label }}</text>
         </g>
@@ -313,7 +455,7 @@ const latestTime = computed(() => String(props.payload.generated_at || latest.va
           :x1="chart.margin.left"
           :x2="chart.margin.left"
           :y1="chart.margin.top"
-          :y2="chart.height - chart.margin.bottom"
+          :y2="chart.sentimentBottom"
         />
         <line
           v-if="showLimitState"
@@ -321,10 +463,40 @@ const latestTime = computed(() => String(props.payload.generated_at || latest.va
           :x1="chart.width - chart.margin.right"
           :x2="chart.width - chart.margin.right"
           :y1="chart.margin.top"
-          :y2="chart.height - chart.margin.bottom"
+          :y2="chart.sentimentBottom"
         />
         <text v-if="showBreadth" class="market-breadth-axis-title" :x="chart.margin.left" y="11">红盘 / 绿盘（只）</text>
         <text v-if="showLimitState" class="market-breadth-axis-title" :x="chart.width - chart.margin.right" y="11" text-anchor="end">涨跌停 / 炸板（只）</text>
+        <g v-for="line in chart.volumeGrid" :key="`volume-${line.y}`">
+          <line
+            class="market-breadth-grid market-breadth-volume-grid"
+            :class="{ 'market-breadth-volume-grid-zero': line.zero && chart.volumeMin < 0 }"
+            :x1="chart.margin.left"
+            :x2="chart.width - chart.margin.right"
+            :y1="line.y"
+            :y2="line.y"
+          />
+          <text
+            class="market-breadth-axis-label"
+            :x="chart.margin.left - 8"
+            :y="Number(line.y) + 4"
+            text-anchor="end"
+          >{{ line.value }}</text>
+        </g>
+        <line
+          v-if="showVolume"
+          class="market-breadth-axis-line"
+          :x1="chart.margin.left"
+          :x2="chart.margin.left"
+          :y1="chart.volumeTop"
+          :y2="chart.plotBottom"
+        />
+        <text
+          v-if="showVolume"
+          class="market-breadth-axis-title"
+          :x="chart.margin.left"
+          :y="chart.volumeTop - 9"
+        >市场量能（亿元）</text>
         <g v-if="chart.morningNotice" class="market-breadth-missing-period" aria-hidden="true">
           <rect
             class="market-breadth-missing-period-bg"
@@ -356,7 +528,7 @@ const latestTime = computed(() => String(props.payload.generated_at || latest.va
             :r="series.muted ? 1.45 : 1.9"
             :fill="series.color"
           >
-            <title>{{ series.label }} {{ numeric(latest[series.key]).toLocaleString('zh-CN') }} 只</title>
+            <title>{{ series.label }} {{ formatSeriesValue(series, series.lastValue, true) }}</title>
           </circle>
         </g>
         <g
@@ -374,7 +546,7 @@ const latestTime = computed(() => String(props.payload.generated_at || latest.va
             class="market-breadth-end-label-bg"
             :x="chart.labelRailX"
             :y="label.labelY - 7"
-            width="39"
+            :width="label.labelWidth"
             height="14"
             rx="4"
           />
@@ -390,7 +562,7 @@ const latestTime = computed(() => String(props.payload.generated_at || latest.va
           :x="chart.margin.left"
           :y="chart.margin.top"
           :width="chart.plotWidth"
-          :height="chart.plotHeight"
+          :height="chart.plotBottom - chart.margin.top"
           aria-hidden="true"
           @pointermove="updateHover"
           @pointerdown="updateHover"
@@ -402,7 +574,7 @@ const latestTime = computed(() => String(props.payload.generated_at || latest.va
             :x1="hoveredSample.x"
             :x2="hoveredSample.x"
             :y1="chart.margin.top"
-            :y2="chart.height - chart.margin.bottom"
+            :y2="chart.plotBottom"
           />
           <circle
             v-for="marker in hoveredSample.markers"
@@ -429,7 +601,7 @@ const latestTime = computed(() => String(props.payload.generated_at || latest.va
             >
               <circle cx="11" cy="0" r="2.1" :fill="row.color" />
               <text class="market-breadth-tooltip-label" x="18" y="3">{{ row.label }}</text>
-              <text class="market-breadth-tooltip-value" :x="hoveredSample.tooltipWidth - 10" y="3" text-anchor="end">{{ numeric(row.value).toLocaleString('zh-CN') }}</text>
+              <text class="market-breadth-tooltip-value" :x="hoveredSample.tooltipWidth - 10" y="3" text-anchor="end">{{ row.displayValue }}</text>
             </g>
           </g>
         </g>
@@ -441,7 +613,10 @@ const latestTime = computed(() => String(props.payload.generated_at || latest.va
     </div>
 
     <div class="market-breadth-foot">
-      <span>数据源：{{ payload.source || '腾讯证券沪深A股实时行情' }}</span>
+      <span>情绪数据源：{{ payload.source || '腾讯证券沪深A股实时行情' }}</span>
+      <span v-if="showVolume && turnoverSourceText">{{ turnoverSourceText }}</span>
+      <span v-if="showVolume && turnoverEstimateText">{{ turnoverEstimateText }}</span>
+      <span v-if="showVolume && turnoverComparisonText">{{ turnoverComparisonText }}</span>
       <span v-if="axisHint">{{ axisHint }}</span>
     </div>
   </section>

@@ -26,6 +26,7 @@ def quote_record(
     high: float,
     upper: float,
     lower: float,
+    amount_wan: float = 25_000,
     quote_time: str = "20260722102030",
 ) -> str:
     fields = [""] * 49
@@ -36,6 +37,7 @@ def quote_record(
     fields[30] = quote_time
     fields[32] = str(pct)
     fields[33] = str(high)
+    fields[37] = str(amount_wan)
     fields[47] = str(upper)
     fields[48] = str(lower)
     return f'v_{code}="' + "~".join(fields) + '";'
@@ -88,6 +90,64 @@ class TencentMarketBreadthTests(unittest.TestCase):
         self.assertEqual(result["green"], 1)
         self.assertEqual(result["flat"], 1)
         self.assertEqual(result["generated_at"], "2026-07-22 10:20:30")
+        self.assertEqual(result["turnover_amount_count"], 4)
+        self.assertEqual(result["actual_turnover_yi"], 10)
+        self.assertNotIn("estimated_turnover_yi", result)
+        self.assertEqual(
+            result["turnover_actual_source"],
+            "腾讯证券沪深A股实时行情（兜底）",
+        )
+
+    def test_previous_market_turnover_uses_latest_common_prior_trading_day(self):
+        bodies = {
+            "1.000001": json.dumps({
+                "data": {
+                    "code": "000001",
+                    "klines": [
+                        "2026-07-21,1,1,1,1,10,1100000000000",
+                        "2026-07-22,1,1,1,1,10,1250000000000",
+                        "2026-07-23,1,1,1,1,10,100000000000",
+                    ],
+                },
+            }),
+            "0.399001": json.dumps({
+                "data": {
+                    "code": "399001",
+                    "klines": [
+                        "2026-07-21,1,1,1,1,10,1200000000000",
+                        "2026-07-22,1,1,1,1,10,1350000000000",
+                        "2026-07-23,1,1,1,1,10,100000000000",
+                    ],
+                },
+            }),
+        }
+
+        result = tencent_market_breadth.fetch_previous_market_turnover(
+            datetime(2026, 7, 23).date(),
+            downloader=lambda secid, _timeout: bodies[secid],
+            monotonic=lambda: 100.0,
+        )
+
+        self.assertEqual(result["date"], "2026-07-22")
+        self.assertEqual(result["turnover_yi"], 26000)
+
+    def test_turnover_increment_compares_projection_with_previous_close(self):
+        snapshot = {
+            "schema_version": 3,
+            "estimated_turnover_yi": 27_000,
+            "actual_turnover_yi": 5_000,
+        }
+
+        result = tencent_market_breadth.add_turnover_comparison(snapshot, {
+            "date": "2026-07-22",
+            "turnover_yi": 26_000,
+            "source": "测试日线",
+            "source_url": "https://example.test/",
+        })
+
+        self.assertEqual(result["previous_turnover_yi"], 26_000)
+        self.assertEqual(result["turnover_increment_yi"], 1_000)
+        self.assertEqual(result["turnover_comparison_date"], "2026-07-22")
 
     def test_fetch_retries_a_failed_chunk_and_requires_complete_rows(self):
         calls = []
@@ -109,11 +169,44 @@ class TencentMarketBreadthTests(unittest.TestCase):
             result = tencent_market_breadth.fetch_tencent_market_breadth(
                 min_rows=1,
                 downloader=downloader,
+                turnover_estimate_fetcher=lambda _moment, _actual: {
+                    "actual_turnover_yi": 2.5,
+                    "estimated_turnover_yi": 12,
+                },
+                previous_turnover_fetcher=lambda _date: {
+                    "date": "2026-07-21",
+                    "turnover_yi": 10,
+                },
             )
 
         self.assertEqual(len(calls), 2)
         self.assertEqual(result["quote_count"], 1)
         self.assertEqual(result["red"], 1)
+        self.assertEqual(result["turnover_increment_yi"], 2)
+
+    def test_previous_turnover_failure_does_not_hide_valid_tencent_snapshot(self):
+        body = quote_record(
+            "600001", "浦发测试", price=10.1, prev_close=10, pct=1,
+            high=10.2, upper=11, lower=9,
+        )
+
+        def failing_reference(_date):
+            raise TimeoutError("comparison timeout")
+
+        with patch.object(tencent_market_breadth, "_symbols", return_value=["sh600001"]):
+            result = tencent_market_breadth.fetch_tencent_market_breadth(
+                min_rows=1,
+                downloader=lambda _symbols, _timeout: body,
+                previous_turnover_fetcher=failing_reference,
+                turnover_estimate_fetcher=lambda _moment, _actual: {
+                    "actual_turnover_yi": 2.5,
+                    "estimated_turnover_yi": 12,
+                },
+            )
+
+        self.assertEqual(result["quote_count"], 1)
+        self.assertIn("estimated_turnover_yi", result)
+        self.assertNotIn("turnover_increment_yi", result)
 
 
 class MarketBreadthHistoryTests(unittest.TestCase):
@@ -265,24 +358,107 @@ class MarketBreadthHistoryTests(unittest.TestCase):
             history,
         )
 
+    def test_legacy_samples_remain_valid_without_synthesized_turnover(self):
+        legacy = compact_market_breadth_sample(sample("2026-07-22 10:00:00"))
+        self.assertIsNotNone(legacy)
+        self.assertNotIn("estimated_turnover_yi", legacy)
+        self.assertNotIn("actual_turnover_yi", legacy)
+
+        incomplete = sample("2026-07-22 10:01:00")
+        incomplete["actual_turnover_yi"] = 1234
+        actual_only = compact_market_breadth_sample(incomplete)
+        self.assertIsNotNone(actual_only)
+        self.assertEqual(actual_only["actual_turnover_yi"], 1234)
+        self.assertNotIn("estimated_turnover_yi", actual_only)
+
+        incomplete_comparison = {
+            **sample("2026-07-22 10:02:00"),
+            "estimated_turnover_yi": 12_000,
+            "actual_turnover_yi": 3_000,
+            "turnover_increment_yi": -500,
+        }
+        self.assertIsNone(compact_market_breadth_sample(incomplete_comparison))
+
     def test_public_payload_exposes_current_day_timeline_and_source(self):
         first = sample("2026-07-22 09:30:00")
+        prior_with_turnover = {
+            **sample("2026-07-22 09:45:00", red=3300, green=1700),
+            "estimated_turnover_yi": 11_500,
+            "actual_turnover_yi": 2_900,
+        }
         latest = {
             **sample("2026-07-22 10:00:00", red=3500, green=1500),
+            "estimated_turnover_yi": 12_345.67,
+            "actual_turnover_yi": 3_456.78,
+            "previous_turnover_yi": 12_000,
+            "turnover_increment_yi": 345.67,
+            "turnover_comparison_date": "2026-07-21",
+            "turnover_comparison_source": "测试指数日线",
+            "turnover_comparison_source_url": "https://example.test/",
+            "turnover_amount_count": 5100,
+            "turnover_actual_source": "东方财富沪深指数分钟线",
+            "turnover_actual_source_url": "https://push2his.eastmoney.com/",
+            "turnover_estimate_model": "eastmoney_20d_intraday_median",
+            "turnover_estimate_model_label": "东方财富近20日5分钟成交分布中位数",
+            "turnover_estimate_source": "东方财富沪深指数分钟线",
+            "turnover_estimate_source_url": "https://push2his.eastmoney.com/",
+            "turnover_profile_days": 20,
+            "turnover_profile_start": "2026-06-23",
+            "turnover_profile_end": "2026-07-21",
+            "turnover_profile_interval_minutes": 5,
             "source": "腾讯证券沪深A股实时行情",
             "source_url": "https://gu.qq.com/",
             "universe": "沪深A股测试口径",
         }
 
-        payload = build_market_breadth_payload(latest, history_samples=[first])
+        payload = build_market_breadth_payload(
+            latest,
+            history_samples=[first, prior_with_turnover],
+        )
 
         self.assertTrue(payload["available"])
         self.assertEqual(payload["latest"]["red"], 3500)
-        self.assertEqual(len(payload["timeline"]), 2)
-        self.assertEqual(payload["sampling"]["point_count"], 2)
+        self.assertEqual(payload["latest"]["estimated_turnover_yi"], 12_345.67)
+        self.assertEqual(payload["latest"]["actual_turnover_yi"], 3_456.78)
+        self.assertEqual(payload["latest"]["turnover_increment_yi"], 345.67)
+        self.assertEqual(payload["turnover_comparison"]["date"], "2026-07-21")
+        self.assertEqual(payload["turnover_comparison"]["previous_turnover_yi"], 12_000)
+        self.assertEqual(payload["turnover_actual"]["source"], "东方财富沪深指数分钟线")
+        self.assertEqual(payload["turnover_estimate"]["profile_days"], 20)
+        self.assertEqual(
+            payload["turnover_estimate"]["model"],
+            "eastmoney_20d_intraday_median",
+        )
+        self.assertEqual(len(payload["timeline"]), 3)
+        self.assertNotIn("actual_turnover_yi", payload["timeline"][0])
+        self.assertEqual(payload["timeline"][1]["turnover_increment_yi"], -500)
+        self.assertEqual(payload["sampling"]["point_count"], 3)
         self.assertEqual(payload["sampling"]["timezone"], "Asia/Shanghai")
         self.assertEqual(payload["source"], "腾讯证券沪深A股实时行情")
         self.assertEqual(payload["universe"], "沪深A股测试口径")
+
+    def test_public_payload_reuses_persisted_turnover_reference_after_source_failure(self):
+        reference_sample = {
+            **sample("2026-07-22 10:00:00"),
+            "estimated_turnover_yi": 12_500,
+            "actual_turnover_yi": 3_500,
+            "previous_turnover_yi": 12_000,
+            "turnover_increment_yi": 500,
+            "turnover_comparison_date": "2026-07-21",
+        }
+        latest = {
+            **sample("2026-07-22 10:01:00"),
+            "estimated_turnover_yi": 11_800,
+            "actual_turnover_yi": 3_600,
+        }
+
+        payload = build_market_breadth_payload(
+            latest,
+            history_samples=[reference_sample],
+        )
+
+        self.assertEqual(payload["latest"]["turnover_increment_yi"], -200)
+        self.assertEqual(payload["turnover_comparison"]["previous_turnover_yi"], 12_000)
 
     def test_producer_retains_previous_valid_sample_when_fetch_fails(self):
         original_history_file = dashboard.MARKET_BREADTH_HISTORY_FILE

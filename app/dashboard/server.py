@@ -2046,7 +2046,7 @@ def _daily_payload_date_keys(payload: dict[str, Any]) -> set[str]:
 
 def _empty_market_breadth_history(day: str) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 3,
         "date": day,
         "interval_seconds": MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
         "samples": [],
