@@ -58,6 +58,8 @@ class IwencaiDragonTigerTests(unittest.TestCase):
                     "最新价": "10.50",
                     "最新涨跌幅": "2.5",
                     "连续涨停天数[20260716]": "3天",
+                    "涨停原因[20260716]": "--",
+                    "涨停原因类别[20260716]": "金融科技+股份回购",
                     "榜单类型": "单日榜",
                     "上榜原因": "日涨幅偏离值达7%的证券",
                     "买入额[20260716]": 100.0,
@@ -101,6 +103,14 @@ class IwencaiDragonTigerTests(unittest.TestCase):
         self.assertEqual(payload["items"][0]["net_amount_yuan"], 20.0)
         self.assertEqual(payload["items"][0]["net_ratio_pct"], 1.25)
         self.assertEqual(payload["items"][0]["limit_up_streak"], 3)
+        self.assertEqual(
+            payload["items"][0]["limit_up_reason"],
+            "金融科技+股份回购",
+        )
+        self.assertEqual(
+            payload["items"][0]["limit_up_reason_category"],
+            "金融科技+股份回购",
+        )
         self.assertIsNone(payload["items"][0]["limit_down_streak"])
         self.assertEqual(payload["items"][1]["limit_down_streak"], 2)
         self.assertEqual(payload["items"][0]["list_date"], "2026-07-16")
@@ -109,7 +119,7 @@ class IwencaiDragonTigerTests(unittest.TestCase):
         query, kwargs = client.calls[0]
         self.assertEqual(
             query,
-            "2026年7月16日龙虎榜上榜股票、上榜原因、龙虎榜买入金额、卖出金额、净买入额、连续涨停天数、最近连续跌停天数",
+            "2026年7月16日龙虎榜上榜股票、上榜原因、龙虎榜买入金额、卖出金额、净买入额、连续涨停天数、最近连续跌停天数、涨停原因、涨停原因类别",
         )
         self.assertEqual(kwargs, {"page": 1, "limit": 100})
         self.assertEqual(client.calls[1][0], "2026年7月16日龙虎榜上榜股票、所属行业")
@@ -221,6 +231,8 @@ class IwencaiDragonTigerTests(unittest.TestCase):
                 "股票简称": "平安银行",
                 "最新涨跌幅": "2.5",
                 "连续涨停天数[20260716]": 3,
+                "涨停原因[20260716]": "国产大模型应用持续活跃",
+                "涨停原因类别[20260716]": "人工智能",
                 "榜单类型": "三日榜",
                 "上榜原因": "连续三个交易日涨幅偏离值累计达20%",
                 "净买入额[20260716]": 35.0,
@@ -277,6 +289,8 @@ class IwencaiDragonTigerTests(unittest.TestCase):
         self.assertEqual(first["list_type"], "单日榜")
         self.assertEqual(first["net_amount_yuan"], 20.0)
         self.assertEqual(first["limit_up_streak"], 3)
+        self.assertEqual(first["limit_up_reason"], "国产大模型应用持续活跃")
+        self.assertEqual(first["limit_up_reason_category"], "人工智能")
         self.assertEqual(first["detail_count"], 2)
         self.assertEqual(
             {detail["list_type"] for detail in first["details"]},

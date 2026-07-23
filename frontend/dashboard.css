@@ -556,7 +556,7 @@
     .practice-calendar-rate.down, .practice-calendar-amount.down, .practice-calendar-stat-value.down { color:#39d98a; }
     .practice-calendar-no-data { align-self:end; color:#708099; font-size:10px; line-height:1; }
     .practice-calendar-day.weekend .practice-calendar-no-data { display:none; }
-    .dragon-tiger-panel { width:100%; max-width:900px; margin-inline:auto; padding:0; }
+    .dragon-tiger-panel { width:100%; max-width:900px; margin-inline:auto; padding:0; -webkit-user-select:none; user-select:none; }
     .dragon-tiger-admin-backdrop { position:fixed; inset:0; z-index:120; display:grid; place-items:center; padding:20px; background:rgba(15,23,42,.62); }
     .dragon-tiger-admin-dialog { display:grid; width:min(420px,100%); gap:11px; border:1px solid var(--line); border-radius:12px; padding:22px; background:var(--panel); color:var(--text); box-shadow:0 22px 70px rgba(15,23,42,.30); }
     .dragon-tiger-admin-dialog h2 { margin:0; font-size:19px; }
@@ -603,6 +603,10 @@
     .dragon-tiger-item[open] > summary::after { color:#c4b5fd; transform:rotate(90deg); }
     .dragon-tiger-list-name { display:flex; align-items:center; gap:5px; min-width:0; overflow:hidden; color:#f8fafc; font-size:13px; font-weight:850; white-space:nowrap; }
     .dragon-tiger-list-name > span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+    .dragon-tiger-name-has-limit-up-reason { color:#fb7185; text-decoration-line:underline; text-decoration-style:dotted; text-decoration-color:rgba(251,113,133,.72); text-decoration-thickness:1px; text-underline-offset:3px; }
+    .dragon-tiger-limit-up-tooltip { position:fixed; z-index:140; display:grid; width:max-content; max-width:min(360px,calc(100vw - 24px)); gap:4px; border:1px solid var(--red-border); border-radius:9px; padding:8px 10px; background:var(--panel); color:var(--text); box-shadow:0 12px 32px rgba(15,23,42,.24); font-size:11px; line-height:1.45; white-space:normal; overflow-wrap:anywhere; pointer-events:none; -webkit-user-select:none; user-select:none; }
+    .dragon-tiger-limit-up-tooltip b { color:var(--red); font-size:10px; }
+    .dragon-tiger-limit-up-tooltip span { color:var(--text); font-weight:750; }
     .dragon-tiger-streak { flex:0 0 auto; border:1px solid currentColor; border-radius:999px; padding:1px 4px; font-size:9px; font-weight:850; line-height:1.25; }
     .dragon-tiger-streak.limit-up { color:#fb7185; background:rgba(190,24,93,.10); }
     .dragon-tiger-streak.limit-down { color:#34d399; background:rgba(5,150,105,.10); }
@@ -623,6 +627,9 @@
     .dragon-tiger-reason-list li > b { display:grid; place-items:center; width:18px; height:18px; border-radius:999px; color:#c4b5fd; background:rgba(124,92,255,.16); font-size:9px; }
     .dragon-tiger-reason-list li > span { min-width:0; overflow-wrap:anywhere; }
     .dragon-tiger-reason-empty { margin-top:8px; color:#697990; font-size:11px; }
+    .dragon-tiger-limit-up-reason { border-color:rgba(251,113,133,.20); border-left-color:rgba(251,113,133,.68); background:rgba(136,19,55,.09); }
+    .dragon-tiger-limit-up-reason p { margin:6px 0 0; color:#f1f5f9; font-size:12px; font-weight:750; line-height:1.55; overflow-wrap:anywhere; }
+    .dragon-tiger-limit-up-reason > small { display:block; margin-top:5px; color:#8290a5; font-size:9px; }
     .dragon-tiger-seats { margin:0 0 10px; border:1px solid rgba(96,165,250,.17); border-radius:11px; padding:10px; background:linear-gradient(135deg,rgba(30,64,175,.10),rgba(15,23,42,.38)); }
     .dragon-tiger-seats-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
     .dragon-tiger-seats-head b { color:#bfdbfe; font-size:12px; }
@@ -1933,6 +1940,7 @@
     html:not([data-theme="dark"]) .dragon-tiger-item[open] > summary { background:#edf3ff; }
     html:not([data-theme="dark"]) .dragon-tiger-item > summary::after { color:#667085; }
     html:not([data-theme="dark"]) .dragon-tiger-item[open] > summary::after { color:#2457c5; }
+    html:not([data-theme="dark"]) .dragon-tiger-name-has-limit-up-reason { color:#a8173a; text-decoration-color:rgba(168,23,58,.58); }
     html:not([data-theme="dark"]) .dragon-tiger-list-sector { color:#475467; }
     html:not([data-theme="dark"]) .dragon-tiger-streak.limit-up {
       border-color:#d77972;
@@ -2154,6 +2162,7 @@
     html[data-theme="dark"] .practice-market-summary-head:hover,
     html[data-theme="dark"] .x-row:hover,
     html[data-theme="dark"] .dragon-tiger-item > summary:hover { background:#18202c; }
+    html[data-theme="dark"] .dragon-tiger-name-has-limit-up-reason { color:#fda4af; text-decoration-color:rgba(253,164,175,.68); }
 
     html[data-theme="dark"] .indices-switch,
     html[data-theme="dark"] .market-region-switch,

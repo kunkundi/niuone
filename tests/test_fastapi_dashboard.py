@@ -1353,6 +1353,112 @@ class FastApiDashboardTests(unittest.TestCase):
         self.assertGreaterEqual(component.count(':disabled="payload.loading"'), 3)
         self.assertIn(".dragon-tiger-status.querying", stylesheet)
 
+    def test_dragon_tiger_details_distinguish_limit_up_and_listing_reasons(self):
+        component = (
+            ROOT / "web" / "src" / "components" / "DragonTigerPanel.vue"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('aria-label="涨停原因"', component)
+        self.assertIn("item.limit_up_reason || item.limit_up_reason_category", component)
+        self.assertIn("同花顺问财归纳，仅供研究参考", component)
+        self.assertIn('aria-label="上榜理由"', component)
+
+    def test_dragon_tiger_collapsed_rows_color_limit_up_reason_names(self):
+        component = (
+            ROOT / "web" / "src" / "components" / "DragonTigerPanel.vue"
+        ).read_text(encoding="utf-8")
+        stylesheet = (ROOT / "frontend" / "dashboard.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("dragon-tiger-name-has-limit-up-reason", component)
+        self.assertIn("，涨停原因：${limitUpReason(item)}` : undefined", component)
+        self.assertNotIn("dragon-tiger-limit-up-marker", component + stylesheet)
+        self.assertNotIn(">涨因</small>", component)
+        self.assertIn(
+            ".dragon-tiger-name-has-limit-up-reason { color:#fb7185; "
+            "text-decoration-line:underline; text-decoration-style:dotted;",
+            stylesheet,
+        )
+        self.assertIn(
+            'html:not([data-theme="dark"]) '
+            ".dragon-tiger-name-has-limit-up-reason { color:#a8173a;",
+            stylesheet,
+        )
+        self.assertIn(
+            'html[data-theme="dark"] '
+            ".dragon-tiger-name-has-limit-up-reason { color:#fda4af;",
+            stylesheet,
+        )
+
+    def test_dragon_tiger_limit_up_reason_tooltip_is_immediate_and_specific(self):
+        component = (
+            ROOT / "web" / "src" / "components" / "DragonTigerPanel.vue"
+        ).read_text(encoding="utf-8")
+        stylesheet = (ROOT / "frontend" / "dashboard.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("有涨停原因，展开查看", component)
+        self.assertIn('@pointerenter="showLimitUpReasonTooltip($event, item)"', component)
+        self.assertIn('@pointerleave="hideLimitUpReasonTooltip"', component)
+        self.assertIn('v-if="limitUpTooltip.visible"', component)
+        self.assertIn("<span>{{ limitUpTooltip.text }}</span>", component)
+        self.assertIn('role="tooltip"', component)
+        self.assertIn(".dragon-tiger-limit-up-tooltip { position:fixed;", stylesheet)
+        self.assertIn("background:var(--panel); color:var(--text);", stylesheet)
+        self.assertIn("nameCell.classList.contains('dragon-tiger-list-name')", component)
+        self.assertIn("const rect = target.getBoundingClientRect()", component)
+        self.assertIn("Array.from(nameCell.children).reduce(", component)
+        self.assertIn("window.innerWidth - anchorRight - tooltipGap", component)
+        self.assertIn("limitUpTooltip.x = anchorRight + tooltipGap", component)
+        self.assertIn("limitUpTooltip.width = tooltipWidth", component)
+        self.assertIn("rect.top + rect.height / 2 - estimatedHeight / 2", component)
+        self.assertNotIn("event?.clientX", component)
+        self.assertNotIn("event?.clientY", component)
+        self.assertNotIn("limitUpTooltip.left", component)
+        self.assertIn(
+            ':style="{left: `${limitUpTooltip.x}px`, top: `${limitUpTooltip.y}px`, '
+            'width: `${limitUpTooltip.width}px`}"',
+            component,
+        )
+        self.assertNotIn("limitUpTooltip.above", component)
+        self.assertNotIn(".dragon-tiger-limit-up-tooltip.left", stylesheet)
+        self.assertNotIn("transition-delay", stylesheet)
+
+    def test_dragon_tiger_page_blocks_selection_and_clipboard_copy(self):
+        component = (
+            ROOT / "web" / "src" / "components" / "DragonTigerPanel.vue"
+        ).read_text(encoding="utf-8")
+        stylesheet = (ROOT / "frontend" / "dashboard.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("function preventDragonTigerClipboard(event)", component)
+        self.assertIn("event.preventDefault()", component)
+        self.assertIn(
+            "document.addEventListener('copy', preventDragonTigerClipboard, true)",
+            component,
+        )
+        self.assertIn(
+            "document.addEventListener('cut', preventDragonTigerClipboard, true)",
+            component,
+        )
+        self.assertIn(
+            "document.removeEventListener('copy', preventDragonTigerClipboard, true)",
+            component,
+        )
+        self.assertIn(
+            "document.removeEventListener('cut', preventDragonTigerClipboard, true)",
+            component,
+        )
+        self.assertIn(
+            ".dragon-tiger-panel { width:100%; max-width:900px; margin-inline:auto; "
+            "padding:0; -webkit-user-select:none; user-select:none; }",
+            stylesheet,
+        )
+        self.assertIn("pointer-events:none; -webkit-user-select:none; user-select:none;", stylesheet)
+
     def test_http_boundaries_remain_split_into_fastapi_routers(self):
         composition = (
             ROOT / "app" / "dashboard" / "fastapi_app.py"

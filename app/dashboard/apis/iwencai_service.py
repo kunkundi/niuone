@@ -315,6 +315,17 @@ def _dynamic_value(item: Mapping[str, Any], *prefixes: str) -> Any:
     return None
 
 
+def _display_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return "、".join(
+            part for entry in value if (part := _display_text(entry))
+        )
+    text = str(value).strip()
+    return "" if text in {"-", "--"} else text
+
+
 def _iso_list_date(value: Any, fallback: str) -> str:
     compact = str(value or "").strip().replace("-", "")
     if len(compact) == 8 and compact.isdigit():
@@ -346,6 +357,12 @@ def _normalize_item(
     sector: str = "",
     sector_path: str = "",
 ) -> dict[str, Any]:
+    limit_up_reason_category = _display_text(
+        _dynamic_value(item, "涨停原因类别")
+    )
+    limit_up_reason = _display_text(
+        _dynamic_value(item, "涨停原因", "涨停原因明细")
+    )
     return {
         "code": str(item.get("股票代码") or item.get("证券代码") or ""),
         "name": str(item.get("股票简称") or item.get("证券简称") or ""),
@@ -357,6 +374,8 @@ def _normalize_item(
         "limit_down_streak": _streak_count(
             _dynamic_value(item, "连续跌停天数", "最近连续跌停天数")
         ),
+        "limit_up_reason": limit_up_reason or limit_up_reason_category,
+        "limit_up_reason_category": limit_up_reason_category,
         "list_date": _iso_list_date(item.get("上榜日期"), trade_date),
         "list_type": str(item.get("榜单类型") or ""),
         "reason": str(item.get("上榜原因") or ""),
@@ -762,6 +781,10 @@ def deduplicate_dragon_tiger_items(items: list[Mapping[str, Any]]) -> list[dict[
             preserved_sector_path = current.get("sector_path")
             preserved_limit_up_streak = current.get("limit_up_streak")
             preserved_limit_down_streak = current.get("limit_down_streak")
+            preserved_limit_up_reason = current.get("limit_up_reason")
+            preserved_limit_up_reason_category = current.get(
+                "limit_up_reason_category"
+            )
             current.update(item)
             current["details"] = preserved_details
             if not current.get("sector"):
@@ -776,6 +799,12 @@ def deduplicate_dragon_tiger_items(items: list[Mapping[str, Any]]) -> list[dict[
                 current.get("limit_down_streak"),
                 preserved_limit_down_streak,
             )
+            if not current.get("limit_up_reason"):
+                current["limit_up_reason"] = preserved_limit_up_reason
+            if not current.get("limit_up_reason_category"):
+                current["limit_up_reason_category"] = (
+                    preserved_limit_up_reason_category
+                )
         else:
             if not current.get("sector") and item.get("sector"):
                 current["sector"] = item.get("sector")
@@ -789,6 +818,15 @@ def deduplicate_dragon_tiger_items(items: list[Mapping[str, Any]]) -> list[dict[
                 current.get("limit_down_streak"),
                 item.get("limit_down_streak"),
             )
+            if not current.get("limit_up_reason") and item.get("limit_up_reason"):
+                current["limit_up_reason"] = item.get("limit_up_reason")
+            if (
+                not current.get("limit_up_reason_category")
+                and item.get("limit_up_reason_category")
+            ):
+                current["limit_up_reason_category"] = item.get(
+                    "limit_up_reason_category"
+                )
 
         source_details = item.get("details")
         if not isinstance(source_details, list) or not source_details:
@@ -937,7 +975,7 @@ def fetch_dragon_tiger(
     display_date = f"{parsed_date.year}年{parsed_date.month}月{parsed_date.day}日"
     query = (
         f"{display_date}龙虎榜上榜股票、上榜原因、龙虎榜买入金额、卖出金额、净买入额、"
-        "连续涨停天数、最近连续跌停天数"
+        "连续涨停天数、最近连续跌停天数、涨停原因、涨停原因类别"
     )
     sector_query = f"{display_date}龙虎榜上榜股票、所属行业"
     seat_query = f"{display_date}龙虎榜营业部"

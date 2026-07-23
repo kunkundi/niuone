@@ -13,6 +13,7 @@ const dateInput = ref(selectedDate.value)
 const payload = ref({ loading: true, loaded: false, available: false, items: [] })
 const sort = reactive({ key: 'net_amount_yuan', direction: 'desc' })
 const adminAuth = reactive({ open: false, credential: '', error: '', submitting: false })
+const limitUpTooltip = reactive({ visible: false, text: '', x: 0, y: 0, width: 0 })
 const adminCredentialInput = ref(null)
 const { setCategoryCount } = useDashboardTabs()
 let requestController = null
@@ -132,6 +133,56 @@ function reasonsFor(item) {
     reasons.push(reason)
   })
   return reasons
+}
+
+function limitUpReason(item) {
+  return String(item?.limit_up_reason || item?.limit_up_reason_category || '').trim()
+}
+
+function hideLimitUpReasonTooltip() {
+  limitUpTooltip.visible = false
+}
+
+function preventDragonTigerClipboard(event) {
+  event.preventDefault()
+}
+
+function showLimitUpReasonTooltip(event, item) {
+  const text = limitUpReason(item)
+  const target = event?.currentTarget
+  if (!text || !(target instanceof Element)) {
+    hideLimitUpReasonTooltip()
+    return
+  }
+  const nameCell = target.parentElement
+  const rect = target.getBoundingClientRect()
+  const anchorRight = nameCell instanceof Element && nameCell.classList.contains('dragon-tiger-list-name')
+    ? Array.from(nameCell.children).reduce(
+      (right, element) => Math.max(right, element.getBoundingClientRect().right),
+      rect.right,
+    )
+    : rect.right
+  const viewportMargin = 12
+  const tooltipGap = 8
+  const availableWidth = Math.max(
+    1,
+    window.innerWidth - anchorRight - tooltipGap - viewportMargin,
+  )
+  const preferredWidth = Math.min(360, Math.max(190, text.length * 13 + 34))
+  const tooltipWidth = Math.min(preferredWidth, availableWidth)
+  const estimatedLines = Math.max(1, Math.ceil(text.length * 12 / Math.max(1, tooltipWidth - 20)))
+  const estimatedHeight = 36 + estimatedLines * 18
+  limitUpTooltip.text = text
+  limitUpTooltip.x = anchorRight + tooltipGap
+  limitUpTooltip.width = tooltipWidth
+  limitUpTooltip.y = Math.max(
+    viewportMargin,
+    Math.min(
+      rect.top + rect.height / 2 - estimatedHeight / 2,
+      window.innerHeight - estimatedHeight - viewportMargin,
+    ),
+  )
+  limitUpTooltip.visible = true
 }
 
 function streak(item) {
@@ -314,6 +365,10 @@ function loadLatest() {
 
 onMounted(() => {
   load()
+  document.addEventListener('copy', preventDragonTigerClipboard, true)
+  document.addEventListener('cut', preventDragonTigerClipboard, true)
+  window.addEventListener('resize', hideLimitUpReasonTooltip)
+  window.addEventListener('scroll', hideLimitUpReasonTooltip, true)
   stopRefreshPolling = startVisiblePolling(() => {
     if (!selectedDate.value) load({ background: true })
   }, REFRESH_INTERVAL_MS)
@@ -324,6 +379,10 @@ onBeforeUnmount(() => {
   stopRefreshPolling?.()
   stopRefreshPolling = null
   pendingLoadOptions = null
+  document.removeEventListener('copy', preventDragonTigerClipboard, true)
+  document.removeEventListener('cut', preventDragonTigerClipboard, true)
+  window.removeEventListener('resize', hideLimitUpReasonTooltip)
+  window.removeEventListener('scroll', hideLimitUpReasonTooltip, true)
 })
 </script>
 
@@ -391,7 +450,12 @@ onBeforeUnmount(() => {
         <details v-for="item in items" :key="`${item.code || ''}-${item.name || ''}`" class="dragon-tiger-item">
           <summary>
             <span class="dragon-tiger-list-name">
-              <span>{{ item.name || '--' }}</span>
+              <span
+                :class="{'dragon-tiger-name-has-limit-up-reason': limitUpReason(item)}"
+                :aria-label="limitUpReason(item) ? `${item.name || '--'}，涨停原因：${limitUpReason(item)}` : undefined"
+                @pointerenter="showLimitUpReasonTooltip($event, item)"
+                @pointerleave="hideLimitUpReasonTooltip"
+              >{{ item.name || '--' }}</span>
               <small
                 v-if="streak(item)"
                 class="dragon-tiger-streak"
@@ -417,6 +481,21 @@ onBeforeUnmount(() => {
               <span><small>所属行业</small><b :title="item.sector_path || item.sector || '--'">{{ item.sector_path || item.sector || '--' }}</b></span>
               <span><small>上榜明细</small><b>{{ detailsFor(item).length }} 条</b></span>
             </div>
+
+            <section
+              v-if="item.limit_up_reason || item.limit_up_reason_category"
+              class="dragon-tiger-reasons dragon-tiger-limit-up-reason"
+              aria-label="涨停原因"
+            >
+              <div class="dragon-tiger-reasons-head">
+                <b>涨停原因</b>
+                <span
+                  v-if="item.limit_up_reason_category && item.limit_up_reason_category !== item.limit_up_reason"
+                >{{ item.limit_up_reason_category }}</span>
+              </div>
+              <p>{{ item.limit_up_reason || item.limit_up_reason_category }}</p>
+              <small>同花顺问财归纳，仅供研究参考</small>
+            </section>
 
             <section class="dragon-tiger-reasons" aria-label="上榜理由">
               <div class="dragon-tiger-reasons-head">
@@ -513,6 +592,15 @@ onBeforeUnmount(() => {
   </section>
 
   <Teleport to="body">
+    <div
+      v-if="limitUpTooltip.visible"
+      class="dragon-tiger-limit-up-tooltip"
+      :style="{left: `${limitUpTooltip.x}px`, top: `${limitUpTooltip.y}px`, width: `${limitUpTooltip.width}px`}"
+      role="tooltip"
+    >
+      <b>涨停原因</b>
+      <span>{{ limitUpTooltip.text }}</span>
+    </div>
     <div
       v-if="adminAuth.open"
       class="dragon-tiger-admin-backdrop"
