@@ -130,7 +130,7 @@ class EastmoneyTurnoverTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 2)
 
-    def test_estimate_uses_same_time_median_share_instead_of_elapsed_minutes(self):
+    def test_estimate_uses_twenty_day_profile_after_first_five_minutes(self):
         profile = eastmoney_turnover.build_turnover_profile(
             profile_series(),
             dt.date(2026, 7, 1),
@@ -144,24 +144,54 @@ class EastmoneyTurnoverTests(unittest.TestCase):
 
         self.assertEqual(result, 20_000)
 
-    def test_first_five_minutes_hold_the_historical_first_bucket_share(self):
-        profile = eastmoney_turnover.build_turnover_profile(
+    def test_first_five_minutes_use_a_stable_auction_prior(self):
+        auction_profile = {"opening_estimated_turnover_yi": 96}
+        intraday_profile = eastmoney_turnover.build_turnover_profile(
             profile_series(),
             dt.date(2026, 7, 1),
         )
 
         at_open = eastmoney_turnover.estimate_full_day_turnover_yi(
-            200,
+            1,
             dt.datetime(2026, 7, 1, 9, 30),
-            profile,
+            auction_profile,
+        )
+        before_first_bucket = eastmoney_turnover.estimate_full_day_turnover_yi(
+            1.8,
+            dt.datetime(2026, 7, 1, 9, 34),
+            auction_profile,
         )
         at_first_bucket = eastmoney_turnover.estimate_full_day_turnover_yi(
-            200,
+            2,
             dt.datetime(2026, 7, 1, 9, 35),
+            intraday_profile,
+        )
+
+        self.assertEqual(at_open, 96)
+        self.assertEqual(before_first_bucket, 96)
+        self.assertEqual(at_first_bucket, 96)
+
+    def test_auction_prior_does_not_read_current_actual_as_a_factor(self):
+        profile = {"opening_estimated_turnover_yi": 96}
+
+        result = eastmoney_turnover.estimate_full_day_turnover_yi(
+            120,
+            dt.datetime(2026, 7, 1, 9, 34),
             profile,
         )
 
-        self.assertEqual(at_open, at_first_bucket)
+        self.assertEqual(result, 96)
+
+    def test_opening_prior_uses_the_auction_factor_estimate(self):
+        profile = {"opening_estimated_turnover_yi": 120}
+
+        result = eastmoney_turnover.estimate_full_day_turnover_yi(
+            1,
+            dt.datetime(2026, 7, 1, 9, 31),
+            profile,
+        )
+
+        self.assertEqual(result, 120)
 
     def test_current_turnover_sums_eastmoney_shanghai_and_shenzhen(self):
         bodies = {
@@ -184,11 +214,15 @@ class EastmoneyTurnoverTests(unittest.TestCase):
             profile_series(),
             dt.date(2026, 7, 1),
         )
+        profile["opening_estimated_turnover_yi"] = 19_200
 
         result = eastmoney_turnover.fetch_market_turnover_estimate(
             dt.datetime(2026, 7, 1, 10, 30),
             9_999,
             profile_fetcher=lambda _date: profile,
+            auction_profile_fetcher=lambda _date: (_ for _ in ()).throw(
+                AssertionError("auction profile should not be fetched")
+            ),
             current_fetcher=lambda _moment: 4_800,
         )
 
@@ -197,16 +231,52 @@ class EastmoneyTurnoverTests(unittest.TestCase):
         self.assertEqual(result["turnover_actual_source"], eastmoney_turnover.SOURCE_NAME)
         self.assertEqual(result["turnover_profile_days"], 20)
 
+    def test_opening_estimate_uses_auction_profile_without_eastmoney_profile(self):
+        auction_profile = {
+            "model": eastmoney_turnover.ESTIMATE_MODEL,
+            "model_label": eastmoney_turnover.ESTIMATE_MODEL_LABEL,
+            "source": "测试竞价记录",
+            "source_url": "https://example.test/auction",
+            "profile_days": 11,
+            "profile_start": "2026-06-15",
+            "profile_end": "2026-06-30",
+            "opening_estimated_turnover_yi": 12_000,
+            "daily_profiles": [
+                {"date": "2026-06-30", "turnover_yi": 10_000},
+            ],
+        }
+
+        result = eastmoney_turnover.fetch_market_turnover_estimate(
+            dt.datetime(2026, 7, 1, 9, 31),
+            100,
+            profile_fetcher=lambda _date: (_ for _ in ()).throw(
+                AssertionError("five-minute profile should not be fetched")
+            ),
+            auction_profile_fetcher=lambda _date: auction_profile,
+            current_fetcher=lambda _moment: 200,
+        )
+
+        self.assertEqual(result["estimated_turnover_yi"], 12_000)
+        self.assertEqual(result["turnover_profile_days"], 11)
+        self.assertNotIn("turnover_profile_interval_minutes", result)
+        self.assertNotIn("previous_turnover_yi", result)
+        self.assertNotIn("turnover_increment_yi", result)
+        self.assertNotIn("turnover_comparison_date", result)
+
     def test_estimate_falls_back_to_tencent_current_turnover(self):
         profile = eastmoney_turnover.build_turnover_profile(
             profile_series(),
             dt.date(2026, 7, 1),
         )
+        profile["opening_estimated_turnover_yi"] = 20_000
 
         result = eastmoney_turnover.fetch_market_turnover_estimate(
             dt.datetime(2026, 7, 1, 10, 30),
             5_000,
             profile_fetcher=lambda _date: profile,
+            auction_profile_fetcher=lambda _date: (_ for _ in ()).throw(
+                AssertionError("auction profile should not be fetched")
+            ),
             current_fetcher=lambda _moment: (_ for _ in ()).throw(TimeoutError()),
         )
 
@@ -221,7 +291,9 @@ class EastmoneyTurnoverTests(unittest.TestCase):
         result = eastmoney_turnover.fetch_market_turnover_estimate(
             dt.datetime(2026, 7, 1, 10, 30),
             5_000,
-            profile_fetcher=lambda _date: (_ for _ in ()).throw(TimeoutError()),
+            profile_fetcher=lambda _date: (_ for _ in ()).throw(
+                TimeoutError()
+            ),
             current_fetcher=lambda _moment: 4_900,
         )
 

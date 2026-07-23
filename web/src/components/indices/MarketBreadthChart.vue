@@ -12,8 +12,10 @@ const SERIES = [
   { key: 'red', label: '红盘', color: 'var(--market-breadth-red, #e879f9)', axis: 'left', group: 'breadth', muted: true },
   { key: 'green', label: '绿盘', color: 'var(--market-breadth-green, #38bdf8)', axis: 'left', group: 'breadth', muted: true },
   { key: 'estimated_turnover_yi', label: '预测全天量能', color: 'var(--market-breadth-estimated-turnover, #f59e0b)', axis: 'volume', group: 'volume' },
-  { key: 'actual_turnover_yi', label: '实际量能', color: 'var(--market-breadth-actual-turnover, #818cf8)', axis: 'volume', group: 'volume', muted: true },
-  { key: 'turnover_increment_yi', label: '增量', color: 'var(--market-breadth-turnover-increment, #2dd4bf)', axis: 'volume', group: 'volume', signed: true },
+  { key: 'actual_turnover_yi', label: '今日实际量能', color: 'var(--market-breadth-actual-turnover, #818cf8)', axis: 'volume', group: 'volume', muted: true },
+  { key: 'previous_actual_turnover_yi', label: '前日同期量能', color: 'var(--market-breadth-previous-turnover, #94a3b8)', axis: 'volume', group: 'volume', muted: true, dashed: true },
+  { key: 'turnover_increment_yi', label: '预测增量', color: 'var(--market-breadth-turnover-increment, #2dd4bf)', axis: 'volume', group: 'volume', signed: true },
+  { key: 'turnover_same_time_delta_yi', label: '同时点量能差', color: 'var(--market-breadth-same-time-delta, #22d3ee)', axis: 'volume', group: 'volume', signed: true },
 ]
 
 const showBreadth = ref(true)
@@ -101,6 +103,7 @@ function spreadEndLabels(paths, top, bottom) {
 const latest = computed(() => props.payload.latest || {})
 const turnoverComparison = computed(() => props.payload.turnover_comparison || {})
 const turnoverActual = computed(() => props.payload.turnover_actual || {})
+const turnoverPreviousActual = computed(() => props.payload.turnover_previous_actual || {})
 const turnoverEstimate = computed(() => props.payload.turnover_estimate || {})
 const timeline = computed(() => (Array.isArray(props.payload.timeline) ? props.payload.timeline : [])
   .filter(point => tradeProgress(point.generated_at) != null))
@@ -397,6 +400,13 @@ const turnoverSourceText = computed(() => {
   ).trim()
   return source ? `实际量能：${source}` : ''
 })
+const turnoverPreviousText = computed(() => {
+  const info = turnoverPreviousActual.value
+  const date = String(info.date || '').slice(5)
+  if (!date) return ''
+  const points = Number(info.point_count || 0)
+  return `前日同期：${date}${points ? ` · ${points}个采样点` : ''}`
+})
 const turnoverEstimateText = computed(() => {
   const info = turnoverEstimate.value
   const warning = String(latest.value.turnover_estimate_warning || '').trim()
@@ -441,7 +451,7 @@ const turnoverEstimateText = computed(() => {
       </label>
       <label class="market-breadth-toggle" :class="{ active: showVolume }">
         <input v-model="showVolume" type="checkbox" @change="clearHover">
-        <span>预测 / 实际 / 增量</span>
+        <span>预测 / 今昨实际 / 差额</span>
         <small>亿元</small>
       </label>
     </div>
@@ -552,7 +562,10 @@ const turnoverEstimateText = computed(() => {
         <g v-for="series in chart.paths" :key="series.key">
           <path
             class="market-breadth-line"
-            :class="{ 'market-breadth-line-muted': series.muted }"
+            :class="{
+              'market-breadth-line-muted': series.muted,
+              'market-breadth-line-dashed': series.dashed,
+            }"
             :d="series.path"
             :stroke="series.color"
           />
@@ -651,6 +664,7 @@ const turnoverEstimateText = computed(() => {
     <div class="market-breadth-foot">
       <span>情绪数据源：{{ payload.source || '腾讯证券沪深A股实时行情' }}</span>
       <span v-if="showVolume && turnoverSourceText">{{ turnoverSourceText }}</span>
+      <span v-if="showVolume && turnoverPreviousText">{{ turnoverPreviousText }}</span>
       <span v-if="showVolume && turnoverEstimateText">{{ turnoverEstimateText }}</span>
       <span v-if="showVolume && turnoverComparisonText">{{ turnoverComparisonText }}</span>
       <span v-if="axisHint">{{ axisHint }}</span>

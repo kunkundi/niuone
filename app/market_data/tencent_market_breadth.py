@@ -40,6 +40,13 @@ PREVIOUS_TURNOVER_URL = (
 )
 PREVIOUS_TURNOVER_SECIDS = ("1.000001", "0.399001")
 PREVIOUS_TURNOVER_RETRY_SECONDS = 300.0
+TURNOVER_COMPARISON_KEYS = (
+    "previous_turnover_yi",
+    "turnover_increment_yi",
+    "turnover_comparison_date",
+    "turnover_comparison_source",
+    "turnover_comparison_source_url",
+)
 _PREVIOUS_TURNOVER_CACHE_LOCK = threading.Lock()
 _PREVIOUS_TURNOVER_CACHE: dict[str, dict[str, Any]] = {}
 
@@ -445,8 +452,12 @@ def fetch_tencent_market_breadth(
             snapshot.update(turnover)
     if "estimated_turnover_yi" not in snapshot:
         return snapshot
-    if "turnover_increment_yi" in snapshot:
-        return snapshot
+    # Projection profiles own the estimate, not the comparison baseline.  In
+    # particular, an incomplete auction sample may legitimately skip the most
+    # recent trading day while that day's complete close remains the only
+    # correct reference for every intraday increment point.
+    for key in TURNOVER_COMPARISON_KEYS:
+        snapshot.pop(key, None)
     try:
         reference = previous_turnover_fetcher(generated.date())
     except Exception as exc:

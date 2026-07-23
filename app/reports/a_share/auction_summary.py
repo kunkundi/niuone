@@ -495,6 +495,63 @@ def summarize_auction_snapshot(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def persist_auction_turnover_sample(
+    snapshot_summary: dict[str, Any],
+    *,
+    captured_at: dt.datetime | None = None,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Atomically retain pure 09:25 auction amounts for turnover forecasting."""
+
+    moment = captured_at or NOW
+    if moment.time() >= dt.time(9, 27):
+        raise ValueError("Opening auction sample must be captured before 09:27")
+    quote_count = safe_int(snapshot_summary.get("total"), 0)
+    amount_yuan = safe_float(snapshot_summary.get("total_amount"), 0.0)
+    if quote_count < 4_000 or amount_yuan <= 0:
+        raise ValueError("Opening auction sample is incomplete")
+    target = path or STATE_PATH
+    try:
+        current = json.loads(target.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError):
+        current = {}
+    by_date: dict[str, dict[str, Any]] = {}
+    for raw in current.get("samples") or [] if isinstance(current, dict) else []:
+        sample = raw if isinstance(raw, dict) else {}
+        day = str(sample.get("date") or "")
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            by_date[day] = sample
+    day = moment.date().isoformat()
+    by_date[day] = {
+        "date": day,
+        "captured_at": moment.strftime("%Y-%m-%d %H:%M:%S"),
+        "auction_turnover_yi": round(amount_yuan / 100_000_000, 2),
+        "quote_count": quote_count,
+    }
+    samples = [by_date[key] for key in sorted(by_date)][-60:]
+    payload = {
+        "schema_version": 1,
+        "source": "东方财富沪深A股09:25竞价快照",
+        "samples": samples,
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(
+        f".{target.name}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+    )
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(target)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    return payload
+
+
 def auction_snapshot_issue(rows: list[dict[str, Any]], snapshot_err: str | None) -> str | None:
     """Return a retry-worthy completeness issue for the opening snapshot."""
     if not rows:
@@ -792,6 +849,8 @@ def build_report(*, require_complete_snapshot: bool = False) -> str:
     dt_rows = extract_limit_pool_rows(dtpool, industry_map, default_pct=-10.0)
     dt_count = len(dt_rows)
     snapshot_summary = summarize_auction_snapshot(snapshot_rows)
+    if require_complete_snapshot and not post_open_fill:
+        persist_auction_turnover_sample(snapshot_summary, captured_at=NOW)
     industry_top = top_industry_auction_stats(snapshot_rows)
     amount_top = sorted(snapshot_rows, key=lambda x: x["amount"], reverse=True)[:8]
     gain_top = sorted(snapshot_rows, key=lambda x: (x["auction_pct"], x["amount"]), reverse=True)[:5]

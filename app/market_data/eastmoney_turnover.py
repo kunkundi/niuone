@@ -13,14 +13,18 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .auction_turnover import (
+    MODEL as ESTIMATE_MODEL,
+    MODEL_LABEL as ESTIMATE_MODEL_LABEL,
+    fetch_auction_turnover_profile,
+)
+
 
 CN_TZ = dt.timezone(dt.timedelta(hours=8))
 SOURCE_NAME = "东方财富沪深指数分钟线"
 SOURCE_URL = "https://push2his.eastmoney.com/"
 FALLBACK_SOURCE_NAME = "腾讯证券沪深A股实时行情（兜底）"
 FALLBACK_SOURCE_URL = "https://gu.qq.com/"
-ESTIMATE_MODEL = "eastmoney_20d_intraday_median"
-ESTIMATE_MODEL_LABEL = "东方财富近20日5分钟成交分布中位数"
 SECIDS = ("1.000001", "0.399001")
 PROFILE_DAYS = 20
 PROFILE_INTERVAL_MINUTES = 5
@@ -212,17 +216,23 @@ def estimate_full_day_turnover_yi(
     generated_at: dt.datetime,
     profile: dict[str, Any],
 ) -> float | None:
-    """Estimate full-day turnover using the median same-time historical share."""
+    """Use the auction factor for five minutes, then the 20-day profile."""
 
     actual = _finite_float(actual_turnover_yi)
     progress = trading_progress_minutes(generated_at)
     if actual is None or actual < 0 or progress is None:
         return None
+    if progress < PROFILE_INTERVAL_MINUTES:
+        auction_estimate = _finite_float(profile.get("opening_estimated_turnover_yi"))
+        return (
+            round(auction_estimate, 2)
+            if auction_estimate is not None and auction_estimate > 0
+            else None
+        )
     fractions = []
     for raw in profile.get("daily_profiles") or []:
         daily = raw if isinstance(raw, dict) else {}
-        points = daily.get("fractions") or []
-        value = _fraction_at_progress(points, progress)
+        value = _fraction_at_progress(daily.get("fractions") or [], progress)
         if value is not None and 0 < value <= 1:
             fractions.append(value)
     if not fractions:
@@ -319,9 +329,12 @@ def fetch_market_turnover_estimate(
     fallback_actual_turnover_yi: Any,
     *,
     profile_fetcher: Callable[[dt.date], dict[str, Any]] = fetch_turnover_profile,
+    auction_profile_fetcher: Callable[[dt.date], dict[str, Any]] = (
+        fetch_auction_turnover_profile
+    ),
     current_fetcher: Callable[[dt.datetime], float] = fetch_current_turnover_yi,
 ) -> dict[str, Any]:
-    """Return a 20-day estimate, using Tencent actual turnover only as fallback."""
+    """Return an auction/5-minute estimate, with Tencent actual as fallback."""
 
     try:
         actual = current_fetcher(generated_at)
@@ -338,23 +351,32 @@ def fetch_market_turnover_estimate(
         "turnover_actual_source": actual_source,
         "turnover_actual_source_url": actual_source_url,
     }
+    progress = trading_progress_minutes(generated_at)
+    uses_auction_profile = progress is not None and progress < PROFILE_INTERVAL_MINUTES
     try:
-        profile = profile_fetcher(generated_at.date())
+        profile = (
+            auction_profile_fetcher(generated_at.date())
+            if uses_auction_profile
+            else profile_fetcher(generated_at.date())
+        )
     except Exception as exc:
         print(
-            f"[WARN] Eastmoney 20-day turnover profile unavailable "
+            f"[WARN] {'Auction' if uses_auction_profile else 'Eastmoney 20-day'} "
+            f"turnover profile unavailable "
             f"error={type(exc).__name__}",
             flush=True,
         )
-        result["turnover_estimate_warning"] = "近20日量能模型暂不可用"
+        result["turnover_estimate_warning"] = (
+            "竞价量能模型暂不可用"
+            if uses_auction_profile
+            else "近20日量能模型暂不可用"
+        )
         return result
     estimated = estimate_full_day_turnover_yi(actual, generated_at, profile)
     if estimated is None:
         result["turnover_estimate_warning"] = "当前时点暂不能估算全天量能"
         return result
-    daily_profiles = profile.get("daily_profiles") or []
-    previous = daily_profiles[-1] if daily_profiles else {}
-    result.update({
+    estimate_metadata = {
         "estimated_turnover_yi": estimated,
         "turnover_estimate_model": str(profile.get("model") or ESTIMATE_MODEL),
         "turnover_estimate_model_label": str(
@@ -365,20 +387,12 @@ def fetch_market_turnover_estimate(
         "turnover_profile_days": int(profile.get("profile_days") or 0),
         "turnover_profile_start": str(profile.get("profile_start") or ""),
         "turnover_profile_end": str(profile.get("profile_end") or ""),
-        "turnover_profile_interval_minutes": int(
+    }
+    if not uses_auction_profile:
+        estimate_metadata["turnover_profile_interval_minutes"] = int(
             profile.get("interval_minutes") or PROFILE_INTERVAL_MINUTES
-        ),
-    })
-    previous_turnover = _finite_float(previous.get("turnover_yi"))
-    previous_date = str(previous.get("date") or "")
-    if previous_turnover is not None and previous_turnover > 0 and previous_date:
-        result.update({
-            "previous_turnover_yi": round(previous_turnover, 2),
-            "turnover_increment_yi": round(estimated - previous_turnover, 2),
-            "turnover_comparison_date": previous_date,
-            "turnover_comparison_source": SOURCE_NAME,
-            "turnover_comparison_source_url": SOURCE_URL,
-        })
+        )
+    result.update(estimate_metadata)
     return result
 
 

@@ -174,6 +174,7 @@
     .market-breadth-missing-period-text { fill:#64748b; font-size:8.5px; font-weight:750; letter-spacing:.15px; }
     .market-breadth-line { fill:none; stroke-width:1.85; stroke-linecap:round; stroke-linejoin:round; vector-effect:non-scaling-stroke; }
     .market-breadth-line-muted { stroke-width:1.3; opacity:.70; }
+    .market-breadth-line-dashed { stroke-dasharray:5 4; }
     .market-breadth-endpoint { stroke:rgba(15,23,42,.92); stroke-width:.8; vector-effect:non-scaling-stroke; }
     .market-breadth-endpoint-muted { opacity:.78; }
     .market-breadth-end-label-group { pointer-events:none; }

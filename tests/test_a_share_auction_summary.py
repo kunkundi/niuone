@@ -5,6 +5,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -210,6 +211,24 @@ class AShareAuctionSummaryTests(unittest.TestCase):
         stats = mod.top_industry_auction_stats(rows)
 
         self.assertEqual(stats[0]["industry"], "低成交上涨")
+
+    def test_persists_pure_auction_turnover_as_structured_history(self):
+        mod = load_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "auction.json"
+            payload = mod.persist_auction_turnover_sample(
+                {"total": 5_100, "total_amount": 12_345_000_000},
+                captured_at=datetime(2026, 7, 2, 9, 25, 2, tzinfo=mod.CN_TZ),
+                path=path,
+            )
+            reloaded = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload, reloaded)
+        self.assertEqual(reloaded["samples"][0]["date"], "2026-07-02")
+        self.assertEqual(
+            reloaded["samples"][0]["auction_turnover_yi"],
+            123.45,
+        )
 
     def test_build_report_uses_auction_sections_not_fund_flow(self):
         mod = load_module()

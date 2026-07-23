@@ -67,7 +67,9 @@ from dashboard.apis.market_breadth import (
     append_market_breadth_sample,
     build_market_breadth_payload,
     compact_market_breadth_sample,
+    compact_previous_turnover_history,
     is_market_breadth_session_timestamp,
+    roll_market_breadth_history,
 )
 from market_data.iwencai_client import (
     DEFAULT_BASE_URL as IWENCAI_DEFAULT_BASE_URL,
@@ -2099,12 +2101,11 @@ def _daily_payload_date_keys(payload: dict[str, Any]) -> set[str]:
 
 
 def _empty_market_breadth_history(day: str) -> dict[str, Any]:
-    return {
-        "schema_version": 3,
-        "date": day,
-        "interval_seconds": MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
-        "samples": [],
-    }
+    return roll_market_breadth_history(
+        None,
+        day,
+        interval_seconds=MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
+    )
 
 
 def _empty_industry_flow_history(day: str) -> dict[str, Any]:
@@ -2128,14 +2129,19 @@ def _empty_money_flow_snapshot(day: str) -> dict[str, Any]:
 
 
 def reset_daily_market_histories(now: datetime | None = None) -> bool:
-    """Atomically clear market-flow and breadth data from prior Beijing dates."""
+    """Roll breadth history and clear current-day-only market-flow data."""
 
     day = current_cn_date_key(now)
     changed = False
     with MARKET_BREADTH_HISTORY_LOCK:
         history = read_json_cache(MARKET_BREADTH_HISTORY_FILE, None)
-        if history is not None and _daily_payload_date_keys(history) != {day}:
-            write_json_cache(MARKET_BREADTH_HISTORY_FILE, _empty_market_breadth_history(day))
+        rolled = roll_market_breadth_history(
+            history,
+            day,
+            interval_seconds=MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
+        )
+        if history is not None and rolled != history:
+            write_json_cache(MARKET_BREADTH_HISTORY_FILE, rolled)
             changed = True
     with INDUSTRY_FLOW_HISTORY_LOCK:
         history = read_json_cache(INDUSTRY_FLOW_HISTORY_FILE, None)
@@ -2166,7 +2172,7 @@ def daily_market_history_reset_loop(
     *,
     stop_event: threading.Event | None = None,
 ) -> None:
-    """Clear both daily chart histories at each Beijing midnight."""
+    """Roll or clear daily chart histories at each Beijing midnight."""
 
     stop_event = stop_event or threading.Event()
     while not stop_event.is_set():
@@ -2211,6 +2217,23 @@ def load_market_breadth_samples(
             ):
                 samples.append(compact)
         return samples
+
+
+def load_previous_market_turnover_history(
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    resolved_now = now or current_cn_datetime()
+    current_day = current_cn_date_key(resolved_now)
+    reset_daily_market_histories(resolved_now)
+    with MARKET_BREADTH_HISTORY_LOCK:
+        history = read_json_cache(MARKET_BREADTH_HISTORY_FILE, None) or {}
+        return compact_previous_turnover_history(
+            history.get("previous_turnover")
+            if isinstance(history.get("previous_turnover"), dict)
+            else None,
+            before_date=current_day,
+        )
 
 
 def record_market_breadth_sample(
@@ -2263,6 +2286,7 @@ def _market_breadth_failure_payload(
     return build_market_breadth_payload(
         fallback,
         history_samples=samples,
+        previous_turnover=load_previous_market_turnover_history(now=now),
         interval_seconds=MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
     )
 
@@ -2292,6 +2316,7 @@ def _cached_market_breadth_payload(now: datetime) -> dict[str, Any] | None:
     return build_market_breadth_payload(
         latest,
         history_samples=samples,
+        previous_turnover=load_previous_market_turnover_history(now=now),
         interval_seconds=MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
     )
 
@@ -2309,6 +2334,7 @@ def produce_market_breadth_data() -> dict[str, Any]:
             return build_market_breadth_payload(
                 {},
                 history_samples=[],
+                previous_turnover=load_previous_market_turnover_history(now=current),
                 interval_seconds=MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
             )
         try:
@@ -2322,11 +2348,15 @@ def produce_market_breadth_data() -> dict[str, Any]:
                 return build_market_breadth_payload(
                     {},
                     history_samples=samples,
+                    previous_turnover=load_previous_market_turnover_history(
+                        now=current
+                    ),
                     interval_seconds=MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
                 )
             return build_market_breadth_payload(
                 snapshot,
                 history_samples=samples,
+                previous_turnover=load_previous_market_turnover_history(now=current),
                 interval_seconds=MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS,
             )
         except Exception as exc:

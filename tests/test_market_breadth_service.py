@@ -208,6 +208,37 @@ class TencentMarketBreadthTests(unittest.TestCase):
         self.assertIn("estimated_turnover_yi", result)
         self.assertNotIn("turnover_increment_yi", result)
 
+    def test_latest_complete_close_overrides_projection_profile_comparison(self):
+        body = quote_record(
+            "600001", "浦发测试", price=10.1, prev_close=10, pct=1,
+            high=10.2, upper=11, lower=9,
+        )
+
+        with patch.object(tencent_market_breadth, "_symbols", return_value=["sh600001"]):
+            result = tencent_market_breadth.fetch_tencent_market_breadth(
+                min_rows=1,
+                downloader=lambda _symbols, _timeout: body,
+                turnover_estimate_fetcher=lambda _moment, _actual: {
+                    "actual_turnover_yi": 2.5,
+                    "estimated_turnover_yi": 12,
+                    "previous_turnover_yi": 20,
+                    "turnover_increment_yi": -8,
+                    "turnover_comparison_date": "2026-07-21",
+                    "turnover_comparison_source": "过期训练样本",
+                },
+                previous_turnover_fetcher=lambda _date: {
+                    "date": "2026-07-22",
+                    "turnover_yi": 10,
+                    "source": "完整上一交易日",
+                    "source_url": "https://example.test/previous-close",
+                },
+            )
+
+        self.assertEqual(result["previous_turnover_yi"], 10)
+        self.assertEqual(result["turnover_increment_yi"], 2)
+        self.assertEqual(result["turnover_comparison_date"], "2026-07-22")
+        self.assertEqual(result["turnover_comparison_source"], "完整上一交易日")
+
 
 class MarketBreadthHistoryTests(unittest.TestCase):
     def test_midnight_reset_clears_daily_market_files_and_cached_payloads(self):
@@ -222,7 +253,11 @@ class MarketBreadthHistoryTests(unittest.TestCase):
                 dashboard.MONEY_FLOW_SNAPSHOT_FILE = root / "money_flow.json"
                 dashboard.MARKET_BREADTH_HISTORY_FILE.write_text(json.dumps({
                     "date": "2026-07-22",
-                    "samples": [sample("2026-07-22 15:00:00")],
+                    "samples": [{
+                        **sample("2026-07-22 15:00:00"),
+                        "actual_turnover_yi": 12_000,
+                        "turnover_actual_source": "测试分钟线",
+                    }],
                 }), encoding="utf-8")
                 dashboard.INDUSTRY_FLOW_HISTORY_FILE.write_text(json.dumps({
                     "date": "2026-07-22",
@@ -251,6 +286,16 @@ class MarketBreadthHistoryTests(unittest.TestCase):
                 self.assertFalse(repeated)
                 self.assertEqual(breadth["date"], "2026-07-23")
                 self.assertEqual(breadth["samples"], [])
+                self.assertEqual(breadth["previous_turnover"]["date"], "2026-07-22")
+                self.assertEqual(len(breadth["previous_turnover"]["samples"]), 1)
+                self.assertEqual(
+                    set(breadth["previous_turnover"]["samples"][0]),
+                    {
+                        "generated_at",
+                        "actual_turnover_yi",
+                        "turnover_actual_source",
+                    },
+                )
                 self.assertEqual(flow["date"], "2026-07-23")
                 self.assertEqual(flow["samples"], [])
                 self.assertEqual(money["retention_date"], "2026-07-23")
@@ -346,6 +391,34 @@ class MarketBreadthHistoryTests(unittest.TestCase):
         self.assertEqual(next_day["date"], "2026-07-23")
         self.assertEqual(len(next_day["samples"]), 1)
 
+    def test_next_day_retains_only_previous_actual_turnover_curve(self):
+        history = append_market_breadth_sample({}, {
+            **sample("2026-07-22 09:30:00"),
+            "actual_turnover_yi": 100,
+            "turnover_actual_source": "测试分钟线",
+            "turnover_actual_source_url": "https://example.test/minute",
+        })
+        history = append_market_breadth_sample(history, {
+            **sample("2026-07-22 09:31:00"),
+            "actual_turnover_yi": 220,
+            "turnover_actual_source": "测试分钟线",
+            "turnover_actual_source_url": "https://example.test/minute",
+        })
+
+        next_day = append_market_breadth_sample(history, {
+            **sample("2026-07-23 09:30:00"),
+            "actual_turnover_yi": 120,
+        })
+
+        self.assertEqual(next_day["schema_version"], 4)
+        self.assertEqual(len(next_day["samples"]), 1)
+        previous = next_day["previous_turnover"]
+        self.assertEqual(previous["date"], "2026-07-22")
+        self.assertEqual(previous["source"], "测试分钟线")
+        self.assertEqual(len(previous["samples"]), 2)
+        self.assertNotIn("red", previous["samples"][0])
+        self.assertEqual(previous["samples"][-1]["actual_turnover_yi"], 220)
+
     def test_invalid_or_lunch_samples_never_replace_valid_history(self):
         history = append_market_breadth_sample({}, sample("2026-07-22 10:00:00"))
         invalid = sample("2026-07-22 10:01:00")
@@ -431,11 +504,88 @@ class MarketBreadthHistoryTests(unittest.TestCase):
         )
         self.assertEqual(len(payload["timeline"]), 3)
         self.assertNotIn("actual_turnover_yi", payload["timeline"][0])
-        self.assertEqual(payload["timeline"][1]["turnover_increment_yi"], -500)
+        self.assertEqual(payload["timeline"][1]["actual_turnover_yi"], 2_900)
+        self.assertNotIn("estimated_turnover_yi", payload["timeline"][1])
+        self.assertNotIn("turnover_increment_yi", payload["timeline"][1])
         self.assertEqual(payload["sampling"]["point_count"], 3)
         self.assertEqual(payload["sampling"]["timezone"], "Asia/Shanghai")
         self.assertEqual(payload["source"], "腾讯证券沪深A股实时行情")
         self.assertEqual(payload["universe"], "沪深A股测试口径")
+
+    def test_public_payload_overlays_previous_turnover_at_same_progress(self):
+        first = {
+            **sample("2026-07-22 09:30:20"),
+            "actual_turnover_yi": 120,
+        }
+        latest = {
+            **sample("2026-07-22 09:31:20"),
+            "actual_turnover_yi": 250,
+        }
+        previous_turnover = {
+            "date": "2026-07-21",
+            "source": "测试前日分钟线",
+            "source_url": "https://example.test/previous-minute",
+            "samples": [
+                {
+                    "generated_at": "2026-07-21 09:30:00",
+                    "actual_turnover_yi": 100,
+                },
+                {
+                    "generated_at": "2026-07-21 09:31:00",
+                    "actual_turnover_yi": 200,
+                },
+            ],
+        }
+
+        payload = build_market_breadth_payload(
+            latest,
+            history_samples=[first],
+            previous_turnover=previous_turnover,
+        )
+
+        self.assertEqual(payload["timeline"][0]["previous_actual_turnover_yi"], 100)
+        self.assertEqual(payload["timeline"][0]["turnover_same_time_delta_yi"], 20)
+        self.assertEqual(payload["latest"]["previous_actual_turnover_yi"], 200)
+        self.assertEqual(payload["latest"]["turnover_same_time_delta_yi"], 50)
+        self.assertEqual(payload["turnover_previous_actual"]["date"], "2026-07-21")
+        self.assertEqual(payload["turnover_previous_actual"]["point_count"], 2)
+        self.assertEqual(payload["turnover_previous_actual"]["matched_point_count"], 2)
+        self.assertTrue(payload["sampling"]["historical_backfill"]["available"])
+
+    def test_public_payload_does_not_mix_projection_models_on_one_line(self):
+        legacy = {
+            **sample("2026-07-22 09:45:00", red=3300, green=1700),
+            "estimated_turnover_yi": 80_000,
+            "actual_turnover_yi": 2_900,
+            "previous_turnover_yi": 12_000,
+            "turnover_increment_yi": 68_000,
+            "turnover_comparison_date": "2026-07-21",
+            "turnover_estimate_model": "elapsed_minutes_linear",
+        }
+        latest = {
+            **sample("2026-07-22 10:00:00", red=3500, green=1500),
+            "estimated_turnover_yi": 12_500,
+            "actual_turnover_yi": 3_500,
+            "previous_turnover_yi": 12_000,
+            "turnover_increment_yi": 500,
+            "turnover_comparison_date": "2026-07-21",
+            "turnover_estimate_model": "eastmoney_20d_intraday_median",
+        }
+
+        payload = build_market_breadth_payload(
+            latest,
+            history_samples=[legacy],
+        )
+
+        earlier = payload["timeline"][0]
+        self.assertEqual(earlier["red"], 3300)
+        self.assertEqual(earlier["actual_turnover_yi"], 2_900)
+        self.assertNotIn("estimated_turnover_yi", earlier)
+        self.assertNotIn("turnover_increment_yi", earlier)
+        self.assertEqual(
+            payload["latest"]["estimated_turnover_yi"],
+            12_500,
+        )
 
     def test_public_payload_reuses_persisted_turnover_reference_after_source_failure(self):
         reference_sample = {
@@ -511,6 +661,42 @@ class MarketBreadthHistoryTests(unittest.TestCase):
                 fetch.assert_not_called()
                 self.assertEqual(payload["latest"]["red"], 3200)
                 self.assertEqual(payload["sampling"]["point_count"], 1)
+        finally:
+            dashboard.MARKET_BREADTH_HISTORY_FILE = original_history_file
+
+    def test_producer_exposes_retained_previous_turnover_overlay(self):
+        original_history_file = dashboard.MARKET_BREADTH_HISTORY_FILE
+        try:
+            with tempfile.TemporaryDirectory(prefix="niuone-market-breadth-previous-") as temp_dir:
+                dashboard.MARKET_BREADTH_HISTORY_FILE = Path(temp_dir) / "history.json"
+                dashboard.record_market_breadth_sample(
+                    {
+                        **sample("2026-07-21 10:00:00"),
+                        "actual_turnover_yi": 3_000,
+                    },
+                    now=datetime(2026, 7, 21, 10, 0),
+                )
+                dashboard.record_market_breadth_sample(
+                    {
+                        **sample("2026-07-22 10:00:00"),
+                        "actual_turnover_yi": 3_500,
+                    },
+                    now=datetime(2026, 7, 22, 10, 0),
+                )
+                with patch.object(
+                    dashboard,
+                    "fetch_tencent_market_breadth",
+                ) as fetch, patch.object(
+                    dashboard,
+                    "current_cn_datetime",
+                    return_value=datetime(2026, 7, 22, 10, 0, 30),
+                ):
+                    payload = dashboard.produce_market_breadth_data()
+
+                fetch.assert_not_called()
+                self.assertEqual(payload["latest"]["previous_actual_turnover_yi"], 3_000)
+                self.assertEqual(payload["latest"]["turnover_same_time_delta_yi"], 500)
+                self.assertEqual(payload["turnover_previous_actual"]["date"], "2026-07-21")
         finally:
             dashboard.MARKET_BREADTH_HISTORY_FILE = original_history_file
 
