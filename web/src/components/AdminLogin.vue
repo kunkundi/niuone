@@ -55,6 +55,5 @@ onMounted(focusInput)
     <button type="submit" :disabled="submitting">
       {{ submitting ? '验证中...' : '进入设置' }}
     </button>
-    <div class="admin-login-hint">凭据只会提交到当前 NiuOne 服务，不会保存在浏览器页面中。</div>
   </form>
 </template>

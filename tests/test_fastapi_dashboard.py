@@ -1062,6 +1062,10 @@ class FastApiDashboardTests(unittest.TestCase):
         self.assertIn('class="admin-login-box"', admin_login)
         self.assertIn('v-model="credential"', admin_login)
         self.assertIn("props.authenticate", admin_login)
+        self.assertNotIn(
+            "凭据只会提交到当前 NiuOne 服务，不会保存在浏览器页面中。",
+            admin_login,
+        )
         self.assertIn('class="settings-index"', admin_index)
         self.assertIn('class="settings-grid"', admin_index)
         self.assertIn("<RouterLink", admin_index)
