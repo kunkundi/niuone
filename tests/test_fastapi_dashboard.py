@@ -132,13 +132,30 @@ class FastApiDashboardTests(unittest.TestCase):
         version.assert_called_once_with()
 
     def test_dashboard_bootstrap_is_native_and_reuses_the_visitor_cookie(self):
-        first = self.client.get("/api/dashboard/bootstrap")
-        second = self.client.get("/api/dashboard/bootstrap")
-        head = self.client.head("/api/dashboard/bootstrap")
+        message_payload = {
+            "categories": {
+                "market_monitor": {"label": "盘面监控", "count": 6},
+                "x_monitor": {"label": "推特监控", "count": 108},
+                "us_ratings": {"label": "美股机构买入评级", "count": 4},
+                "other": {"label": "其他", "count": 3},
+            },
+        }
+        with patch.object(
+            self.legacy,
+            "merge_records_from_db",
+            return_value=message_payload,
+        ) as merge_records:
+            first = self.client.get("/api/dashboard/bootstrap")
+            second = self.client.get("/api/dashboard/bootstrap")
+            head = self.client.head("/api/dashboard/bootstrap")
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(first.json()["visits"], 1)
         self.assertEqual(first.json()["unique"], 1)
+        self.assertEqual(
+            first.json()["message_counts"],
+            {"market_monitor": 6, "x_monitor": 108, "us_ratings": 4},
+        )
         self.assertIn(f"{self.legacy.VISITOR_COOKIE_NAME}=nvst_", first.headers["Set-Cookie"])
         self.assertIn("SameSite=Lax", first.headers["Set-Cookie"])
         self.assertNotIn("Set-Cookie", second.headers)
@@ -146,6 +163,8 @@ class FastApiDashboardTests(unittest.TestCase):
         self.assertEqual(second.json()["unique"], 1)
         self.assertEqual(head.status_code, 200)
         self.assertEqual(head.content, b"")
+        self.assertEqual(merge_records.call_count, 2)
+        merge_records.assert_called_with(limit=0)
 
     def test_cached_read_routes_are_native_and_keep_cache_metadata(self):
         seen_keys = []

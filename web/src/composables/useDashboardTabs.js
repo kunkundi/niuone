@@ -23,6 +23,7 @@ const PATH_CATEGORIES = Object.fromEntries(
 )
 const LEGACY_CATEGORY_ALIASES = { b1_screen: 'practice' }
 const US_FEATURE_CATEGORIES = new Set(['x_monitor', 'us_ratings'])
+const MESSAGE_COUNT_CATEGORIES = ['market_monitor', 'x_monitor', 'us_ratings']
 const REQUEST_TIMEOUT_MS = 15 * 1000
 
 const initialQueryCategory = new URLSearchParams(window.location.search).get('category') || ''
@@ -35,9 +36,9 @@ const usFeaturesEnabled = ref(false)
 const bootstrapLoaded = ref(false)
 const bootstrapError = ref('')
 const countOverrides = reactive({
-  market_monitor: ' · 0',
-  x_monitor: ' · 0',
-  us_ratings: ' · 0',
+  market_monitor: '',
+  x_monitor: '',
+  us_ratings: '',
 })
 let bootstrapRequest = null
 
@@ -75,6 +76,16 @@ function setCategoryCount(category, count) {
   countOverrides[category] = String(count || '')
 }
 
+function applyBootstrapCounts(counts) {
+  if (!counts || typeof counts !== 'object') return
+  for (const category of MESSAGE_COUNT_CATEGORIES) {
+    if (!Object.hasOwn(counts, category)) continue
+    const count = Number(counts[category])
+    if (!Number.isFinite(count)) continue
+    setCategoryCount(category, ` · ${Math.max(0, Math.trunc(count))}`)
+  }
+}
+
 async function initializeDashboardTabs() {
   if (bootstrapLoaded.value) return { usFeaturesEnabled: usFeaturesEnabled.value }
   if (bootstrapRequest) return bootstrapRequest
@@ -88,6 +99,7 @@ async function initializeDashboardTabs() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const payload = await response.json()
     usFeaturesEnabled.value = payload.us_features_enabled === true
+    applyBootstrapCounts(payload.message_counts)
     bootstrapError.value = ''
     bootstrapLoaded.value = true
     return { ...payload, usFeaturesEnabled: usFeaturesEnabled.value }

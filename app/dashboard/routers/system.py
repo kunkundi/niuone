@@ -16,6 +16,25 @@ LimitCheck = Callable[[Request], Awaitable[Response | None]]
 PublicLimitCheck = Callable[[Request], Response | None]
 JsonResponder = Callable[..., Response]
 SecureRequestCheck = Callable[[Request], bool]
+MESSAGE_COUNT_CATEGORIES = ("market_monitor", "x_monitor", "us_ratings")
+
+
+def dashboard_message_counts(payload: dict[str, Any]) -> dict[str, int]:
+    """Return the lightweight message counts shown in Dashboard navigation."""
+
+    categories = payload.get("categories")
+    if not isinstance(categories, dict):
+        categories = {}
+    result: dict[str, int] = {}
+    for category in MESSAGE_COUNT_CATEGORIES:
+        value = categories.get(category)
+        raw_count = value.get("count") if isinstance(value, dict) else value
+        try:
+            count = int(raw_count or 0)
+        except (TypeError, ValueError, OverflowError):
+            count = 0
+        result[category] = max(0, count)
+    return result
 
 
 def create_system_router(
@@ -80,10 +99,15 @@ def create_system_router(
         if new_visitor:
             visitor_id = "nvst_" + secrets.token_urlsafe(24)
         visit_stats = await run_in_threadpool(services.increment_visit_count, visitor_id)
+        message_payload = await run_in_threadpool(
+            services.merge_records_from_db,
+            limit=0,
+        )
         payload = {
             "visits": visit_stats["visits"],
             "unique": visit_stats["unique"],
             "us_features_enabled": services.us_features_enabled(),
+            "message_counts": dashboard_message_counts(message_payload),
         }
         response = json_response(request, payload, cache_control="no-store")
         if new_visitor:
