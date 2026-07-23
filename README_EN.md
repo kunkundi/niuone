@@ -25,6 +25,79 @@ NiuOne connects information collection, market analysis, trading decisions, and 
 
 > This page is intended solely for personal research, simulated trading, and information display. It does not constitute securities or futures investment consulting, investment advice, stock recommendations, or any basis for buying or selling. No returns are promised; no assets are managed on behalf of others; and no fees are charged for stock recommendations.
 
+## Product Tour
+
+Each feature below has its own dark-theme, 1200-pixel-wide animation, using either a full-page or focused-panel view as appropriate, with visible pointer movement, click feedback, and scrolling. Click an animation to open the corresponding live page.
+
+### Simulated Trading and Portfolio Review
+
+<p align="center">
+  <a href="https://niuone.cn/practice">
+    <img width="1200" alt="Simulated-trading interaction: switch between daily and cumulative returns and open the trading calendar" src="docs/assets/readme/practice-trading.gif" />
+  </a>
+</p>
+
+<p align="center"><sub>Keep the portfolio overview, positions, and logs in view while switching daily and cumulative returns and opening the trading calendar.</sub></p>
+
+### Capital Inflows and Outflows
+
+<p align="center">
+  <a href="https://niuone.cn/indices">
+    <img width="1200" alt="Capital-flow interaction: switch to A-shares, inspect the top net inflows and outflows, and replay industry flows" src="docs/assets/readme/capital-flow.gif" />
+  </a>
+</p>
+
+<p align="center"><sub>Open A-share data, scroll through the top ten main-capital inflows and outflows, then switch to industry flows and replay the timeline.</sub></p>
+
+### Market Breadth and Red/Green Counts
+
+<p align="center">
+  <a href="https://niuone.cn/indices">
+    <img width="1200" alt="Market-breadth interaction: move across the intraday chart to inspect limit-up, limit-down, failed breakout, red, green, and turnover metrics" src="docs/assets/readme/market-breadth.gif" />
+  </a>
+</p>
+
+<p align="center"><sub>Move across the intraday chart to inspect the selected time, limit-up, limit-down, failed-breakout, red/green counts, and projected, actual, and incremental turnover.</sub></p>
+
+### Automated Market Monitoring
+
+<p align="center">
+  <a href="https://niuone.cn/market-monitor">
+    <img width="1200" alt="Automated monitoring interaction: expand and scroll through the A-share post-market summary" src="docs/assets/readme/market-monitor.gif" />
+  </a>
+</p>
+
+<p align="center"><sub>Expand a post-market summary and scroll through its core view, capital flows, leading sectors, risk notes, and next-session watchlist.</sub></p>
+
+### Twitter/X Monitoring
+
+<p align="center">
+  <a href="https://niuone.cn/x-monitor">
+    <img width="1200" alt="Twitter monitoring interaction: expand text and media posts and open the image viewer" src="docs/assets/readme/twitter-monitor.gif" />
+  </a>
+</p>
+
+<p align="center"><sub>Browse posts, replies, and quotes in a chronological feed, expand full content, and open media in the image viewer.</sub></p>
+
+### U.S. Institutional Ratings
+
+<p align="center">
+  <a href="https://niuone.cn/us-ratings">
+    <img width="1200" alt="U.S. institutional-ratings interaction: expand a stock rating and switch historical dates" src="docs/assets/readme/us-ratings.gif" />
+  </a>
+</p>
+
+<p align="center"><sub>Compare current and target prices and implied upside, then inspect the institution, analyst, catalysts, risks, and historical daily reports.</sub></p>
+
+<details>
+  <summary><strong>Local Configuration Center</strong></summary>
+  <br />
+  <p align="center"><img width="1200" alt="Local business configuration and settings center" src="docs/assets/readme/dashboard-settings.jpg" /></p>
+  <p align="center"><sub>Manage models, data sources, strategies, risk controls, notifications, and scheduled tasks in one place.</sub></p>
+</details>
+
+> Market and simulated-portfolio values in these animations are for interface demonstration only and are not investment advice. The settings screenshot comes from an isolated temporary runtime and contains no secrets or private runtime data.
+
 ## Feature Overview
 
 - **Unified dashboard**: View indices, sectors, market sentiment, capital flows, and historical news in one place.
