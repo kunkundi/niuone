@@ -71,6 +71,9 @@ def create_market_router(
     def money_flow_available(payload: dict[str, Any]) -> bool:
         return bool(payload.get("inflow") or payload.get("outflow"))
 
+    def us_sector_available(payload: dict[str, Any]) -> bool:
+        return bool(payload.get("items"))
+
     def prepare_daily_money_flow_cache(ttl: int) -> None:
         services.reset_daily_market_histories()
         services.seed_api_cache_from_json_file(
@@ -336,6 +339,7 @@ def create_market_router(
             producer=services.produce_us_sector_data,
             edge_ttl=ttl,
             browser_ttl=30,
+            cacheable=us_sector_available,
         )
 
     @router.api_route("/api/money_flow", methods=["GET", "HEAD"])

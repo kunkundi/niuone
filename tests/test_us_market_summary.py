@@ -91,6 +91,167 @@ class UsMarketSummaryTests(unittest.TestCase):
         self.assertTrue({"XSD", "XSW", "KRE", "KCE", "KIE", "XBI", "XPH", "XHE", "XOP", "XES", "XME"}.issubset(symbols))
         self.assertFalse({"XLK", "XLC", "XLY", "XLI", "XLF", "XLV", "XLE", "XLB", "XLP", "XLU", "XLRE"}.intersection(symbols))
 
+    def test_tencent_sector_quote_parser_returns_daily_move(self):
+        mod = load_module()
+        raw = (
+            'v_usXSD="200~SPDR ETF~XSD.AM~523.00~529.75~518.82~58990~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~20260724041257~-6.75~-1.27";\n'
+        ).encode("gb18030")
+
+        class Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return raw
+
+        mod.urlopen = lambda req, timeout=0, context=None: Resp()
+        quotes = mod._fetch_tencent_daily_quotes(["XSD"])
+
+        self.assertEqual(quotes["XSD"]["source"], "tencent")
+        self.assertEqual(quotes["XSD"]["prev_close"], 529.75)
+        self.assertEqual(quotes["XSD"]["change_pct"], -1.27)
+        self.assertEqual(quotes["XSD"]["time"], "2026-07-24 04:12:57")
+
+    def test_sina_sector_quote_parser_returns_daily_move(self):
+        mod = load_module()
+        raw = (
+            'var hq_str_gb_xsw="SPDR ETF,166.1800,-1.69,2026-07-24 04:12:58,-2.8600";\n'
+        ).encode("gb18030")
+
+        class Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return raw
+
+        mod.urlopen = lambda req, timeout=0, context=None: Resp()
+        quotes = mod._fetch_sina_daily_quotes(["XSW"])
+
+        self.assertEqual(quotes["XSW"]["source"], "sina")
+        self.assertEqual(quotes["XSW"]["prev_close"], 169.04)
+        self.assertEqual(quotes["XSW"]["change_pct"], -1.69)
+
+    def test_sector_snapshot_uses_tencent_then_sina(self):
+        mod = load_module()
+        mod.US_SECTOR_PROXY_DEFS = mod.US_SECTOR_PROXY_DEFS[:2]
+        mod._SECTOR_CACHE = {"ts": 0.0, "data": None}
+        calls = []
+        mod._fetch_yahoo_sector_quotes = lambda symbols: self.fail("unexpected Yahoo call")
+
+        def tencent(symbols):
+            calls.append(("tencent", list(symbols)))
+            return {
+                "XSD": {
+                    "price": 523.0,
+                    "prev_close": 529.75,
+                    "change": -6.75,
+                    "change_pct": -1.27,
+                    "source": "tencent",
+                }
+            }
+
+        def sina(symbols):
+            calls.append(("sina", list(symbols)))
+            return {
+                "XSW": {
+                    "price": 166.18,
+                    "prev_close": 169.04,
+                    "change": -2.86,
+                    "change_pct": -1.69,
+                    "source": "sina",
+                }
+            }
+
+        mod._fetch_tencent_daily_quotes = tencent
+        mod._fetch_sina_daily_quotes = sina
+
+        payload = mod.fetch_us_sector_snapshot(
+            datetime(2026, 7, 24, 9, 0, tzinfo=mod.CN_TZ)
+        )
+
+        self.assertEqual(calls, [("tencent", ["XSD", "XSW"]), ("sina", ["XSW"])])
+        self.assertEqual([item["symbol"] for item in payload["items"]], ["XSD", "XSW"])
+        self.assertEqual(payload["sources"], ["tencent", "sina"])
+        self.assertTrue(payload["fallback_used"])
+        self.assertNotIn("error", payload)
+
+    def test_sector_snapshot_uses_yahoo_only_after_tencent_and_sina_miss(self):
+        mod = load_module()
+        mod.US_SECTOR_PROXY_DEFS = mod.US_SECTOR_PROXY_DEFS[:1]
+        mod._SECTOR_CACHE = {"ts": 0.0, "data": None}
+        calls = []
+        mod._fetch_tencent_daily_quotes = lambda symbols: calls.append("tencent") or {}
+        mod._fetch_sina_daily_quotes = lambda symbols: calls.append("sina") or {}
+        mod._fetch_yahoo_sector_quotes = lambda symbols: ({
+            "XSD": {
+                "price": 523.0,
+                "prev_close": 529.75,
+                "change": -6.75,
+                "change_pct": -1.27,
+                "source": "yahoo",
+            }
+        }, None)
+
+        payload = mod.fetch_us_sector_snapshot(
+            datetime(2026, 7, 24, 9, 0, tzinfo=mod.CN_TZ)
+        )
+
+        self.assertEqual(calls, ["tencent", "sina"])
+        self.assertEqual(payload["sources"], ["yahoo"])
+        self.assertTrue(payload["fallback_used"])
+
+    def test_sector_snapshot_uses_short_negative_cache_when_all_sources_fail(self):
+        mod = load_module()
+        mod.US_SECTOR_PROXY_DEFS = mod.US_SECTOR_PROXY_DEFS[:1]
+        mod._SECTOR_CACHE = {"ts": 0.0, "data": None}
+        calls = []
+        mod._fetch_yahoo_sector_quotes = lambda symbols: calls.append("yahoo") or ({}, "Yahoo unavailable")
+        mod._fetch_tencent_daily_quotes = lambda symbols: calls.append("tencent") or {}
+        mod._fetch_sina_daily_quotes = lambda symbols: calls.append("sina") or {}
+
+        payload = mod.fetch_us_sector_snapshot(
+            datetime(2026, 7, 24, 9, 0, tzinfo=mod.CN_TZ)
+        )
+        repeated = mod.fetch_us_sector_snapshot(
+            datetime(2026, 7, 24, 9, 0, tzinfo=mod.CN_TZ)
+        )
+
+        self.assertEqual(payload["items"], [])
+        self.assertIn("主备数据源暂不可用", payload["error"])
+        self.assertIs(repeated, payload)
+        self.assertEqual(calls, ["tencent", "sina", "yahoo"])
+        self.assertIs(mod._SECTOR_CACHE["data"], payload)
+
+    def test_sector_snapshot_preserves_last_success_when_all_sources_fail(self):
+        mod = load_module()
+        mod.US_SECTOR_PROXY_DEFS = mod.US_SECTOR_PROXY_DEFS[:1]
+        cached = {
+            "items": [{"symbol": "XSD", "label": "半导体", "change_pct": 1.2}],
+            "generated_at": "2026-07-23 08:00:00",
+            "sources": ["tencent"],
+        }
+        mod._SECTOR_CACHE = {"ts": 0.0, "data": cached}
+        mod._fetch_yahoo_sector_quotes = lambda symbols: ({}, "Yahoo unavailable")
+        mod._fetch_tencent_daily_quotes = lambda symbols: {}
+        mod._fetch_sina_daily_quotes = lambda symbols: {}
+
+        payload = mod.fetch_us_sector_snapshot(
+            datetime(2026, 7, 24, 9, 0, tzinfo=mod.CN_TZ)
+        )
+
+        self.assertEqual(payload["items"][0]["symbol"], "XSD")
+        self.assertEqual(payload["generated_at"], "2026-07-23 08:00:00")
+        self.assertTrue(payload["stale_cache"])
+        self.assertIn("主备数据源暂不可用", payload["refresh_error"])
+        self.assertIs(mod._SECTOR_CACHE["data"], cached)
+
     def test_context_length_does_not_set_grok_max_tokens_default(self):
         mod = load_module_with_env({"US_MARKET_SUMMARY_CONTEXT_LENGTH": "128K"})
 

@@ -10,7 +10,7 @@ import re
 import ssl
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -40,7 +40,10 @@ _CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
 _SECTOR_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
 CACHE_TTL_SECONDS = 300
 SECTOR_CACHE_TTL_SECONDS = 900
+SECTOR_ERROR_CACHE_TTL_SECONDS = 30
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=5d"
+TENCENT_US_QUOTE_URL = "https://qt.gtimg.cn/q="
+SINA_US_QUOTE_URL = "https://hq.sinajs.cn/list="
 US_SECTOR_PROXY_DEFS: list[dict[str, Any]] = [
     {
         "key": "semiconductors",
@@ -431,55 +434,277 @@ def _fetch_yahoo_daily_quote(symbol: str) -> dict[str, Any] | None:
         "change": round(price - prev_close, 4),
         "change_pct": round((price / prev_close - 1) * 100, 4),
         "time": time_text,
+        "source": "yahoo",
+    }
+
+
+def _fetch_yahoo_sector_quotes(symbols: list[str]) -> tuple[dict[str, dict[str, Any]], str | None]:
+    """Fetch Yahoo quotes within one bounded aggregate deadline."""
+    unique_symbols = list(dict.fromkeys(
+        str(symbol or "").strip().upper() for symbol in symbols if symbol
+    ))
+    if not unique_symbols:
+        return {}, None
+    timeout_seconds = _int_env("US_SECTOR_SNAPSHOT_REQUEST_TIMEOUT_SECONDS", 8, min_value=3)
+    quotes: dict[str, dict[str, Any]] = {}
+    failures: list[str] = []
+    pool = ThreadPoolExecutor(max_workers=min(6, len(unique_symbols)))
+    futures = {pool.submit(_fetch_yahoo_daily_quote, symbol): symbol for symbol in unique_symbols}
+    try:
+        try:
+            for future in as_completed(futures, timeout=timeout_seconds):
+                symbol = futures[future]
+                try:
+                    quote_data = future.result()
+                except Exception as exc:
+                    failures.append(f"{type(exc).__name__}: {str(exc)[:120]}")
+                    continue
+                if quote_data:
+                    quotes[symbol] = quote_data
+                else:
+                    failures.append("empty response")
+        except FuturesTimeoutError:
+            failures.append(f"aggregate deadline exceeded ({timeout_seconds}s)")
+    finally:
+        for future in futures:
+            future.cancel()
+        pool.shutdown(wait=False, cancel_futures=True)
+    missing_count = len(unique_symbols) - len(quotes)
+    if not missing_count:
+        return quotes, None
+    detail = failures[0] if failures else "empty response"
+    return quotes, f"Yahoo 缺失 {missing_count}/{len(unique_symbols)} 个标的：{detail}"
+
+
+def _format_compact_datetime(value: Any) -> str:
+    raw = str(value or "").strip()
+    if len(raw) >= 14 and raw[:14].isdigit():
+        return (
+            f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]} "
+            f"{raw[8:10]}:{raw[10:12]}:{raw[12:14]}"
+        )
+    return raw
+
+
+def _fetch_tencent_daily_quotes(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    """Fetch US ETF quotes from Tencent in one batch."""
+    unique_symbols = list(dict.fromkeys(
+        str(symbol or "").strip().upper() for symbol in symbols if symbol
+    ))
+    if not unique_symbols:
+        return {}
+    req = Request(
+        TENCENT_US_QUOTE_URL + ",".join(f"us{symbol}" for symbol in unique_symbols),
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://gu.qq.com/",
+            "Connection": "close",
+        },
+    )
+    timeout_seconds = _int_env("US_SECTOR_SNAPSHOT_REQUEST_TIMEOUT_SECONDS", 8, min_value=3)
+    with urlopen(req, timeout=timeout_seconds, context=_SSL_CONTEXT) as resp:
+        raw = resp.read().decode("gb18030", "ignore")
+    quotes: dict[str, dict[str, Any]] = {}
+    for line in raw.splitlines():
+        match = re.match(r'v_us([^=]+)="(.*)";?', line.strip())
+        if not match:
+            continue
+        symbol = match.group(1).split(".", 1)[0].upper()
+        fields = match.group(2).rstrip('";').split("~")
+        if symbol not in unique_symbols or len(fields) < 33:
+            continue
+        price = _safe_float(fields[3])
+        prev_close = _safe_float(fields[4])
+        if price is None or prev_close is None or price <= 0 or prev_close <= 0:
+            continue
+        change = _safe_float(fields[31])
+        pct = _safe_float(fields[32])
+        if change is None:
+            change = price - prev_close
+        if pct is None:
+            pct = (price / prev_close - 1) * 100
+        quotes[symbol] = {
+            "symbol": symbol,
+            "price": round(price, 4),
+            "prev_close": round(prev_close, 4),
+            "change": round(change, 4),
+            "change_pct": round(pct, 4),
+            "time": _format_compact_datetime(fields[30] if len(fields) > 30 else ""),
+            "source": "tencent",
+        }
+    return quotes
+
+
+def _fetch_sina_daily_quotes(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    """Fetch US ETF quotes from Sina in one batch."""
+    unique_symbols = list(dict.fromkeys(
+        str(symbol or "").strip().upper() for symbol in symbols if symbol
+    ))
+    if not unique_symbols:
+        return {}
+    req = Request(
+        SINA_US_QUOTE_URL + ",".join(f"gb_{symbol.lower()}" for symbol in unique_symbols),
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://finance.sina.com.cn",
+            "Connection": "close",
+        },
+    )
+    timeout_seconds = _int_env("US_SECTOR_SNAPSHOT_REQUEST_TIMEOUT_SECONDS", 8, min_value=3)
+    with urlopen(req, timeout=timeout_seconds, context=_SSL_CONTEXT) as resp:
+        raw = resp.read().decode("gb18030", "ignore")
+    quotes: dict[str, dict[str, Any]] = {}
+    for line in raw.splitlines():
+        match = re.match(r'var hq_str_gb_([^=]+)="(.*)";?', line.strip())
+        if not match:
+            continue
+        symbol = match.group(1).upper()
+        fields = match.group(2).rstrip('";').split(",")
+        if symbol not in unique_symbols or len(fields) < 5:
+            continue
+        price = _safe_float(fields[1])
+        pct = _safe_float(fields[2])
+        change = _safe_float(fields[4])
+        if price is None or change is None or price <= 0:
+            continue
+        prev_close = price - change
+        if prev_close <= 0:
+            continue
+        if pct is None:
+            pct = (price / prev_close - 1) * 100
+        quotes[symbol] = {
+            "symbol": symbol,
+            "price": round(price, 4),
+            "prev_close": round(prev_close, 4),
+            "change": round(change, 4),
+            "change_pct": round(pct, 4),
+            "time": str(fields[3] or "").strip(),
+            "source": "sina",
+        }
+    return quotes
+
+
+def _sector_snapshot_item(defn: dict[str, Any], quote_data: dict[str, Any]) -> dict[str, Any]:
+    pct = _safe_float(quote_data.get("change_pct"))
+    return {
+        "key": defn.get("key"),
+        "symbol": defn.get("symbol"),
+        "label": defn.get("label"),
+        "kind": defn.get("kind") or "sector",
+        "price": quote_data.get("price"),
+        "prev_close": quote_data.get("prev_close"),
+        "change": quote_data.get("change"),
+        "change_pct": pct,
+        "change_pct_text": _fmt_pct(pct),
+        "time": quote_data.get("time") or "",
+        "source": quote_data.get("source") or "",
+        "a_share_mapping": list(defn.get("a_share_mapping") or []),
     }
 
 
 def fetch_us_sector_snapshot(now: datetime | None = None) -> dict[str, Any]:
     """Fetch a lightweight granular US industry ETF snapshot for A-share mapping."""
     current_ts = time.time()
-    if _SECTOR_CACHE.get("data") is not None and current_ts - float(_SECTOR_CACHE.get("ts") or 0) < SECTOR_CACHE_TTL_SECONDS:
-        return _SECTOR_CACHE["data"]
+    cached_data = _SECTOR_CACHE.get("data")
+    if cached_data is not None:
+        cache_ttl = (
+            SECTOR_CACHE_TTL_SECONDS
+            if cached_data.get("items")
+            else SECTOR_ERROR_CACHE_TTL_SECONDS
+        )
+        if current_ts - float(_SECTOR_CACHE.get("ts") or 0) < cache_ttl:
+            return cached_data
 
-    def build_item(defn: dict[str, Any]) -> dict[str, Any] | None:
+    symbols = [str(defn.get("symbol") or "").strip().upper() for defn in US_SECTOR_PROXY_DEFS]
+    quotes: dict[str, dict[str, Any]] = {}
+    source_errors: list[str] = []
+
+    for source_label, source_name, loader in (
+        ("腾讯", "tencent", _fetch_tencent_daily_quotes),
+        ("新浪", "sina", _fetch_sina_daily_quotes),
+    ):
+        missing_symbols = [symbol for symbol in symbols if symbol not in quotes]
+        if not missing_symbols:
+            break
         try:
-            quote_data = _fetch_yahoo_daily_quote(str(defn.get("symbol") or ""))
-        except Exception:
-            return None
-        if not quote_data:
-            return None
-        pct = _safe_float(quote_data.get("change_pct"))
-        return {
-            "key": defn.get("key"),
-            "symbol": defn.get("symbol"),
-            "label": defn.get("label"),
-            "kind": defn.get("kind") or "sector",
-            "price": quote_data.get("price"),
-            "prev_close": quote_data.get("prev_close"),
-            "change": quote_data.get("change"),
-            "change_pct": pct,
-            "change_pct_text": _fmt_pct(pct),
-            "time": quote_data.get("time") or "",
-            "a_share_mapping": list(defn.get("a_share_mapping") or []),
-        }
+            fallback_quotes = loader(missing_symbols)
+        except Exception as exc:
+            source_errors.append(f"{source_label}请求失败：{type(exc).__name__}: {str(exc)[:120]}")
+            continue
+        received = 0
+        for symbol in missing_symbols:
+            quote_data = fallback_quotes.get(symbol)
+            if not quote_data:
+                continue
+            normalized = dict(quote_data)
+            normalized.setdefault("source", source_name)
+            quotes[symbol] = normalized
+            received += 1
+        if received < len(missing_symbols):
+            source_errors.append(
+                f"{source_label}缺失 {len(missing_symbols) - received}/{len(missing_symbols)} 个标的"
+            )
 
-    items: list[dict[str, Any]] = []
-    errors: list[str] = []
-    try:
-        with ThreadPoolExecutor(max_workers=min(6, len(US_SECTOR_PROXY_DEFS))) as pool:
-            for item in pool.map(build_item, US_SECTOR_PROXY_DEFS):
-                if item:
-                    items.append(item)
-    except Exception as exc:
-        errors.append(f"{type(exc).__name__}: {exc}")
+    missing_symbols = [symbol for symbol in symbols if symbol not in quotes]
+    if missing_symbols:
+        yahoo_quotes, yahoo_error = _fetch_yahoo_sector_quotes(missing_symbols)
+        quotes.update(yahoo_quotes)
+        if yahoo_error:
+            source_errors.append(yahoo_error)
+
+    fresh_items = [
+        _sector_snapshot_item(defn, quotes[symbol])
+        for defn, symbol in zip(US_SECTOR_PROXY_DEFS, symbols)
+        if symbol in quotes
+    ]
 
     now_cn = _now_cn(now)
+    if not fresh_items:
+        error = "美股板块行情主备数据源暂不可用"
+        if source_errors:
+            error += "；" + "；".join(source_errors)
+        if isinstance(cached_data, dict) and cached_data.get("items"):
+            return {
+                **cached_data,
+                "stale_cache": True,
+                "refresh_error": error,
+            }
+        data = {
+            "items": [],
+            "generated_at": now_cn.strftime("%Y-%m-%d %H:%M:%S"),
+            "error": error,
+        }
+        _SECTOR_CACHE.update({"ts": current_ts, "data": data})
+        return data
+
+    fresh_by_symbol = {str(item.get("symbol") or "").upper(): item for item in fresh_items}
+    stale_symbols: list[str] = []
+    if isinstance(cached_data, dict):
+        for cached_item in cached_data.get("items") or []:
+            symbol = str(cached_item.get("symbol") or "").upper()
+            if symbol and symbol in symbols and symbol not in fresh_by_symbol:
+                preserved = {**cached_item, "stale_quote": True}
+                fresh_by_symbol[symbol] = preserved
+                stale_symbols.append(symbol)
+    items = [fresh_by_symbol[symbol] for symbol in symbols if symbol in fresh_by_symbol]
+    fresh_sources = list(dict.fromkeys(
+        str(item.get("source") or "") for item in fresh_items if item.get("source")
+    ))
     data = {
         "items": items,
         "generated_at": now_cn.strftime("%Y-%m-%d %H:%M:%S"),
+        "sources": fresh_sources,
+        "fallback_used": any(source != "tencent" for source in fresh_sources),
     }
-    if errors:
-        data["error"] = "；".join(errors[:3])
-    _SECTOR_CACHE.update({"ts": current_ts, "data": data})
+    missing_count = len(symbols) - len(fresh_items)
+    if missing_count:
+        data["warning"] = f"本轮仍缺失 {missing_count}/{len(symbols)} 个标的"
+        if source_errors:
+            data["warning"] += "；" + "；".join(source_errors)
+    if stale_symbols:
+        data["stale_symbols"] = stale_symbols
+    if not missing_count:
+        _SECTOR_CACHE.update({"ts": current_ts, "data": data})
     return data
 
 
