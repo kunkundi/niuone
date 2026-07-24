@@ -43,11 +43,11 @@ Each feature below has its own dark-theme, 1200-pixel-wide animation, using eith
 
 <p align="center">
   <a href="https://niuone.cn/indices">
-    <img width="1200" alt="Capital-flow interaction: switch to A-shares, inspect the top net inflows and outflows, and replay industry flows" src="docs/assets/readme/capital-flow.gif" />
+    <img width="1200" alt="Capital-flow interaction: switch to A-shares, inspect sectors and active stocks, and replay industry inflows and outflows" src="docs/assets/readme/capital-flow.gif" />
   </a>
 </p>
 
-<p align="center"><sub>Open A-share data, scroll through the top ten main-capital inflows and outflows, then switch to industry flows and replay the timeline.</sub></p>
+<p align="center"><sub>Open A-share data to inspect sector moves and active stocks, then switch to industry flows to compare net inflows and outflows and replay the timeline.</sub></p>
 
 ### Market Breadth and Red/Green Counts
 

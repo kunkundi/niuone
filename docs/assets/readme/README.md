@@ -4,7 +4,7 @@
 
 更新或重新录制动图时，参见 [README GIF 更新流程](GIF_WORKFLOW.md)。
 
-- `capital-flow.gif`：A 股行情、主力净流入 / 净流出和行业资金流动画；
+- `capital-flow.gif`：A 股板块与活跃股票、行业主力净流入 / 净流出动画；
 - `market-breadth.gif`：沿日内曲线悬停查看涨跌停、炸板、红绿盘家数和量能指标；
 - `practice-trading.gif`：每日 / 累计收益切换与交易日历；
 - `market-monitor.gif`：展开并滚动查看盘后监控详情；
