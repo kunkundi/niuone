@@ -319,6 +319,26 @@ PRACTICE_MANUAL_CYCLE_PUBLIC_FIELDS = (
     "manual_scan_reused",
     "error",
 )
+PRACTICE_MARKET_SUMMARY_LOCK = threading.Lock()
+PRACTICE_MARKET_SUMMARY_STATE_LOCK = threading.RLock()
+PRACTICE_MARKET_SUMMARY_STATE: dict[str, Any] = {
+    "running": False,
+    "stage": "idle",
+    "stage_label": "",
+    "started_at": "",
+    "finished_at": "",
+    "generated_at": "",
+    "error": "",
+}
+PRACTICE_MARKET_SUMMARY_PUBLIC_FIELDS = (
+    "running",
+    "stage",
+    "stage_label",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "error",
+)
 BENCHMARK_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
 BENCHMARK_TTL_SECONDS = 20
 CN_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
@@ -2701,12 +2721,40 @@ def _practice_market_summary_records() -> list[dict[str, Any]]:
     return [record for record in (data.get("records") or []) if isinstance(record, dict)]
 
 
+def practice_market_summary_generation_status() -> dict[str, Any]:
+    with PRACTICE_MARKET_SUMMARY_STATE_LOCK:
+        return {
+            field: PRACTICE_MARKET_SUMMARY_STATE[field]
+            for field in PRACTICE_MARKET_SUMMARY_PUBLIC_FIELDS
+            if field in PRACTICE_MARKET_SUMMARY_STATE
+        }
+
+
+def _set_practice_market_summary_state(**updates: Any) -> dict[str, Any]:
+    with PRACTICE_MARKET_SUMMARY_STATE_LOCK:
+        PRACTICE_MARKET_SUMMARY_STATE.update(updates)
+        return dict(PRACTICE_MARKET_SUMMARY_STATE)
+
+
 def get_practice_market_summary_status() -> dict[str, Any]:
-    return practice_market_summary_impl.summary_status(
+    payload = practice_market_summary_impl.summary_status(
         _practice_market_summary_records(),
         PRACTICE_MARKET_SUMMARY_FILE,
         current_cn_datetime(),
     )
+    generation = practice_market_summary_generation_status()
+    generation_error = str(generation.get("error") or "")
+    payload.update({
+        "running": bool(generation.get("running")),
+        "stage": str(generation.get("stage") or "idle"),
+        "stage_label": str(generation.get("stage_label") or ""),
+        "started_at": str(generation.get("started_at") or ""),
+        "finished_at": str(generation.get("finished_at") or ""),
+        "generation_error": generation_error,
+    })
+    if generation_error:
+        payload["error"] = generation_error
+    return payload
 
 
 def fetch_practice_realtime_market_snapshot(now: datetime) -> dict[str, Any]:
@@ -2728,7 +2776,8 @@ def fetch_practice_realtime_market_snapshot(now: datetime) -> dict[str, Any]:
         "money_flow": ("money_flow_dashboard_api.py", {"inflow": [], "outflow": []}),
     }
     payloads: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+    industry_flow_payload: dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=len(jobs) + 1) as pool:
         futures = {}
         for key, (script_name, fallback) in jobs.items():
             if key == "money_flow":
@@ -2746,17 +2795,39 @@ def fetch_practice_realtime_market_snapshot(now: datetime) -> dict[str, Any]:
                 120,
                 ("--force-refresh",),
             )
+        futures["market_breadth"] = pool.submit(produce_market_breadth_data)
         for key, future in futures.items():
             try:
                 result = future.result()
-                payloads[key] = result[0] if key == "money_flow" else result
+                if key == "money_flow":
+                    money_flow, history_samples = result
+                    payloads[key] = money_flow
+                    industry_flow_payload = build_industry_flow_payload(
+                        money_flow,
+                        side_limit=INDUSTRY_FLOW_SIDE_LIMIT,
+                        history_samples=history_samples,
+                        sample_interval_seconds=INDUSTRY_FLOW_SAMPLE_INTERVAL_SECONDS,
+                        playback_speed=INDUSTRY_FLOW_PLAYBACK_SPEED,
+                        sampling_windows=INDUSTRY_FLOW_SAMPLING_WINDOWS,
+                    )
+                    if money_flow.get("inflow") or money_flow.get("outflow"):
+                        invalidate_api_cache("money_flow")
+                        invalidate_api_cache_prefix("industry_flow")
+                else:
+                    payloads[key] = result
             except Exception as exc:
-                payloads[key] = {**jobs[key][1], "error": f"{type(exc).__name__}: {exc}"}
-    return practice_market_summary_impl.build_realtime_market_snapshot(
+                fallback = jobs[key][1] if key in jobs else {"latest": {}, "timeline": []}
+                payloads[key] = {**fallback, "error": f"{type(exc).__name__}: {exc}"}
+    snapshot = practice_market_summary_impl.build_realtime_market_snapshot(
         payloads.get("indices") or {},
         payloads.get("sectors") or {},
         payloads.get("money_flow") or {},
         now,
+    )
+    return practice_market_summary_impl.add_dashboard_market_references(
+        snapshot,
+        industry_flow_payload=industry_flow_payload,
+        market_breadth_payload=payloads.get("market_breadth") or {},
     )
 
 
@@ -2768,6 +2839,83 @@ def generate_practice_market_summary() -> dict[str, Any]:
         realtime_snapshot_provider=fetch_practice_realtime_market_snapshot,
         require_realtime=True,
     )
+
+
+def _run_practice_market_summary() -> None:
+    try:
+        _set_practice_market_summary_state(
+            stage="generating",
+            stage_label="正在抓取实时盘面、资金流动和市场情绪并生成总结",
+        )
+        payload = generate_practice_market_summary()
+        if not payload.get("ok"):
+            _set_practice_market_summary_state(
+                running=False,
+                stage="error",
+                stage_label="盘面总结生成失败",
+                finished_at=current_cn_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+                error=str(payload.get("error") or "盘面总结生成失败"),
+            )
+            return
+        _set_practice_market_summary_state(
+            running=False,
+            stage="completed",
+            stage_label="今日盘面总结已生成",
+            finished_at=current_cn_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+            generated_at=str(payload.get("generated_at") or ""),
+            error="",
+        )
+    except Exception as exc:
+        _set_practice_market_summary_state(
+            running=False,
+            stage="error",
+            stage_label="盘面总结生成失败",
+            finished_at=current_cn_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    finally:
+        PRACTICE_MARKET_SUMMARY_LOCK.release()
+
+
+def start_practice_market_summary() -> dict[str, Any]:
+    if not PRACTICE_MARKET_SUMMARY_LOCK.acquire(blocking=False):
+        return {
+            "ok": True,
+            **practice_market_summary_generation_status(),
+            "accepted": False,
+        }
+    started_at = current_cn_datetime().strftime("%Y-%m-%d %H:%M:%S")
+    _set_practice_market_summary_state(
+        running=True,
+        stage="starting",
+        stage_label="正在启动盘面总结",
+        started_at=started_at,
+        finished_at="",
+        generated_at="",
+        error="",
+    )
+    worker = threading.Thread(
+        target=_run_practice_market_summary,
+        name="niuone-practice-market-summary",
+        daemon=True,
+    )
+    try:
+        worker.start()
+    except Exception as exc:
+        _set_practice_market_summary_state(
+            running=False,
+            stage="error",
+            stage_label="盘面总结启动失败",
+            finished_at=current_cn_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        PRACTICE_MARKET_SUMMARY_LOCK.release()
+        raise
+    return {
+        "ok": True,
+        **practice_market_summary_generation_status(),
+        "accepted": True,
+    }
 
 
 def _store_api_cache_payload(cache_key: str, payload: bytes, generation: int) -> bool:

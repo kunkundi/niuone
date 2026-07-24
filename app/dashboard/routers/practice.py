@@ -190,14 +190,12 @@ def create_practice_router(
         rejected = await require_admin_action(request)
         if rejected is not None:
             return rejected
-        payload = await run_in_threadpool(services.generate_practice_market_summary)
-        if not payload.get("ok"):
-            return JSONResponse(
-                {"error": str(payload.get("error") or "盘面总结生成失败")},
-                status_code=409,
-                headers={"Cache-Control": "no-store"},
-            )
-        return json_response(request, payload, cache_control="no-store")
+        payload = services.start_practice_market_summary()
+        return JSONResponse(
+            payload,
+            status_code=202,
+            headers={"Cache-Control": "no-store"},
+        )
 
     @router.post("/api/niuniu_practice/resume")
     async def resume_practice_trading(request: Request) -> Response:

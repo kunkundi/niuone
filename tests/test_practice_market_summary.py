@@ -180,6 +180,87 @@ class PracticeMarketSummaryTests(unittest.TestCase):
         self.assertTrue(snapshot["snapshot"]["hot_sectors"][0]["confirmed"])
         self.assertIn("实时热门行业综合榜为半导体", snapshot["summary"])
 
+    def test_dashboard_fund_flow_and_market_breadth_pages_are_model_references(self):
+        snapshot = self.realtime_source()
+        enriched = practice_market_summary.add_dashboard_market_references(
+            snapshot,
+            industry_flow_payload={
+                "available": True,
+                "generated_at": "2026-07-14 12:00:02",
+                "metric": "industry_main_net_flow",
+                "metric_label": "今日主力净额",
+                "nodes": [
+                    {"name": "半导体", "role": "inflow", "net_flow_yi": 18.6},
+                    {"name": "煤炭", "role": "outflow", "net_flow_yi": -11.4},
+                ],
+                "totals": {
+                    "visible_inflow_yi": 18.6,
+                    "visible_outflow_yi": 11.4,
+                    "visible_balance_yi": 7.2,
+                },
+                "timeline": [
+                    {
+                        "generated_at": "2026-07-14 09:31:00",
+                        "nodes": [{"name": "通信", "role": "inflow", "net_flow_yi": 8.2}],
+                        "totals": {"visible_balance_yi": 2.0},
+                    },
+                    {
+                        "generated_at": "2026-07-14 12:00:02",
+                        "nodes": [{"name": "半导体", "role": "inflow", "net_flow_yi": 18.6}],
+                        "totals": {"visible_balance_yi": 7.2},
+                    },
+                ],
+            },
+            market_breadth_payload={
+                "available": True,
+                "generated_at": "2026-07-14 12:00:03",
+                "latest": {
+                    "generated_at": "2026-07-14 12:00:03",
+                    "red": 3100,
+                    "green": 1900,
+                    "flat": 100,
+                    "limit_up": 68,
+                    "limit_down": 7,
+                    "broken_limit": 21,
+                    "actual_turnover_yi": 7200,
+                    "estimated_turnover_yi": 13200,
+                    "previous_turnover_yi": 12500,
+                    "turnover_increment_yi": 700,
+                },
+                "timeline": [{"generated_at": "2026-07-14 12:00:03"}],
+            },
+        )
+
+        self.assertEqual(enriched["reference_pages"], {
+            "industry_flow": True,
+            "market_breadth": True,
+        })
+        self.assertIn("资金流动页日内对比", enriched["content"])
+        self.assertIn("市场情绪页最新值：红盘3100只", enriched["content"])
+        self.assertEqual(
+            enriched["snapshot"]["industry_flow_page"]["sample_count"],
+            2,
+        )
+        self.assertEqual(
+            enriched["snapshot"]["market_breadth_page"]["turnover_increment_yi"],
+            700,
+        )
+
+        sources = [
+            *practice_market_summary.collect_market_replay_sources(
+                self.records,
+                "2026-07-14",
+            ),
+            enriched,
+        ]
+        local = practice_market_summary._local_summary(sources, "2026-07-14")
+        prompt = practice_market_summary._model_messages(sources, "2026-07-14")
+        self.assertTrue(any("资金流动页显示" in line for line in local["structure_lines"]))
+        self.assertTrue(any("市场情绪页显示" in line for line in local["structure_lines"]))
+        self.assertIn("资金流动页的行业主力净额", prompt[0]["content"])
+        self.assertIn("市场情绪页的红绿盘", prompt[0]["content"])
+        self.assertIn("红盘3100只", prompt[1]["content"])
+
     def test_model_prompt_requires_live_snapshot_comparison_conclusion(self):
         sources = practice_market_summary.collect_market_replay_sources(self.records, "2026-07-14")
         sources.append(self.realtime_source())

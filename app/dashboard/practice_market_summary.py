@@ -429,6 +429,177 @@ def build_realtime_market_snapshot(
     }
 
 
+def _reference_flow_rows(nodes: Any, role: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    rows = [
+        row for row in _named_rows(nodes, limit=20)
+        if (
+            role == "inflow"
+            and float(row.get("net_flow_yi") or 0) > 0
+        )
+        or (
+            role == "outflow"
+            and float(row.get("net_flow_yi") or 0) < 0
+        )
+    ]
+    rows.sort(
+        key=lambda row: float(row.get("net_flow_yi") or 0),
+        reverse=role == "inflow",
+    )
+    return rows[:limit]
+
+
+def _compact_flow_frame(frame: dict[str, Any] | None) -> dict[str, Any]:
+    source = frame if isinstance(frame, dict) else {}
+    totals = source.get("totals") if isinstance(source.get("totals"), dict) else {}
+    return {
+        "generated_at": str(source.get("generated_at") or ""),
+        "inflow": _reference_flow_rows(source.get("nodes"), "inflow", limit=3),
+        "outflow": _reference_flow_rows(source.get("nodes"), "outflow", limit=3),
+        "totals": {
+            key: round(float(value), 2)
+            for key in (
+                "visible_inflow_yi",
+                "visible_outflow_yi",
+                "visible_balance_yi",
+            )
+            if (value := _number(totals.get(key))) is not None
+        },
+    }
+
+
+def add_dashboard_market_references(
+    snapshot_source: dict[str, Any],
+    *,
+    industry_flow_payload: dict[str, Any] | None = None,
+    market_breadth_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Attach compact references from the fund-flow and sentiment pages."""
+
+    result = dict(snapshot_source or {})
+    snapshot = dict(result.get("snapshot") or {})
+    content_lines = [line for line in str(result.get("content") or "").splitlines() if line]
+
+    flow_source = industry_flow_payload if isinstance(industry_flow_payload, dict) else {}
+    flow_nodes = flow_source.get("nodes") if isinstance(flow_source.get("nodes"), list) else []
+    flow_timeline = flow_source.get("timeline") if isinstance(flow_source.get("timeline"), list) else []
+    current_flow = {
+        "generated_at": str(flow_source.get("generated_at") or ""),
+        "inflow": _reference_flow_rows(flow_nodes, "inflow"),
+        "outflow": _reference_flow_rows(flow_nodes, "outflow"),
+        "totals": _compact_flow_frame({"totals": flow_source.get("totals")}).get("totals", {}),
+    }
+    flow_reference = {
+        **current_flow,
+        "metric": str(flow_source.get("metric") or ""),
+        "metric_label": str(flow_source.get("metric_label") or ""),
+        "sample_count": len(flow_timeline),
+        "first_sample": _compact_flow_frame(flow_timeline[0] if flow_timeline else None),
+        "last_sample": _compact_flow_frame(flow_timeline[-1] if flow_timeline else None),
+        "available": bool(flow_source.get("available") and flow_nodes),
+        "stale": bool(flow_source.get("stale_cache") or flow_source.get("error")),
+    }
+    if flow_reference["available"]:
+        totals = flow_reference["totals"]
+        flow_label = "资金流动页缓存榜" if flow_reference["stale"] else "资金流动页最新榜"
+        content_lines.extend([
+            f"{flow_label}：主力净流入"
+            f"{_flow_rank_text(flow_reference['inflow'])}；主力净流出"
+            f"{_flow_rank_text(flow_reference['outflow'])}。",
+            "资金流动页可见行业合计：净流入"
+            f"{float(totals.get('visible_inflow_yi') or 0):.2f}亿，净流出"
+            f"{float(totals.get('visible_outflow_yi') or 0):.2f}亿，净额"
+            f"{float(totals.get('visible_balance_yi') or 0):+.2f}亿；"
+            f"日内采样{flow_reference['sample_count']}个。",
+        ])
+        first_sample = flow_reference["first_sample"]
+        last_sample = flow_reference["last_sample"]
+        if first_sample.get("generated_at") and last_sample.get("generated_at"):
+            content_lines.append(
+                "资金流动页日内对比："
+                f"{first_sample['generated_at'][11:16]}净流入前列"
+                f"{_flow_rank_text(first_sample['inflow'])}；"
+                f"{last_sample['generated_at'][11:16]}净流入前列"
+                f"{_flow_rank_text(last_sample['inflow'])}。"
+            )
+    else:
+        content_lines.append("资金流动页参考：当前无有效行业主力净额数据。")
+
+    breadth_source = market_breadth_payload if isinstance(market_breadth_payload, dict) else {}
+    latest_breadth = breadth_source.get("latest") if isinstance(breadth_source.get("latest"), dict) else {}
+    breadth_timeline = breadth_source.get("timeline") if isinstance(breadth_source.get("timeline"), list) else []
+    breadth_keys = (
+        "red",
+        "green",
+        "flat",
+        "limit_up",
+        "limit_down",
+        "broken_limit",
+        "quote_count",
+        "actual_turnover_yi",
+        "estimated_turnover_yi",
+        "previous_turnover_yi",
+        "turnover_increment_yi",
+        "turnover_same_time_delta_yi",
+    )
+    breadth_reference: dict[str, Any] = {
+        "available": bool(breadth_source.get("available") and latest_breadth),
+        "stale": bool(breadth_source.get("stale_cache") or breadth_source.get("error")),
+        "generated_at": str(latest_breadth.get("generated_at") or breadth_source.get("generated_at") or ""),
+        "sample_count": len(breadth_timeline),
+    }
+    for key in breadth_keys:
+        number = _number(latest_breadth.get(key))
+        if number is not None:
+            breadth_reference[key] = round(number, 2)
+    if breadth_reference["available"]:
+        breadth_label = "市场情绪页缓存值" if breadth_reference["stale"] else "市场情绪页最新值"
+        content_lines.append(
+            f"{breadth_label}：红盘"
+            f"{int(breadth_reference.get('red') or 0)}只、绿盘"
+            f"{int(breadth_reference.get('green') or 0)}只、平盘"
+            f"{int(breadth_reference.get('flat') or 0)}只；涨停"
+            f"{int(breadth_reference.get('limit_up') or 0)}只、跌停"
+            f"{int(breadth_reference.get('limit_down') or 0)}只、炸板"
+            f"{int(breadth_reference.get('broken_limit') or 0)}只；"
+            f"日内采样{breadth_reference['sample_count']}个。"
+        )
+        turnover_parts: list[str] = []
+        for key, label in (
+            ("actual_turnover_yi", "实际成交"),
+            ("estimated_turnover_yi", "预测全天"),
+            ("previous_turnover_yi", "前日成交"),
+            ("turnover_increment_yi", "预测增量"),
+            ("turnover_same_time_delta_yi", "同时点差额"),
+        ):
+            if key in breadth_reference:
+                value = float(breadth_reference[key])
+                formatted = f"{value:+.2f}" if key in {
+                    "turnover_increment_yi",
+                    "turnover_same_time_delta_yi",
+                } else f"{value:.2f}"
+                turnover_parts.append(f"{label}{formatted}亿")
+        if turnover_parts:
+            content_lines.append("市场情绪页量能：" + "；".join(turnover_parts) + "。")
+    else:
+        content_lines.append("市场情绪页参考：当前无有效红绿盘及涨跌停数据。")
+
+    snapshot["industry_flow_page"] = flow_reference
+    snapshot["market_breadth_page"] = breadth_reference
+    source_generated_at = dict(snapshot.get("source_generated_at") or {})
+    source_generated_at.update({
+        "industry_flow_page": flow_reference.get("generated_at", ""),
+        "market_breadth_page": breadth_reference.get("generated_at", ""),
+    })
+    snapshot["source_generated_at"] = source_generated_at
+    result["snapshot"] = snapshot
+    result["content"] = "\n".join(content_lines)
+    result["reference_pages"] = {
+        "industry_flow": flow_reference["available"],
+        "market_breadth": breadth_reference["available"],
+    }
+    return result
+
+
 def _market_snapshot_without_action_guidance(content: str) -> str:
     try:
         from reports.a_share.grok import remove_original_guidance
@@ -462,11 +633,13 @@ def _model_messages(scans: list[dict[str, Any]], day: str) -> list[dict[str, str
     system = (
         "你是牛牛1号的A股日内市场复盘助手。你会收到前一美股交易日总结、今天已有的A股盘面总结/扫描、"
         "本按钮上一版总结（如有），以及点击按钮时刚抓取的实时A股指数、行业板块涨跌和行业资金流。"
+        "实时快照还包含资金流动页的行业主力净额与日内轨迹，以及市场情绪页的红绿盘、涨跌停、炸板和量能数据。"
         "先把美股总结作为A股开盘前的外部背景，再对照A股实际走势说明哪些风险偏好或板块映射得到验证、弱化或反转。"
         "判断当前热门板块时，必须以手动快照中的“实时热门行业综合榜”为准；概念榜只用于说明该行业内部的细分扩散，"
         "不得用单个概念标签替代或否定综合榜首行业。"
         "必须以手动触发实时快照作为最新事实，并与时间上最近的已有A股总结及上一版按钮总结进行对比，"
         "明确指出判断得到延续/强化、出现弱化/反转，或板块资金发生轮动；不得只复述实时榜单。"
+        "资金流动页或市场情绪页存在有效数据时，必须分别把两者纳入结论或市场结构，不得只引用指数和板块排行。"
         "不得把美股表现写成A股已经发生的事实，也不得仅凭相关性断言因果。"
         "请站在全市场视角总结指数走势、涨跌家数与涨跌停、市场情绪、成交与资金、板块轮动及日内演变。"
         "只做客观盘面复盘，不得输出开仓、买入、卖出、持仓、仓位、止损等操作指引。"
@@ -491,6 +664,7 @@ def _model_messages(scans: list[dict[str, Any]], day: str) -> list[dict[str, str
 }}
 
 再次强调：实时数据必须参与最终结论，comparison_lines 不得为空。输出是全市场走势复盘，不是交易计划；
+资金流动页和市场情绪页有有效数据时，最终结果必须分别体现其资金结构与市场广度/量能信息；
 禁止出现“开仓、买入、卖出、仓位、止损、持仓处理”等指引。
 """.strip()
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -568,6 +742,30 @@ def _local_comparison_lines(
     return lines[:5]
 
 
+def _local_page_reference_lines(realtime: dict[str, Any] | None) -> list[str]:
+    snapshot = realtime.get("snapshot") if isinstance((realtime or {}).get("snapshot"), dict) else {}
+    flow = snapshot.get("industry_flow_page") if isinstance(snapshot.get("industry_flow_page"), dict) else {}
+    breadth = snapshot.get("market_breadth_page") if isinstance(snapshot.get("market_breadth_page"), dict) else {}
+    lines: list[str] = []
+    if flow.get("available"):
+        totals = flow.get("totals") if isinstance(flow.get("totals"), dict) else {}
+        lines.append(
+            "资金流动页显示：可见行业净流入合计"
+            f"{float(totals.get('visible_inflow_yi') or 0):.2f}亿、净流出合计"
+            f"{float(totals.get('visible_outflow_yi') or 0):.2f}亿、净额"
+            f"{float(totals.get('visible_balance_yi') or 0):+.2f}亿。"
+        )
+    if breadth.get("available"):
+        lines.append(
+            "市场情绪页显示：红盘"
+            f"{int(breadth.get('red') or 0)}只、绿盘{int(breadth.get('green') or 0)}只，"
+            f"涨停{int(breadth.get('limit_up') or 0)}只、跌停"
+            f"{int(breadth.get('limit_down') or 0)}只、炸板"
+            f"{int(breadth.get('broken_limit') or 0)}只。"
+        )
+    return lines
+
+
 def _local_summary(scans: list[dict[str, Any]], day: str) -> dict[str, Any]:
     a_share_scans = [scan for scan in scans if scan.get("source_kind") == "a_share_scan"]
     overnight_us = next((scan for scan in scans if scan.get("source_kind") == "overnight_us"), None)
@@ -613,7 +811,7 @@ def _local_summary(scans: list[dict[str, Any]], day: str) -> dict[str, Any]:
         "summary": summary.strip(),
         "comparison_lines": comparison_lines,
         "trend_lines": key_points[:6],
-        "structure_lines": [],
+        "structure_lines": _local_page_reference_lines(realtime),
         "risk_lines": [],
         "model_used": False,
     }

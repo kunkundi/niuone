@@ -30,9 +30,13 @@ const staleText = computed(() => {
     : []
   return ` · ${reasons.join('、') || '盘面资料已更新'}，建议重新生成`
 })
-const statusText = computed(() => props.summary.loading
-  ? '正在读取今日盘面扫描'
-  : (scanCount.value ? `复盘资料：${sourceCountText.value}` : '今日暂无A股盘面扫描'))
+const statusText = computed(() => {
+  if (props.generating || props.summary.running) {
+    return props.summary.stage_label || '正在生成今日盘面总结'
+  }
+  if (props.summary.loading) return '正在读取今日盘面扫描'
+  return scanCount.value ? `复盘资料：${sourceCountText.value}` : '今日暂无A股盘面扫描'
+})
 const sections = computed(() => [
   ['实时热门行业（涨幅与主力净流入交叉确认）', props.summary.hot_sector_lines, ''],
   ['实时对比结论', props.summary.comparison_lines, ''],

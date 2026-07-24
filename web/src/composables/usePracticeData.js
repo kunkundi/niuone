@@ -35,6 +35,7 @@ let users = 0
 let loadSequence = 0
 let unsubscribeProjection = null
 let manualPollTimer = 0
+let marketSummaryPollTimer = 0
 let fullSnapshotRequest = null
 let fullSnapshotLastAttemptAt = 0
 const controllers = new Map()
@@ -86,13 +87,20 @@ function controllerFor(key) {
   return controller
 }
 
-async function fetchJson(url, { key, method = 'GET', action = false, cache = 'no-store' } = {}) {
+async function fetchJson(url, {
+  key,
+  method = 'GET',
+  action = false,
+  cache = 'no-store',
+  timeoutMs = REQUEST_TIMEOUT_MS,
+  timeoutMessage = '模拟账户请求超时',
+} = {}) {
   const controller = controllerFor(key || url)
   let timedOut = false
   const timeout = window.setTimeout(() => {
     timedOut = true
     controller.abort()
-  }, REQUEST_TIMEOUT_MS)
+  }, timeoutMs)
   try {
     const response = await fetch(url, {
       method,
@@ -103,11 +111,14 @@ async function fetchJson(url, { key, method = 'GET', action = false, cache = 'no
     })
     const payload = await response.json().catch(() => ({}))
     if (!response.ok || payload?.ok === false) {
-      throw new Error(payload?.error || `HTTP ${response.status}`)
+      const error = new Error(payload?.error || `HTTP ${response.status}`)
+      error.code = String(payload?.error || '')
+      error.status = response.status
+      throw error
     }
     return payload
   } catch (error) {
-    if (timedOut) throw new Error('模拟账户请求超时')
+    if (timedOut) throw new Error(timeoutMessage)
     throw error
   } finally {
     window.clearTimeout(timeout)
@@ -157,9 +168,12 @@ async function loadMarketSummary() {
   try {
     const payload = await fetchJson('/api/niuniu_practice/market-summary', {
       key: 'market-summary',
+      timeoutMessage: '盘面总结状态请求超时',
     })
     state.marketSummary = { ...(payload || {}), loading: false }
+    state.marketSummaryGenerating = payload?.running === true
     saveCache()
+    if (state.marketSummaryGenerating) scheduleMarketSummaryPoll()
     return true
   } catch (error) {
     if (error?.name !== 'AbortError') {
@@ -171,6 +185,15 @@ async function loadMarketSummary() {
     }
     return false
   }
+}
+
+function scheduleMarketSummaryPoll() {
+  if (marketSummaryPollTimer || !users || !state.marketSummaryGenerating) return
+  marketSummaryPollTimer = window.setTimeout(async () => {
+    marketSummaryPollTimer = 0
+    await loadMarketSummary()
+    if (state.marketSummaryGenerating) scheduleMarketSummaryPoll()
+  }, 1500)
 }
 
 function scheduleManualCyclePoll() {
@@ -260,6 +283,7 @@ function handleProjection(snapshot) {
 
 async function triggerManualCycle() {
   if (state.manualCycle.running) return false
+  const previousManualCycle = { ...state.manualCycle }
   state.manualCycle = {
     ...state.manualCycle,
     running: true,
@@ -276,6 +300,14 @@ async function triggerManualCycle() {
     scheduleManualCyclePoll()
     return true
   } catch (error) {
+    if (error?.status === 403 && error?.code === 'admin_password_required') {
+      state.manualCycle = {
+        ...previousManualCycle,
+        running: false,
+        error: '',
+      }
+      return 'admin_password_required'
+    }
     state.manualCycle = {
       ...state.manualCycle,
       running: false,
@@ -289,26 +321,50 @@ async function triggerManualCycle() {
 
 async function triggerMarketSummary() {
   if (state.marketSummaryGenerating) return false
+  const previousSummary = { ...state.marketSummary }
   state.marketSummaryGenerating = true
-  state.marketSummary = { ...state.marketSummary, error: '' }
+  state.marketSummary = {
+    ...state.marketSummary,
+    running: true,
+    stage: 'starting',
+    stage_label: '正在启动盘面总结',
+    error: '',
+  }
   try {
     const payload = await fetchJson('/api/niuniu_practice/market-summary', {
       key: 'market-summary-action',
       method: 'POST',
       action: true,
+      timeoutMessage: '盘面总结启动请求超时',
     })
-    state.marketSummary = { ...payload, loading: false, stale: false }
-    saveCache()
-    return true
-  } catch (error) {
     state.marketSummary = {
       ...state.marketSummary,
+      ...payload,
+      loading: false,
+      error: '',
+    }
+    state.marketSummaryGenerating = payload?.running === true
+    saveCache()
+    if (state.marketSummaryGenerating) scheduleMarketSummaryPoll()
+    else await loadMarketSummary()
+    return payload?.accepted !== false
+  } catch (error) {
+    state.marketSummaryGenerating = false
+    if (error?.status === 403 && error?.code === 'admin_password_required') {
+      state.marketSummary = {
+        ...previousSummary,
+        running: false,
+        error: '',
+      }
+      return 'admin_password_required'
+    }
+    state.marketSummary = {
+      ...state.marketSummary,
+      running: false,
       loading: false,
       error: String(error?.message || error),
     }
     return false
-  } finally {
-    state.marketSummaryGenerating = false
   }
 }
 
@@ -347,6 +403,8 @@ function deactivatePractice() {
   unsubscribeProjection = null
   window.clearTimeout(manualPollTimer)
   manualPollTimer = 0
+  window.clearTimeout(marketSummaryPollTimer)
+  marketSummaryPollTimer = 0
   loadSequence += 1
   for (const controller of controllers.values()) controller.abort()
   controllers.clear()

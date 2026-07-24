@@ -3632,7 +3632,7 @@ process.stdout.write(JSON.stringify({{
 
     def test_practice_market_summary_status_is_public_and_generation_requires_admin_action(self):
         original_status = dashboard.get_practice_market_summary_status
-        original_generate = dashboard.generate_practice_market_summary
+        original_start = dashboard.start_practice_market_summary
         original_admin_limit = dashboard.RATE_LIMIT_ADMIN
         calls = []
         try:
@@ -3640,8 +3640,8 @@ process.stdout.write(JSON.stringify({{
             dashboard.get_practice_market_summary_status = lambda: {
                 'ok': True, 'available': False, 'scan_count': 2,
             }
-            dashboard.generate_practice_market_summary = lambda: calls.append(True) or {
-                'ok': True, 'available': True, 'scan_count': 2, 'summary': '今日汇总',
+            dashboard.start_practice_market_summary = lambda: calls.append(True) or {
+                'ok': True, 'accepted': True, 'running': True, 'stage': 'starting',
             }
 
             status_handler = FakeHandler(path=dashboard.PRACTICE_MARKET_SUMMARY_API_PATH)
@@ -3668,17 +3668,105 @@ process.stdout.write(JSON.stringify({{
                 },
             )
             generated.do_POST()
-            self.assertEqual(generated.status, 200)
-            self.assertEqual(json.loads(generated.wfile.getvalue().decode('utf-8'))['summary'], '今日汇总')
+            self.assertEqual(generated.status, 202)
+            self.assertTrue(json.loads(generated.wfile.getvalue().decode('utf-8'))['accepted'])
             self.assertEqual(calls, [True])
         finally:
             dashboard.get_practice_market_summary_status = original_status
-            dashboard.generate_practice_market_summary = original_generate
+            dashboard.start_practice_market_summary = original_start
             dashboard.RATE_LIMIT_ADMIN = original_admin_limit
+
+    def test_practice_market_summary_generation_runs_in_one_background_thread(self):
+        original_generate = dashboard.generate_practice_market_summary
+        original_state = dict(dashboard.PRACTICE_MARKET_SUMMARY_STATE)
+        started = threading.Event()
+        release = threading.Event()
+
+        def fake_generate():
+            started.set()
+            if not release.wait(2):
+                raise TimeoutError("test did not release summary generation")
+            return {
+                "ok": True,
+                "available": True,
+                "generated_at": "2026-07-14 12:00:00",
+            }
+
+        try:
+            dashboard.generate_practice_market_summary = fake_generate
+            accepted = dashboard.start_practice_market_summary()
+            self.assertTrue(accepted["accepted"])
+            self.assertTrue(accepted["running"])
+            self.assertTrue(started.wait(1))
+
+            duplicate = dashboard.start_practice_market_summary()
+            self.assertFalse(duplicate["accepted"])
+            self.assertTrue(duplicate["running"])
+
+            release.set()
+            for _ in range(100):
+                status = dashboard.practice_market_summary_generation_status()
+                if not status["running"]:
+                    break
+                threading.Event().wait(0.01)
+            self.assertFalse(status["running"])
+            self.assertEqual(status["stage"], "completed")
+            self.assertEqual(status["generated_at"], "2026-07-14 12:00:00")
+            self.assertEqual(status["error"], "")
+
+            dashboard.generate_practice_market_summary = lambda: {
+                "ok": False,
+                "error": "实时盘面抓取不完整：缺少A股实时指数",
+            }
+            failed = dashboard.start_practice_market_summary()
+            self.assertTrue(failed["accepted"])
+            for _ in range(100):
+                failed_status = dashboard.practice_market_summary_generation_status()
+                if not failed_status["running"]:
+                    break
+                threading.Event().wait(0.01)
+            self.assertEqual(failed_status["stage"], "error")
+            self.assertEqual(
+                failed_status["error"],
+                "实时盘面抓取不完整：缺少A股实时指数",
+            )
+        finally:
+            release.set()
+            for _ in range(100):
+                if not dashboard.practice_market_summary_generation_status()["running"]:
+                    break
+                threading.Event().wait(0.01)
+            dashboard.generate_practice_market_summary = original_generate
+            with dashboard.PRACTICE_MARKET_SUMMARY_STATE_LOCK:
+                dashboard.PRACTICE_MARKET_SUMMARY_STATE.clear()
+                dashboard.PRACTICE_MARKET_SUMMARY_STATE.update(original_state)
+
+        self.assertIn("marketSummaryPollTimer", PRACTICE_DATA)
+        self.assertIn("scheduleMarketSummaryPoll()", PRACTICE_DATA)
+        self.assertIn("盘面总结启动请求超时", PRACTICE_DATA)
+
+    def test_practice_market_summary_prompts_for_admin_and_retries_generation(self):
+        self.assertIn("error?.status === 403", PRACTICE_DATA)
+        self.assertIn("error?.code === 'admin_password_required'", PRACTICE_DATA)
+        self.assertIn("return 'admin_password_required'", PRACTICE_DATA)
+        self.assertIn("await authenticateAdmin(adminAuth.credential)", PRACTICE_COMPONENTS)
+        self.assertIn('@market-summary="generateMarketSummary"', PRACTICE_COMPONENTS)
+        self.assertIn('class="dragon-tiger-admin-backdrop"', PRACTICE_COMPONENTS)
+        self.assertIn("submitLabel: '验证并生成'", PRACTICE_COMPONENTS)
+
+    def test_practice_manual_cycle_prompts_for_admin_and_retries_strategy(self):
+        self.assertIn("const previousManualCycle = { ...state.manualCycle }", PRACTICE_DATA)
+        self.assertIn("return 'admin_password_required'", PRACTICE_DATA)
+        self.assertIn('@manual-cycle="runManualCycle"', PRACTICE_COMPONENTS)
+        self.assertIn("requestAdminAuthentication('manual-cycle')", PRACTICE_COMPONENTS)
+        self.assertIn("if (retryAction === 'manual-cycle') await runManualCycle()", PRACTICE_COMPONENTS)
+        self.assertIn("title: '手动运行选股与交易策略'", PRACTICE_COMPONENTS)
+        self.assertIn("submitLabel: '验证并运行'", PRACTICE_COMPONENTS)
 
     def test_manual_market_summary_snapshot_force_refreshes_live_channels(self):
         original_runner = dashboard.run_dashboard_helper
         original_builder = dashboard.practice_market_summary_impl.build_realtime_market_snapshot
+        original_breadth = dashboard.produce_market_breadth_data
         calls = []
         captured = {}
         try:
@@ -3697,12 +3785,25 @@ process.stdout.write(JSON.stringify({{
 
             dashboard.run_dashboard_helper = fake_runner
             dashboard.practice_market_summary_impl.build_realtime_market_snapshot = fake_builder
+            dashboard.produce_market_breadth_data = lambda: {
+                "available": True,
+                "latest": {
+                    "generated_at": "2026-07-14 12:00:00",
+                    "red": 3000,
+                    "green": 2000,
+                    "limit_up": 50,
+                    "limit_down": 5,
+                    "broken_limit": 12,
+                },
+                "timeline": [],
+            }
             now = datetime(2026, 7, 14, 12, 0, 0)
 
             result = dashboard.fetch_practice_realtime_market_snapshot(now)
         finally:
             dashboard.run_dashboard_helper = original_runner
             dashboard.practice_market_summary_impl.build_realtime_market_snapshot = original_builder
+            dashboard.produce_market_breadth_data = original_breadth
 
         self.assertTrue(result["complete"])
         self.assertEqual({call[0] for call in calls}, {
@@ -3713,6 +3814,7 @@ process.stdout.write(JSON.stringify({{
         self.assertTrue(all(call[1:] == (120, ("--force-refresh",)) for call in calls))
         self.assertEqual(captured["indices"]["script"], "indices_dashboard_api.py")
         self.assertEqual(captured["now"], now)
+        self.assertTrue(result["reference_pages"]["market_breadth"])
 
     def test_notification_test_api_has_dedicated_rate_limit_and_body_limit(self):
         original_sender = dashboard.send_notification_test

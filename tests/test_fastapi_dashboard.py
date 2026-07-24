@@ -828,10 +828,10 @@ class FastApiDashboardTests(unittest.TestCase):
             ) as manual_cycle,
             patch.object(
                 self.legacy,
-                "generate_practice_market_summary",
+                "start_practice_market_summary",
                 side_effect=[
-                    {"ok": True, "generated": True},
-                    {"ok": False, "error": "summary_busy"},
+                    {"ok": True, "accepted": True, "running": True},
+                    {"ok": True, "accepted": False, "running": True},
                 ],
             ) as market_summary,
             patch.object(self.legacy, "get_trader_module", return_value=trader),
@@ -874,9 +874,10 @@ class FastApiDashboardTests(unittest.TestCase):
         self.assertEqual(refresh.json(), {"ok": True, "candidates": []})
         self.assertEqual(legacy_without_force.status_code, 404)
         self.assertEqual(manual.json(), {"ok": True, "started": True})
-        self.assertEqual(summary.json(), {"ok": True, "generated": True})
-        self.assertEqual(summary_busy.status_code, 409)
-        self.assertEqual(summary_busy.json()["error"], "summary_busy")
+        self.assertEqual(summary.status_code, 202)
+        self.assertEqual(summary.json(), {"ok": True, "accepted": True, "running": True})
+        self.assertEqual(summary_busy.status_code, 202)
+        self.assertEqual(summary_busy.json(), {"ok": True, "accepted": False, "running": True})
         self.assertEqual(resumed.json(), {"ok": True, "resumed": True})
         self.assertEqual(optimized.json(), {"ok": True, "applied": True})
         trigger.assert_called_once_with(force=True)
