@@ -25,14 +25,27 @@ const manualButtonText = computed(() => manualRunning.value
   <section class="sector-cloud" style="margin-bottom:18px">
     <div class="practice-account-head">
       <h3>模拟账户</h3>
+      <div class="practice-account-actions">
+        <button
+          type="button"
+          class="practice-manual-cycle-btn"
+          :disabled="manualRunning"
+          :aria-busy="manualRunning ? 'true' : undefined"
+          :title="manualButtonText"
+          @click="emit('manual-cycle')"
+        >{{ manualRunning ? '处理中 · ' : '' }}{{ manualButtonText }}</button>
+        <button
+          type="button"
+          class="practice-market-summary-btn"
+          :disabled="marketSummaryGenerating"
+          :aria-busy="marketSummaryGenerating ? 'true' : undefined"
+          @click="emit('market-summary')"
+        >{{ marketSummaryGenerating ? '正在生成盘面总结与评价…' : '生成此刻盘面总结与评价' }}</button>
+      </div>
     </div>
     <PracticeMarketSummary
       :summary="marketSummary"
       :generating="marketSummaryGenerating"
-      :manual-running="manualRunning"
-      :manual-label="manualButtonText"
-      @manual-cycle="emit('manual-cycle')"
-      @generate="emit('market-summary')"
     />
     <div v-if="manualCycle.error" class="practice-manual-cycle-error">本轮执行失败：{{ manualCycle.error }}</div>
     <div v-if="practice.trading_paused" style="background:var(--yellow-soft);border:1px solid var(--yellow-border);border-radius:8px;padding:10px 14px;margin:10px 0;display:flex;justify-content:space-between;align-items:center">

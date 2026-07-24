@@ -4,10 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 const props = defineProps({
   summary: { type: Object, required: true },
   generating: Boolean,
-  manualRunning: Boolean,
-  manualLabel: { type: String, default: '手动运行选股与交易策略' },
 })
-const emit = defineEmits(['generate', 'manual-cycle'])
 const dialogOpen = ref(false)
 const viewButton = ref(null)
 const closeButton = ref(null)
@@ -27,9 +24,30 @@ const sourceParts = computed(() => {
   return parts
 })
 const sourceCountText = computed(() => sourceParts.value.join(' · '))
-const evaluationText = computed(() => String(props.summary.summary || '').trim()
-  || (Array.isArray(props.summary.comparison_lines) ? props.summary.comparison_lines[0] : '')
-  || '已更新')
+
+function compactMarketEvaluation(value, comparisonLines = []) {
+  const sentences = String(value || '')
+    .match(/[^。！？!?]+[。！？!?]?/g)
+    ?.map(sentence => sentence.trim())
+    .filter(Boolean) || []
+  const isContextOnly = sentence => [
+    /前一美股交易日/,
+    /已汇总\s*\d+\s*次A股盘面扫描/,
+    /^实时快照显示[：:]/,
+  ].some(pattern => pattern.test(sentence))
+  const conclusion = sentences.find(sentence => !isContextOnly(sentence)
+    && /(全市场|盘面|指数|情绪|资金|板块|风险|涨跌|赚钱效应|亏钱效应)/.test(sentence))
+  return conclusion
+    || sentences.find(sentence => !isContextOnly(sentence))
+    || sentences[0]
+    || (Array.isArray(comparisonLines) ? comparisonLines[0] : '')
+    || '已更新'
+}
+
+const evaluationText = computed(() => compactMarketEvaluation(
+  props.summary.summary,
+  props.summary.comparison_lines,
+))
 const evaluationTime = computed(() => String(
   props.summary.generated_at || props.summary.live_snapshot_at || '',
 ).slice(5, 16))
@@ -38,7 +56,7 @@ const staleText = computed(() => {
   const reasons = Array.isArray(props.summary.stale_reasons)
     ? props.summary.stale_reasons.filter(Boolean)
     : []
-  return ` · ${reasons.join('、') || '盘面资料已更新'}，建议重新生成`
+  return `${reasons.join('、') || '盘面资料已更新'}，建议重新生成`
 })
 const statusText = computed(() => {
   if (props.generating || props.summary.running) {
@@ -87,39 +105,25 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="summary.available && summary.summary" class="practice-market-evaluation">
-    <span class="practice-market-evaluation-label">盘面评价 · {{ summary.tone_label || '中性' }}</span>
-    <span>{{ evaluationText }}</span>
+  <div
+    v-if="summary.available && summary.summary"
+    class="practice-market-evaluation"
+    :class="{ stale: summary.stale }"
+    :title="summary.stale ? staleText : undefined"
+  >
+    <span class="practice-market-evaluation-label">盘面评价</span>
+    <span class="practice-market-evaluation-tone">{{ summary.tone_label || '中性' }}</span>
+    <span class="practice-market-evaluation-text">{{ evaluationText }}</span>
     <time>{{ evaluationTime }}</time>
-  </div>
-  <div class="practice-market-summary-action">
-    <div class="practice-market-summary-primary-actions">
-      <button
-        type="button"
-        class="practice-manual-cycle-btn"
-        :disabled="manualRunning"
-        :aria-busy="manualRunning ? 'true' : undefined"
-        :title="manualLabel"
-        @click="emit('manual-cycle')"
-      >{{ manualRunning ? '处理中 · ' : '' }}{{ manualLabel }}</button>
-      <button
-        type="button"
-        class="practice-market-summary-btn"
-        :disabled="generating"
-        :aria-busy="generating ? 'true' : undefined"
-        @click="emit('generate')"
-      >{{ generating ? '正在生成盘面总结与评价…' : '生成此刻盘面总结与评价' }}</button>
-    </div>
     <button
-      v-if="summary.available && summary.summary"
       ref="viewButton"
       type="button"
       class="practice-market-summary-view-btn"
       aria-haspopup="dialog"
       @click="openDialog"
-    >查看总结与评价</button>
-    <span class="practice-market-summary-status">{{ statusText }}{{ staleText }}</span>
+    >查看详情</button>
   </div>
+  <div v-else class="practice-market-summary-empty">{{ statusText }}</div>
   <div v-if="summary.error" class="practice-market-summary-error">{{ summary.error }}</div>
 
   <Teleport to="body">

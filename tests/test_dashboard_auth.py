@@ -3881,10 +3881,15 @@ process.stdout.write(JSON.stringify({{
             ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticeAccountOverview.vue'
         ).read_text(encoding='utf-8')
 
-        self.assertIn("生成此刻盘面总结与评价", component)
+        self.assertIn("生成此刻盘面总结与评价", overview)
         self.assertIn("此刻盘面总结与评价 ·", component)
-        self.assertNotIn("生成今日盘面总结", component)
-        self.assertIn('盘面评价 · {{ summary.tone_label', component)
+        self.assertNotIn("生成今日盘面总结", component + overview)
+        self.assertIn('class="practice-market-evaluation-label">盘面评价', component)
+        self.assertIn('class="practice-market-evaluation-tone"', component)
+        self.assertIn('class="practice-market-evaluation-text"', component)
+        self.assertIn('compactMarketEvaluation', component)
+        self.assertIn('>查看详情</button>', component)
+        self.assertNotIn('class="practice-market-summary-action"', component)
         self.assertNotIn('marketContext', overview)
         self.assertIn('class="practice-market-summary-view-btn"', component)
         self.assertIn('aria-haspopup="dialog"', component)
@@ -3893,22 +3898,27 @@ process.stdout.write(JSON.stringify({{
         self.assertIn('aria-modal="true"', component)
         self.assertIn("event.key === 'Escape'", component)
         self.assertNotIn('class="practice-market-summary-card"', component)
+        self.assertIn('-webkit-line-clamp:2;', DASHBOARD_FRONTEND)
         self.assertIn('body.practice-market-summary-dialog-open { overflow:hidden; }', DASHBOARD_FRONTEND)
         self.assertIn('max-height:84dvh;', DASHBOARD_FRONTEND)
 
-    def test_practice_manual_cycle_and_market_summary_actions_share_button_group(self):
+    def test_practice_actions_are_right_aligned_with_account_heading(self):
         component_dir = ROOT / 'web' / 'src' / 'components' / 'practice'
         overview = (component_dir / 'PracticeAccountOverview.vue').read_text(encoding='utf-8')
         summary = (component_dir / 'PracticeMarketSummary.vue').read_text(encoding='utf-8')
 
-        self.assertNotIn('class="practice-manual-cycle-btn"', overview)
-        self.assertIn(':manual-running="manualRunning"', overview)
-        self.assertIn('@manual-cycle="emit(\'manual-cycle\')"', overview)
-        self.assertIn('class="practice-market-summary-primary-actions"', summary)
+        self.assertIn('class="practice-account-head"', overview)
+        self.assertIn('class="practice-account-actions"', overview)
         self.assertLess(
-            summary.index('class="practice-manual-cycle-btn"'),
-            summary.index('class="practice-market-summary-btn"'),
+            overview.index('<h3>模拟账户</h3>'),
+            overview.index('class="practice-account-actions"'),
         )
+        self.assertIn('class="practice-manual-cycle-btn"', overview)
+        self.assertIn('class="practice-market-summary-btn"', overview)
+        self.assertNotIn('class="practice-manual-cycle-btn"', summary)
+        self.assertNotIn('class="practice-market-summary-btn"', summary)
+        self.assertIn('.practice-account-actions { display:flex;', DASHBOARD_FRONTEND)
+        self.assertIn('justify-content:flex-end;', DASHBOARD_FRONTEND)
         self.assertIn('grid-template-columns:repeat(2,minmax(0,1fr))', DASHBOARD_FRONTEND)
 
     def test_practice_manual_cycle_prompts_for_admin_and_retries_strategy(self):

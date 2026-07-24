@@ -65,22 +65,24 @@
     .card { padding:18px; overflow:hidden; background:var(--panel); }
     .sector-cloud { min-width:0; overflow:hidden; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px; box-shadow:0 1px 2px rgba(16,24,40,.04); }
     .sector-cloud h3 { margin:0 0 10px; font-size:16px; color:var(--text); font-weight:750; letter-spacing:-.01em; }
-    .practice-account-head { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+    .practice-account-head { display:flex; align-items:center; justify-content:space-between; gap:12px; min-width:0; }
     .practice-account-head h3 { margin:0; }
+    .practice-account-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; min-width:0; margin-left:auto; }
     .practice-manual-cycle-btn { border:1px solid rgba(52,211,153,.38); border-radius:9px; background:rgba(16,185,129,.14); color:#a7f3d0; padding:7px 12px; font-size:12px; font-weight:850; cursor:pointer; transition:.16s ease; }
     .practice-manual-cycle-btn:hover:not(:disabled) { border-color:rgba(110,231,183,.7); background:rgba(16,185,129,.22); transform:translateY(-1px); }
     .practice-manual-cycle-btn:disabled { cursor:not-allowed; opacity:.68; }
-    .practice-market-evaluation { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px; padding:8px 10px; border:1px solid rgba(96,165,250,.2); border-radius:9px; background:rgba(30,64,175,.09); color:#aebdd1; font-size:12px; line-height:1.45; }
-    .practice-market-evaluation-label { color:#bfdbfe; font-weight:850; }
-    .practice-market-evaluation time { margin-left:auto; color:#718096; }
-    .practice-market-summary-action { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px; color:#7f8da3; font-size:12px; }
-    .practice-market-summary-primary-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+    .practice-market-evaluation { display:flex; align-items:center; gap:8px; min-width:0; margin-top:10px; padding:8px 10px; border:1px solid rgba(96,165,250,.2); border-radius:9px; background:rgba(30,64,175,.09); color:#aebdd1; font-size:12px; line-height:1.45; }
+    .practice-market-evaluation.stale { border-style:dashed; }
+    .practice-market-evaluation-label { flex:0 0 auto; color:#bfdbfe; font-weight:850; }
+    .practice-market-evaluation-tone { flex:0 0 auto; padding:2px 7px; border:1px solid rgba(96,165,250,.24); border-radius:999px; background:rgba(30,64,175,.18); color:#dbeafe; font-size:11px; line-height:1.3; font-weight:850; white-space:nowrap; }
+    .practice-market-evaluation-text { min-width:0; flex:1 1 auto; display:-webkit-box; overflow:hidden; color:#aebdd1; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
+    .practice-market-evaluation time { flex:0 0 auto; color:#718096; white-space:nowrap; }
     .practice-market-summary-btn, .practice-market-summary-view-btn { flex:0 0 auto; border:1px solid rgba(167,139,250,.38); border-radius:9px; background:rgba(124,92,255,.14); color:#ddd6fe; padding:7px 12px; font-size:12px; font-weight:850; cursor:pointer; transition:.16s ease; }
     .practice-market-summary-view-btn { border-color:rgba(148,163,184,.22); background:rgba(30,41,59,.42); color:#cbd5e1; }
     .practice-market-summary-btn:hover:not(:disabled), .practice-market-summary-view-btn:hover { border-color:rgba(196,181,253,.68); background:rgba(124,92,255,.24); transform:translateY(-1px); }
     .practice-market-summary-btn:disabled { cursor:not-allowed; opacity:.68; }
     .practice-market-summary-btn:focus-visible, .practice-market-summary-view-btn:focus-visible, .practice-market-summary-close:focus-visible { outline:2px solid rgba(196,181,253,.86); outline-offset:2px; }
-    .practice-market-summary-status { min-width:0; overflow-wrap:anywhere; }
+    .practice-market-summary-empty { margin-top:8px; color:#7f8da3; font-size:12px; }
     .practice-market-summary-backdrop { position:fixed; inset:0; z-index:87; display:grid; place-items:center; padding:18px; background:rgba(2,6,23,.70); backdrop-filter:blur(10px); }
     .practice-market-summary-dialog { width:min(760px, calc(100vw - 32px)); max-height:min(82vh, 760px); max-height:min(82dvh, 760px); min-height:0; display:grid; grid-template-rows:auto minmax(0,1fr); overflow:hidden; border:1px solid rgba(167,139,250,.28); border-radius:16px; background:linear-gradient(180deg, rgba(15,23,42,.99), rgba(8,13,24,.99)); color:#cbd5e1; box-shadow:0 28px 90px rgba(0,0,0,.52), inset 0 1px 0 rgba(255,255,255,.06); font-size:13px; line-height:1.65; }
     .practice-market-summary-dialog.stale { border-style:dashed; }
@@ -1355,11 +1357,13 @@
       .empty { padding:28px 12px; }
       .sector-cloud { padding:11px; border-radius:15px; margin-left:0; margin-right:0; }
       .sector-cloud h3 { font-size:13.5px; margin-bottom:7px; }
-      .practice-market-summary-action { gap:6px; overflow:hidden; }
-      .practice-market-summary-primary-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); flex:1 0 100%; width:100%; gap:6px; }
-      .practice-market-summary-primary-actions .practice-manual-cycle-btn, .practice-market-summary-primary-actions .practice-market-summary-btn { width:100%; min-width:0; overflow:hidden; padding:6px 8px; text-overflow:ellipsis; white-space:nowrap; }
+      .practice-account-head { align-items:flex-start; flex-wrap:wrap; }
+      .practice-account-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); flex:1 0 100%; width:100%; gap:6px; margin-left:0; }
+      .practice-account-actions .practice-manual-cycle-btn, .practice-account-actions .practice-market-summary-btn { width:100%; min-width:0; overflow:hidden; padding:6px 8px; text-overflow:ellipsis; white-space:nowrap; }
+      .practice-market-evaluation { align-items:center; flex-wrap:wrap; gap:6px; }
+      .practice-market-evaluation-text { order:2; flex:1 0 100%; }
+      .practice-market-evaluation time { margin-left:auto; }
       .practice-market-summary-view-btn { min-width:0; padding:6px 9px; white-space:nowrap; }
-      .practice-market-summary-status { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .practice-market-summary-backdrop { place-items:end center; padding:8px 8px max(8px, env(safe-area-inset-bottom)); }
       .practice-market-summary-dialog { width:100%; max-height:84vh; max-height:84dvh; border-radius:16px; }
       .practice-market-summary-dialog-head { padding:10px 11px; }
