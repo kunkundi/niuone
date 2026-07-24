@@ -33,8 +33,8 @@ const adminDialog = computed(() => pendingAdminAction.value === 'manual-cycle'
       submitLabel: '验证并运行',
     }
   : {
-      title: '生成今日盘面总结',
-      description: '生成盘面总结需要管理员身份验证。',
+      title: '生成此刻盘面总结与评价',
+      description: '生成盘面总结与评价需要管理员身份验证。',
       submitLabel: '验证并生成',
     })
 

@@ -24,7 +24,7 @@ Switching suites does not rewrite historical position attribution. The active su
 ### 2.1 User Guide: Enabling and Triggering a Strategy
 
 1. Set **Active independent strategy** to **Sector Tide** on the settings page. The corresponding value is `DASHBOARD_ACTIVE_STRATEGY=sector_tide`. This setting is applied at runtime and takes effect on the next scan without restarting the Dashboard.
-2. New candidates and model decisions reuse the practice page's B1 schedule. The scheduler inside the Dashboard process reads `DASHBOARD_B1_SCHEDULE_TIMES`; Sector Tide does not have a separate candidate-scan timer.
+2. New candidates and model decisions reuse the Practice page's shared schedule. The scheduler inside the Dashboard process reads `DASHBOARD_PRACTICE_SCHEDULE_TIMES`; Sector Tide does not have a separate candidate-scan timer.
 3. To run immediately, click **Manually trigger candidate scan and trading strategy** on the practice page. One full cycle performs the market scan, candidate generation, model assessment, and execution-layer risk checks.
 4. A 09:25 scan may use the opening-auction result to form candidates, but it cannot simulate a fill during the 09:25–09:30 quiet period. Any executable action is queued for a fresh price, session, and risk check after 09:30.
 
@@ -32,7 +32,7 @@ Scheduling ownership is split between two processes:
 
 | Work | Process | Main settings | Behavior |
 |---|---|---|---|
-| Candidate scan and model decision | Dashboard | `DASHBOARD_B1_SCHEDULE_ENABLED`, `DASHBOARD_B1_SCHEDULE_TIMES` | Checks every open position under its original exit discipline first, then sends current-suite candidates into the simulated decision flow; zero-candidate scans still perform position exits |
+| Candidate scan and model decision | Dashboard | `DASHBOARD_B1_SCHEDULE_ENABLED`, `DASHBOARD_PRACTICE_SCHEDULE_TIMES` | Checks every open position under its original exit discipline first, then sends current-suite candidates into the simulated decision flow; zero-candidate scans still perform position exits |
 | Local automatic exits | Cron Scheduler | `DASHBOARD_B3_EXIT_TIME`, `DASHBOARD_TIME_EXIT_TIME` | Refreshes position data at the configured times and checks structural stops, sector deterioration, time boxes, 2R, and 2 ATR rules |
 
 Automatic exits are discrete scheduled checks, not broker-native conditional orders or tick-by-tick monitoring. Refreshing the page only reads state and never creates a simulated fill. Switching away from Sector Tide stops new Sector Tide candidates, while existing Sector Tide positions continue to receive exits according to their stored strategy marks.

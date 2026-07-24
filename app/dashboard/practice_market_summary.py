@@ -14,7 +14,7 @@ from .apis.industry_flow import is_industry_flow_session_timestamp
 
 
 _WRITE_LOCK = threading.Lock()
-SUMMARY_SCHEMA_VERSION = 5
+SUMMARY_SCHEMA_VERSION = 6
 LIVE_SNAPSHOT_MAX_AGE_SECONDS = 300
 _TONE_LABELS = {
     "offensive": "进攻",
@@ -394,13 +394,13 @@ def build_realtime_market_snapshot(
     if errors:
         content_lines.append("抓取异常：" + "；".join(errors))
     summary = (
-        f"点击时核心指数为{index_text}；实时热门行业综合榜为{_hot_rank_text(hot_sectors[:3])}；"
+        f"本次快照核心指数为{index_text}；实时热门行业综合榜为{_hot_rank_text(hot_sectors[:3])}；"
         f"行业主力净流入集中在{_flow_rank_text(inflow[:3])}。"
     )
     complete = not missing_channels
     return {
         "source_kind": "realtime_snapshot",
-        "title": "手动触发实时盘面快照",
+        "title": "本次生成实时盘面快照",
         "time": now.strftime("%Y-%m-%d %H:%M:%S"),
         "content": "\n".join(content_lines),
         "summary": summary,
@@ -611,6 +611,12 @@ def _market_snapshot_without_action_guidance(content: str) -> str:
 
 def _model_messages(scans: list[dict[str, Any]], day: str) -> list[dict[str, str]]:
     sections: list[str] = []
+    has_reference = any(scan.get("source_kind") != "realtime_snapshot" for scan in scans)
+    comparison_instruction = (
+        "2到5条实时快照相对最近已有总结的对比结论，必须明确延续/强化/弱化/反转/轮动中的适用状态"
+        if has_reference
+        else "1到3条对本次实时快照的客观结论，明确说明当前没有更早的A股总结可比"
+    )
     remaining = 60000
     for index, scan in enumerate(scans, 1):
         content = _market_snapshot_without_action_guidance(str(scan.get("content") or ""))
@@ -620,9 +626,9 @@ def _model_messages(scans: list[dict[str, Any]], day: str) -> list[dict[str, str
         if source_kind == "overnight_us":
             source_label = "前一美股交易日总结"
         elif source_kind == "realtime_snapshot":
-            source_label = "手动按钮刚抓取的实时A股盘面"
+            source_label = "本次生成刚抓取的实时A股盘面"
         elif source_kind == "previous_generated_summary":
-            source_label = "本按钮上一版盘面总结"
+            source_label = "上一版此刻盘面总结与评价"
         else:
             source_label = "当日已有A股盘面总结/扫描"
         sections.append(
@@ -632,12 +638,12 @@ def _model_messages(scans: list[dict[str, Any]], day: str) -> list[dict[str, str
         )
     system = (
         "你是牛牛1号的A股日内市场复盘助手。你会收到前一美股交易日总结、今天已有的A股盘面总结/扫描、"
-        "本按钮上一版总结（如有），以及点击按钮时刚抓取的实时A股指数、行业板块涨跌和行业资金流。"
+        "上一版此刻盘面总结（如有），以及本次生成刚抓取的实时A股指数、行业板块涨跌和行业资金流。"
         "实时快照还包含资金流动页的行业主力净额与日内轨迹，以及市场情绪页的红绿盘、涨跌停、炸板和量能数据。"
         "先把美股总结作为A股开盘前的外部背景，再对照A股实际走势说明哪些风险偏好或板块映射得到验证、弱化或反转。"
-        "判断当前热门板块时，必须以手动快照中的“实时热门行业综合榜”为准；概念榜只用于说明该行业内部的细分扩散，"
+        "判断当前热门板块时，必须以本次快照中的“实时热门行业综合榜”为准；概念榜只用于说明该行业内部的细分扩散，"
         "不得用单个概念标签替代或否定综合榜首行业。"
-        "必须以手动触发实时快照作为最新事实，并与时间上最近的已有A股总结及上一版按钮总结进行对比，"
+        "必须以本次实时快照作为最新事实，并与时间上最近的已有A股总结及上一版此刻盘面总结进行对比，"
         "明确指出判断得到延续/强化、出现弱化/反转，或板块资金发生轮动；不得只复述实时榜单。"
         "资金流动页或市场情绪页存在有效数据时，必须分别把两者纳入结论或市场结构，不得只引用指数和板块排行。"
         "不得把美股表现写成A股已经发生的事实，也不得仅凭相关性断言因果。"
@@ -648,7 +654,7 @@ def _model_messages(scans: list[dict[str, Any]], day: str) -> list[dict[str, str
     )
     user = f"""
 日期：{day}
-复盘资料总数：{len(scans)}（包含历史总结/扫描、上一版总结及手动触发实时快照）
+复盘资料总数：{len(scans)}（包含历史总结/扫描、上一版总结及本次触发实时快照）
 
 {chr(10).join(sections)}
 
@@ -657,7 +663,7 @@ def _model_messages(scans: list[dict[str, Any]], day: str) -> list[dict[str, str
   "tone": "offensive|balanced|neutral|cautious|defensive",
   "tone_label": "进攻|平衡|中性|谨慎|防守",
   "summary": "2到4句中文市场总结，说明指数、情绪、资金和板块从已有总结到实时快照如何变化，不要逐条照抄",
-  "comparison_lines": ["2到5条实时快照相对最近已有总结的对比结论，必须明确延续/强化/弱化/反转/轮动中的适用状态"],
+  "comparison_lines": ["{comparison_instruction}"],
   "guidance_lines": ["2到5条纯盘面走势脉络，不得包含任何操作建议"],
   "focus_lines": ["2到5条市场结构信息，例如涨跌广度、成交资金、板块轮动或指数分化"],
   "risk_lines": ["1到4条客观风险现象，不得转化为操作建议"]
@@ -711,7 +717,7 @@ def _local_comparison_lines(
         average = sum(float(row.get("change_pct") or 0) for row in indices) / len(indices)
         direction = "整体偏强" if average >= 0.2 else ("整体偏弱" if average <= -0.2 else "整体震荡")
         lines.append(
-            f"对比{reference_label}，点击时核心指数平均涨跌幅为{average:+.2f}%，最新指数状态{direction}。"
+            f"对比{reference_label}，本次快照核心指数平均涨跌幅为{average:+.2f}%，最新指数状态{direction}。"
         )
 
     strong_names = list(dict.fromkeys(
@@ -771,18 +777,20 @@ def _local_summary(scans: list[dict[str, Any]], day: str) -> dict[str, Any]:
     overnight_us = next((scan for scan in scans if scan.get("source_kind") == "overnight_us"), None)
     previous_summary = next((scan for scan in reversed(scans) if scan.get("source_kind") == "previous_generated_summary"), None)
     realtime = next((scan for scan in reversed(scans) if scan.get("source_kind") == "realtime_snapshot"), None)
-    if not a_share_scans:
+    if not a_share_scans and not realtime:
         return {
             "tone": "neutral", "tone_label": _TONE_LABELS["neutral"],
             "summary": f"{day}暂无可对比的A股盘面总结。", "comparison_lines": [],
             "trend_lines": [], "structure_lines": [], "risk_lines": [], "model_used": False,
         }
-    first_tone = _tone_from_scan(a_share_scans[0])
-    historical_tone = _tone_from_scan(a_share_scans[-1])
+    first_tone = _tone_from_scan(a_share_scans[0]) if a_share_scans else "neutral"
+    historical_tone = _tone_from_scan(a_share_scans[-1]) if a_share_scans else first_tone
     latest_tone = _realtime_tone(realtime, historical_tone)
-    latest_line = _summary_line(a_share_scans[-1])
+    latest_line = _summary_line(a_share_scans[-1]) if a_share_scans else ""
     us_prefix = f"前一美股交易日整体呈{_TONE_LABELS[_tone_from_scan(overnight_us)]}基调。" if overnight_us else ""
-    if len(a_share_scans) == 1:
+    if not a_share_scans:
+        summary = f"{day}已根据此刻实时盘面生成评价，当前风险级别为{_TONE_LABELS[latest_tone]}。"
+    elif len(a_share_scans) == 1:
         summary = f"{day}已完成1次盘面扫描，当前风险级别为{_TONE_LABELS[latest_tone]}。"
     else:
         summary = (
@@ -792,8 +800,8 @@ def _local_summary(scans: list[dict[str, Any]], day: str) -> dict[str, Any]:
     if latest_line:
         summary += latest_line if summary.endswith(("。", "！", "？")) else f" {latest_line}"
     summary = us_prefix + summary
-    reference = previous_summary or a_share_scans[-1]
-    comparison_lines = _local_comparison_lines(reference, realtime) if realtime else []
+    reference = previous_summary or (a_share_scans[-1] if a_share_scans else overnight_us)
+    comparison_lines = _local_comparison_lines(reference, realtime) if realtime and reference else []
     if realtime:
         summary += f"实时快照显示：{_summary_line(realtime)}"
     if comparison_lines:
@@ -846,6 +854,12 @@ def build_daily_market_summary(scans: list[dict[str, Any]], day: str) -> dict[st
             }
     except Exception as exc:
         model_error = f"{type(exc).__name__}: {exc}"
+    tone = str(result.get("tone") or "").strip().lower()
+    if tone not in _TONE_LABELS:
+        label = str(result.get("tone_label") or "").strip()
+        tone = next((key for key, value in _TONE_LABELS.items() if value == label), "neutral")
+    result["tone"] = tone
+    result["tone_label"] = _TONE_LABELS[tone]
     result["model_error"] = model_error
     return result
 
@@ -915,7 +929,7 @@ def _previous_summary_source(cached: dict[str, Any]) -> dict[str, Any] | None:
         content_lines.extend(str(line).strip() for line in cached.get(key) or [] if str(line).strip())
     return {
         "source_kind": "previous_generated_summary",
-        "title": "手动生成的上一版今日盘面总结",
+        "title": "上一版此刻盘面总结与评价",
         "time": str(cached.get("generated_at") or ""),
         "content": "\n".join(content_lines),
         "summary": str(cached.get("summary") or "").strip(),
@@ -930,22 +944,12 @@ def generate_and_store_summary(
     *,
     realtime_snapshot_provider: Callable[[datetime], dict[str, Any]] | None = None,
     require_realtime: bool = False,
+    trigger: str = "manual",
 ) -> dict[str, Any]:
     day = now.strftime("%Y-%m-%d")
     historical_sources = collect_market_replay_sources(records, day)
     a_share_count = sum(1 for scan in historical_sources if scan.get("source_kind") == "a_share_scan")
     us_summary_count = sum(1 for scan in historical_sources if scan.get("source_kind") == "overnight_us")
-    if not a_share_count:
-        return {
-            "ok": False,
-            "available": False,
-            "date": day,
-            "scan_count": 0,
-            "us_summary_count": us_summary_count,
-            "source_count": len(historical_sources),
-            "error": "今日暂无可汇总的A股盘面扫描",
-        }
-
     realtime_source: dict[str, Any] | None = None
     if realtime_snapshot_provider is not None:
         try:
@@ -977,6 +981,16 @@ def generate_and_store_summary(
             "source_count": len(historical_sources),
             "error": f"实时盘面抓取不完整：缺少{missing}" + (f"（{detail}）" if detail else ""),
         }
+    if not a_share_count and not realtime_source:
+        return {
+            "ok": False,
+            "available": False,
+            "date": day,
+            "scan_count": 0,
+            "us_summary_count": us_summary_count,
+            "source_count": len(historical_sources),
+            "error": "暂无可用的A股盘面快照或扫描",
+        }
 
     cached_before = load_cached_summary(cache_file, day)
     previous_source = _previous_summary_source(cached_before)
@@ -997,6 +1011,7 @@ def generate_and_store_summary(
         "available": True,
         "schema_version": SUMMARY_SCHEMA_VERSION,
         "date": day,
+        "trigger": str(trigger or "manual"),
         "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         "scan_count": a_share_count,
         "us_summary_count": us_summary_count,

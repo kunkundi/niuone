@@ -268,7 +268,7 @@ class PracticeMarketSummaryTests(unittest.TestCase):
         messages = practice_market_summary._model_messages(sources, "2026-07-14")
         prompt = "\n".join(message["content"] for message in messages)
 
-        self.assertIn("手动按钮刚抓取的实时A股盘面", prompt)
+        self.assertIn("本次生成刚抓取的实时A股盘面", prompt)
         self.assertIn("行业主力净流入前列", prompt)
         self.assertIn("实时热门行业综合榜", prompt)
         self.assertIn("不得用单个概念标签替代", prompt)
@@ -282,7 +282,7 @@ class PracticeMarketSummaryTests(unittest.TestCase):
         result = practice_market_summary._local_summary(sources, "2026-07-14")
 
         self.assertTrue(result["comparison_lines"])
-        self.assertIn("点击时核心指数平均涨跌幅", result["comparison_lines"][0])
+        self.assertIn("本次快照核心指数平均涨跌幅", result["comparison_lines"][0])
         self.assertTrue(any("轮动" in line for line in result["comparison_lines"]))
         self.assertIn("行业主力净流入集中在半导体", result["summary"])
 
@@ -333,11 +333,49 @@ class PracticeMarketSummaryTests(unittest.TestCase):
         self.assertIn("previous_generated_summary", source_kinds)
         self.assertEqual(source_kinds[-1], "realtime_snapshot")
         self.assertEqual(result["live_snapshot_count"], 1)
+        self.assertEqual(result["trigger"], "manual")
         self.assertEqual(result["previous_summary_count"], 1)
         self.assertEqual(result["realtime_snapshot"]["industry_fund_flow"]["inflow"][0]["name"], "半导体")
         self.assertTrue(result["hot_sector_lines"][0].startswith("半导体"))
         self.assertFalse(status["stale"])
         self.assertEqual(status["live_snapshot_count"], 1)
+
+    def test_scheduled_generation_can_start_from_realtime_snapshot_without_prior_a_share_scan(self):
+        now = datetime(2026, 7, 14, 9, 25, 0)
+        captured = {}
+        original_builder = practice_market_summary.build_daily_market_summary
+        try:
+            def fake_builder(sources, day):
+                captured["sources"] = sources
+                return {
+                    "tone": "balanced",
+                    "tone_label": "平衡",
+                    "summary": "实时盘面整体平衡。",
+                    "comparison_lines": [],
+                    "trend_lines": [],
+                    "structure_lines": [],
+                    "risk_lines": [],
+                    "model_used": False,
+                    "model_error": "",
+                }
+
+            practice_market_summary.build_daily_market_summary = fake_builder
+            with tempfile.TemporaryDirectory() as tmp:
+                result = practice_market_summary.generate_and_store_summary(
+                    [],
+                    Path(tmp) / "summary.json",
+                    now,
+                    realtime_snapshot_provider=lambda _now: self.realtime_source(_now),
+                    require_realtime=True,
+                    trigger="scheduled",
+                )
+        finally:
+            practice_market_summary.build_daily_market_summary = original_builder
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["scan_count"], 0)
+        self.assertEqual(result["trigger"], "scheduled")
+        self.assertEqual([source["source_kind"] for source in captured["sources"]], ["realtime_snapshot"])
 
     def test_status_marks_live_snapshot_stale_after_five_minutes_during_session(self):
         now = datetime(2026, 7, 14, 10, 10, 1)

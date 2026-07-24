@@ -880,6 +880,17 @@ def save_state(state: dict[str, Any]) -> None:
             if str(current.get("last_b1_generated_at") or "") > str(state.get("last_b1_generated_at") or ""):
                 state["last_b1_generated_at"] = current.get("last_b1_generated_at")
 
+            current_market_ctx = current.get("market_decision_context")
+            state_market_ctx = state.get("market_decision_context")
+            current_market_time = str(
+                current_market_ctx.get("source_time") or current_market_ctx.get("context_as_of") or ""
+            ) if isinstance(current_market_ctx, dict) else ""
+            state_market_time = str(
+                state_market_ctx.get("source_time") or state_market_ctx.get("context_as_of") or ""
+            ) if isinstance(state_market_ctx, dict) else ""
+            if current_market_time > state_market_time:
+                state["market_decision_context"] = current_market_ctx
+
         prune_non_trading_day_equity_points(state)
         prune_future_intraday_equity_points(state)
         normalize_daily_equity_history(state)
@@ -2588,6 +2599,99 @@ def derive_market_strategy_context(reports: list[dict[str, Any]] | None, now: da
     return ctx
 
 
+def _market_summary_tone(summary: dict[str, Any]) -> str:
+    tone = str(summary.get("tone") or "").strip().lower()
+    if tone in {"offensive", "balanced", "neutral", "cautious", "defensive"}:
+        return tone
+    label = str(summary.get("tone_label") or "").strip()
+    label_tones = {
+        "进攻": "offensive",
+        "平衡": "balanced",
+        "中性": "neutral",
+        "谨慎": "cautious",
+        "防守": "defensive",
+    }
+    if label in label_tones:
+        return label_tones[label]
+    return classify_market_guidance_tone(
+        "\n".join(
+            str(value or "")
+            for value in (summary.get("summary"), *(summary.get("risk_lines") or []))
+        )
+    )
+
+
+def market_strategy_context_from_summary(
+    summary: dict[str, Any],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build the trading context from the same artifact shown as the market summary."""
+    if not isinstance(summary, dict) or not summary.get("available"):
+        return _market_context_base(now)
+    tone = _market_summary_tone(summary)
+    tone_label = _market_tone_label(tone)
+    summary_text = str(summary.get("summary") or "").strip()
+    guidance = [f"风险级别：{tone_label}"]
+    if summary_text:
+        guidance.append(f"盘面总结：{summary_text}")
+    for key, label, limit in (
+        ("comparison_lines", "实时对比", 2),
+        ("structure_lines", "市场结构", 2),
+        ("risk_lines", "风险变化", 2),
+    ):
+        rows = [str(item).strip() for item in (summary.get(key) or []) if str(item).strip()]
+        guidance.extend(f"{label}：{row}" for row in rows[:limit])
+    generated_at = str(summary.get("generated_at") or summary.get("live_snapshot_at") or "")
+    # Apply limits from the artifact's explicit tone only. Objective summary text
+    # may mention words such as “暂停” or “偏弱” as facts and must not silently
+    # create a second, keyword-derived evaluation.
+    classifier_level = tone_label if tone != "neutral" else "neutral"
+    report = {
+        "title": "此刻盘面总结与评价",
+        "time": generated_at,
+        "content": "",
+        "metadata": {"decision_guidance": [f"风险级别：{classifier_level}"]},
+    }
+    ctx = derive_market_strategy_context([report], now)
+    ctx.update({
+        "tone": tone,
+        "tone_label": tone_label,
+        "guidance_lines": guidance[:8],
+        "source_kind": "practice_market_summary",
+        "source_title": "此刻盘面总结与评价",
+        "source_time": generated_at,
+        "context_kind": "current",
+        "context_as_of": generated_at,
+        "refresh_mode": "market_summary",
+        "trigger": str(summary.get("trigger") or "manual"),
+        "summary": summary_text,
+        "model_used": bool(summary.get("model_used")),
+    })
+    return ctx
+
+
+def persist_market_summary_context(
+    summary: dict[str, Any],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Persist a successful unified summary/evaluation without replacing newer state."""
+    ctx = market_strategy_context_from_summary(summary, now)
+    if not ctx.get("available"):
+        raise ValueError("此刻盘面总结不可用")
+    compact = compact_market_strategy_context(ctx)
+    with state_file_write_lock():
+        state = load_state()
+        existing = state.get("market_decision_context")
+        existing_ctx = existing if isinstance(existing, dict) else {}
+        existing_dt = parse_ts(str(existing_ctx.get("source_time") or ""))
+        current_dt = parse_ts(str(compact.get("source_time") or ""))
+        if existing_dt and current_dt and existing_dt > current_dt:
+            return dict(existing_ctx)
+        state["market_decision_context"] = compact
+        save_state(state)
+    return ctx
+
+
 def _market_session_elapsed_minutes(source_dt: datetime) -> int:
     minute = source_dt.hour * 60 + source_dt.minute
     morning_start = 9 * 60 + 30
@@ -2809,6 +2913,12 @@ def market_strategy_context_for_b1(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Use the current B1 breadth snapshot first, with archived reports as fallback."""
+    payload = b1_payload if isinstance(b1_payload, dict) else {}
+    unified_summary = payload.get("market_summary")
+    if isinstance(unified_summary, dict):
+        if unified_summary.get("available"):
+            return market_strategy_context_from_summary(unified_summary, now)
+        return _market_context_base(now)
     state = load_state()
     previous_ctx = state.get("market_decision_context") if isinstance(state.get("market_decision_context"), dict) else {}
     previous_snapshot = previous_ctx.get("market_snapshot") if isinstance(previous_ctx.get("market_snapshot"), dict) else {}
@@ -2860,9 +2970,10 @@ def compact_market_strategy_context(ctx: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key in (
         "enabled", "available", "tone", "tone_label", "phase", "max_open_positions",
-        "max_new_buys_per_decision", "allow_new_buys", "source_title", "source_time",
+        "max_new_buys_per_decision", "max_total_position_pct", "min_cash_reserve_pct",
+        "buy_budget_multiplier", "allow_new_buys", "source_title", "source_time",
         "session_note", "guidance_lines", "overnight_us", "context_kind", "context_as_of",
-        "refresh_mode", "market_snapshot",
+        "refresh_mode", "market_snapshot", "source_kind", "trigger", "summary", "model_used",
     ):
         value = ctx.get(key)
         if key == "overnight_us" and not (isinstance(value, dict) and value.get("available")):
@@ -2877,11 +2988,23 @@ def select_current_market_strategy_context(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Return the newest current context from reports or the last B1 refresh."""
-    report_ctx = compact_market_strategy_context(current_market_strategy_context(now))
+    # Keep the historical no-argument call contract: runtime integrations and
+    # tests monkeypatch this helper with zero-argument providers.
+    report_ctx = compact_market_strategy_context(current_market_strategy_context())
     saved = (state or {}).get("market_decision_context")
     saved_ctx = dict(saved) if isinstance(saved, dict) else {}
-    report_dt = parse_ts(str(report_ctx.get("source_time") or ""))
+    now = now or datetime.now()
     saved_dt = parse_ts(str(saved_ctx.get("source_time") or ""))
+    if (
+        saved_ctx.get("source_kind") == "practice_market_summary"
+        and saved_dt is not None
+        and saved_dt.date() == now.date()
+    ):
+        selected = saved_ctx
+        selected["context_kind"] = "current"
+        selected["context_as_of"] = selected.get("source_time") or selected.get("context_as_of") or ""
+        return selected
+    report_dt = parse_ts(str(report_ctx.get("source_time") or ""))
     if saved_ctx and saved_dt and (report_dt is None or saved_dt > report_dt):
         selected = saved_ctx
     else:
@@ -2949,9 +3072,9 @@ def format_market_strategy_context_for_prompt(ctx: dict[str, Any]) -> str:
         lines.extend(f"- {line}" for line in guidance[:8])
     else:
         if ctx.get("phase") in {"morning", "lunch"}:
-            lines.append("- 暂无今日盘面总结，按午盘前保留仓位和静态风控执行。")
+            lines.append("- 暂无此刻盘面总结，按午盘前保留仓位和静态风控执行。")
         else:
-            lines.append("- 暂无今日盘面总结，按静态风控执行。")
+            lines.append("- 暂无此刻盘面总结，按静态风控执行。")
     return "\n".join(lines)
 
 
@@ -6428,7 +6551,7 @@ def execute_due_pending_decisions(now: datetime | None = None) -> dict[str, Any]
             "schedule_slot": entry.get("schedule_slot") or "",
         }
         candidates = entry.get("candidates") or []
-        market_strategy_ctx = current_market_strategy_context()
+        market_strategy_ctx = select_current_market_strategy_context(state, now)
         refine_overlimit_buy_actions(
             decision,
             state,

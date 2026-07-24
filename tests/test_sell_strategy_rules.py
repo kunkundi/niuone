@@ -889,6 +889,104 @@ class SellStrategyRuleTests(unittest.TestCase):
         self.assertEqual(ctx["min_cash_reserve_pct"], 60.0)
         self.assertEqual(ctx["buy_budget_multiplier"], 0.35)
 
+    def test_market_summary_tone_is_the_market_evaluation_and_risk_source(self):
+        summary = {
+            "ok": True,
+            "available": True,
+            "tone": "cautious",
+            "tone_label": "谨慎",
+            "summary": "核心指数震荡，行业资金分化。",
+            "comparison_lines": ["头部行业净流入较早盘弱化。"],
+            "structure_lines": ["红盘家数少于绿盘家数。"],
+            "risk_lines": ["跌停家数增加。"],
+            "generated_at": "2026-07-10 13:30:04",
+            "trigger": "scheduled",
+            "model_used": True,
+        }
+
+        ctx = trader.market_strategy_context_from_summary(
+            summary,
+            datetime(2026, 7, 10, 13, 30, 5),
+        )
+
+        self.assertEqual(ctx["tone"], "cautious")
+        self.assertEqual(ctx["tone_label"], "谨慎")
+        self.assertEqual(ctx["source_kind"], "practice_market_summary")
+        self.assertEqual(ctx["source_title"], "此刻盘面总结与评价")
+        self.assertEqual(ctx["refresh_mode"], "market_summary")
+        self.assertEqual(ctx["max_open_positions"], 3)
+        self.assertEqual(ctx["max_total_position_pct"], 50.0)
+        self.assertTrue(any("核心指数震荡" in line for line in ctx["guidance_lines"]))
+
+    def test_b1_context_prefers_unified_summary_over_separate_breadth_rule(self):
+        payload = {
+            "generated_at": "2026-07-10 10:05:00",
+            "market_summary": {
+                "ok": True,
+                "available": True,
+                "tone": "defensive",
+                "tone_label": "防守",
+                "summary": "盘面风险结构偏弱。",
+                "generated_at": "2026-07-10 10:05:01",
+                "trigger": "scheduled",
+            },
+            "market_snapshot": {
+                "quote_time": "2026-07-10 10:05:00",
+                "pool_count": 3100,
+                "sample_count": 3000,
+                "coverage": 0.9677,
+                "up": 2500,
+                "down": 400,
+                "flat": 100,
+                "limit_up": 100,
+                "limit_down": 1,
+            },
+        }
+
+        ctx = trader.market_strategy_context_for_b1(
+            payload,
+            datetime(2026, 7, 10, 10, 5, 2),
+        )
+
+        self.assertEqual(ctx["tone"], "defensive")
+        self.assertEqual(ctx["source_kind"], "practice_market_summary")
+        self.assertEqual(ctx["max_open_positions"], 2)
+
+    def test_unified_summary_preserves_neutral_as_neutral(self):
+        ctx = trader.market_strategy_context_from_summary(
+            {
+                "available": True,
+                "tone": "neutral",
+                "tone_label": "中性",
+                "summary": "核心指数涨跌互现，市场结构中性。",
+                "generated_at": "2026-07-10 13:30:04",
+            },
+            datetime(2026, 7, 10, 13, 30, 5),
+        )
+
+        self.assertEqual(ctx["tone"], "neutral")
+        self.assertEqual(ctx["tone_label"], "中性")
+        self.assertEqual(ctx["max_open_positions"], trader.MAX_OPEN_POSITIONS)
+        self.assertEqual(ctx["guidance_lines"][0], "风险级别：中性")
+
+    def test_unified_summary_limits_follow_explicit_tone_not_summary_keywords(self):
+        ctx = trader.market_strategy_context_from_summary(
+            {
+                "available": True,
+                "tone": "balanced",
+                "tone_label": "平衡",
+                "summary": "部分板块午间暂停交易，弱势行业仍偏弱。",
+                "risk_lines": ["局部结构需要继续观察。"],
+                "generated_at": "2026-07-10 13:30:04",
+            },
+            datetime(2026, 7, 10, 13, 30, 5),
+        )
+
+        self.assertEqual(ctx["tone"], "balanced")
+        self.assertTrue(ctx["allow_new_buys"])
+        self.assertEqual(ctx["max_open_positions"], 4)
+        self.assertEqual(ctx["max_total_position_pct"], 65.0)
+
     def test_periodic_b1_snapshot_overrides_stale_report_tone(self):
         original_loader = trader.load_today_market_monitor_reports
         try:

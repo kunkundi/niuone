@@ -27,6 +27,12 @@ const sourceParts = computed(() => {
   return parts
 })
 const sourceCountText = computed(() => sourceParts.value.join(' · '))
+const evaluationText = computed(() => String(props.summary.summary || '').trim()
+  || (Array.isArray(props.summary.comparison_lines) ? props.summary.comparison_lines[0] : '')
+  || '已更新')
+const evaluationTime = computed(() => String(
+  props.summary.generated_at || props.summary.live_snapshot_at || '',
+).slice(5, 16))
 const staleText = computed(() => {
   if (!props.summary.stale) return ''
   const reasons = Array.isArray(props.summary.stale_reasons)
@@ -36,10 +42,10 @@ const staleText = computed(() => {
 })
 const statusText = computed(() => {
   if (props.generating || props.summary.running) {
-    return props.summary.stage_label || '正在生成今日盘面总结'
+    return props.summary.stage_label || '正在生成此刻盘面总结与评价'
   }
   if (props.summary.loading) return '正在读取今日盘面扫描'
-  return scanCount.value ? `复盘资料：${sourceCountText.value}` : '今日暂无A股盘面扫描'
+  return props.summary.available ? `复盘资料：${sourceCountText.value}` : '暂无可用盘面资料'
 })
 const sections = computed(() => [
   ['实时热门行业（涨幅与主力净流入交叉确认）', props.summary.hot_sector_lines, ''],
@@ -81,6 +87,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <div v-if="summary.available && summary.summary" class="practice-market-evaluation">
+    <span class="practice-market-evaluation-label">盘面评价 · {{ summary.tone_label || '中性' }}</span>
+    <span>{{ evaluationText }}</span>
+    <time>{{ evaluationTime }}</time>
+  </div>
   <div class="practice-market-summary-action">
     <div class="practice-market-summary-primary-actions">
       <button
@@ -97,7 +108,7 @@ onBeforeUnmount(() => {
         :disabled="generating"
         :aria-busy="generating ? 'true' : undefined"
         @click="emit('generate')"
-      >{{ generating ? '正在生成盘面总结…' : '生成今日盘面总结' }}</button>
+      >{{ generating ? '正在生成盘面总结与评价…' : '生成此刻盘面总结与评价' }}</button>
     </div>
     <button
       v-if="summary.available && summary.summary"
@@ -106,7 +117,7 @@ onBeforeUnmount(() => {
       class="practice-market-summary-view-btn"
       aria-haspopup="dialog"
       @click="openDialog"
-    >查看总结</button>
+    >查看总结与评价</button>
     <span class="practice-market-summary-status">{{ statusText }}{{ staleText }}</span>
   </div>
   <div v-if="summary.error" class="practice-market-summary-error">{{ summary.error }}</div>
@@ -127,7 +138,7 @@ onBeforeUnmount(() => {
       >
         <header class="practice-market-summary-dialog-head">
           <div class="practice-market-summary-dialog-heading">
-            <h2 id="practiceMarketSummaryDialogTitle">今日盘面总结 · {{ summary.tone_label || '中性' }}</h2>
+            <h2 id="practiceMarketSummaryDialogTitle">此刻盘面总结与评价 · {{ summary.tone_label || '中性' }}</h2>
             <div>{{ sourceCountText }} · {{ String(summary.generated_at || '').slice(5, 16) }}</div>
           </div>
           <button
@@ -135,7 +146,7 @@ onBeforeUnmount(() => {
             type="button"
             class="practice-market-summary-close"
             title="关闭"
-            aria-label="关闭今日盘面总结"
+            aria-label="关闭此刻盘面总结与评价"
             @click="closeDialog()"
           >x</button>
         </header>

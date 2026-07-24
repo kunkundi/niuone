@@ -652,7 +652,7 @@ class FastApiDashboardTests(unittest.TestCase):
         persisted = {
             "ok": True,
             "changed": True,
-            "changed_names": ["DASHBOARD_B1_SCHEDULE_TIMES"],
+            "changed_names": ["DASHBOARD_PRACTICE_SCHEDULE_TIMES"],
             "runtime": {"ok": True},
         }
         with (
@@ -660,7 +660,7 @@ class FastApiDashboardTests(unittest.TestCase):
             patch.object(
                 self.legacy,
                 "admin_visible_env_names",
-                return_value=["DASHBOARD_B1_SCHEDULE_TIMES"],
+                return_value=["DASHBOARD_PRACTICE_SCHEDULE_TIMES"],
             ),
             patch.object(
                 self.legacy,
@@ -687,8 +687,8 @@ class FastApiDashboardTests(unittest.TestCase):
             response = self.client.post(
                 "/api/admin/config/env",
                 content=(
-                    "env__DASHBOARD_B1_SCHEDULE_TIMES=09%3A30&"
-                    "env__DASHBOARD_B1_SCHEDULE_TIMES=10%3A00&"
+                    "env__DASHBOARD_PRACTICE_SCHEDULE_TIMES=09%3A30&"
+                    "env__DASHBOARD_PRACTICE_SCHEDULE_TIMES=10%3A00&"
                     "env__NOT_ALLOWED=ignored&notification_remove__telegram=1"
                 ),
                 headers={
@@ -706,7 +706,7 @@ class FastApiDashboardTests(unittest.TestCase):
         self.assertTrue(response.json()["ok"])
         self.assertEqual(response.json()["restart"]["skipped"], "hot_applied")
         self.assertEqual(response.json()["config"], {"items": []})
-        expected_updates = {"DASHBOARD_B1_SCHEDULE_TIMES": "09:30,10:00"}
+        expected_updates = {"DASHBOARD_PRACTICE_SCHEDULE_TIMES": "09:30,10:00"}
         normalize.assert_called_once_with(expected_updates)
         validate.assert_called_once_with(expected_updates)
         removed.assert_called_once_with({"telegram"})

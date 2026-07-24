@@ -15,10 +15,6 @@ const props = defineProps({
 const emit = defineEmits(['manual-cycle', 'market-summary', 'resume'])
 
 const pnl = computed(() => Number(props.practice.total_pnl || 0))
-const marketContext = computed(() => props.practice.market_decision_context || {})
-const marketGuidance = computed(() => Array.isArray(marketContext.value.guidance_lines)
-  ? marketContext.value.guidance_lines.slice(0, 2)
-  : [])
 const manualRunning = computed(() => props.manualCycle.running === true)
 const manualButtonText = computed(() => manualRunning.value
   ? (props.manualCycle.stage_label || '本轮执行中…')
@@ -29,11 +25,6 @@ const manualButtonText = computed(() => manualRunning.value
   <section class="sector-cloud" style="margin-bottom:18px">
     <div class="practice-account-head">
       <h3>模拟账户</h3>
-    </div>
-    <div v-if="marketContext.available || marketContext.tone_label" class="practice-market-evaluation">
-      <span class="practice-market-evaluation-label">盘面评价 · {{ marketContext.tone_label || '中性' }}</span>
-      <span>{{ marketGuidance.join('；') || marketContext.source_title || '已更新' }}</span>
-      <time>{{ String(marketContext.source_time || marketContext.context_as_of || '').slice(5, 16) }}</time>
     </div>
     <PracticeMarketSummary
       :summary="marketSummary"

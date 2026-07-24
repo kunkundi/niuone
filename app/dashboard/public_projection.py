@@ -12,7 +12,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 
-PUBLIC_SCHEMA_VERSION = 2
+PUBLIC_SCHEMA_VERSION = 3
 
 ACCOUNT_FIELDS = (
     "initial_cash",
@@ -297,7 +297,9 @@ def build_public_sections(
         "schema_version": PUBLIC_SCHEMA_VERSION,
         "available": bool(market_summary.get("available") or market_summary.get("summary")),
         "summary": _public_scalar(market_summary.get("summary") or market_summary.get("content") or ""),
-        "status": _public_scalar(market_summary.get("status") or ""),
+        "tone_label": _public_scalar(market_summary.get("tone_label") or ""),
+        "generated_at": _public_scalar(market_summary.get("generated_at") or ""),
+        "status": _public_scalar(market_summary.get("stage") or market_summary.get("status") or ""),
     }
     return {
         "metadata": metadata,

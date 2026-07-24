@@ -131,16 +131,20 @@ Industry fund-flow snapshots, samples, and the market-sentiment curve use 09:00 
 
 ### 3.2 Practice-Strategy Scheduling and Process Ownership
 
-Individual practice strategies do not own separate candidate-scan timers. At every configured time, the B1 scheduler inside the Dashboard starts the shared scanner. The scanner reads `DASHBOARD_ACTIVE_STRATEGY` and runs only the scorers in that active suite. After a successful scan, the scheduled path synchronously runs the model assessment and simulated execution-layer checks.
+Individual practice strategies do not own separate candidate-scan timers. At every configured time, the B1 scheduler inside the Dashboard first generates one unified **Current Market Summary and Evaluation** from live indexes, industry performance, industry main-fund flow, market breadth/turnover, and existing market scans, then starts the shared scanner. The scanner reads `DASHBOARD_ACTIVE_STRATEGY` and runs only the scorers in that active suite. After a successful scan, the scheduled path passes that same artifact into the model assessment and simulated execution-layer checks without regenerating it.
+
+The Practice page no longer derives a separate market-evaluation label from B1 breadth thresholds. The summary artifact's `tone` / `tone_label` is both the displayed evaluation and the trading-context risk level; when the model is unavailable, the same module's local summarizer is used. Clicking **Generate Current Market Summary and Evaluation** or **Manually run candidate scan and trading strategy** refreshes this artifact, while scheduled refreshes reuse `DASHBOARD_PRACTICE_SCHEDULE_TIMES`. A failed generation preserves the latest valid same-day artifact instead of replacing it with an incomplete snapshot.
 
 | Setting | Default | Scope | Application |
 |---|---|---|---|
 | `DASHBOARD_ACTIVE_STRATEGY` | `zettaranc` | New candidates, model prompt, and entry rules | Hot-applied; used by the next scan |
 | `DASHBOARD_B1_SCHEDULE_ENABLED` | `1` | Starts the Dashboard's built-in candidate scheduler | Dashboard restart required |
-| `DASHBOARD_B1_SCHEDULE_TIMES` | `09:25,10:00,10:30,11:00,11:20,13:00,13:30,14:00,14:30,14:50` | Candidate-scan and trading-decision times | Hot-applied |
+| `DASHBOARD_PRACTICE_SCHEDULE_TIMES` | `09:25,10:00,10:30,11:00,11:20,13:00,13:30,14:00,14:30,14:50` | Practice summary/evaluation, active-strategy scan, and trading-decision times | Hot-applied; legacy `DASHBOARD_B1_SCHEDULE_TIMES` is read only for compatibility |
 | `DASHBOARD_B1_SCHEDULE_CATCHUP_MINUTES` | `35` | Catch-up window after brief Dashboard downtime | Dashboard restart required |
 | `DASHBOARD_B3_EXIT_TIME` | `09:37` | Opening automatic-exit check | Read by a subsequent Cron cycle |
 | `DASHBOARD_TIME_EXIT_TIME` | `14:45` | End-of-day automatic exits and time-box checks | Read by a subsequent Cron cycle |
+
+If an existing deployment defines only `DASHBOARD_B1_SCHEDULE_TIMES`, the Dashboard continues to read that value. When both keys are present, `DASHBOARD_PRACTICE_SCHEDULE_TIMES` wins. The settings page exposes only the new key; its next save writes the new key and removes the legacy key from the local `dashboard.env` file.
 
 The 09:25 scan falls in the quiet period after the opening auction. The system may generate candidates and model actions, but it does not book a fill at the auction reference price. Executable actions are queued, and after 09:30 the Dashboard's deferred-decision worker rechecks the session, current price, cash, and strategy risk budgets.
 
@@ -154,7 +158,7 @@ When a strategy appears not to trigger, check in this order:
 
 1. Confirm that `DASHBOARD_ACTIVE_STRATEGY` in `.local-data/dashboard.env` names the expected suite.
 2. Confirm that `DASHBOARD_B1_SCHEDULE_ENABLED` is enabled and the Dashboard process is still running.
-3. Confirm that the current time is at a `DASHBOARD_B1_SCHEDULE_TIMES` slot or within the catch-up window.
+3. Confirm that the current time is at a `DASHBOARD_PRACTICE_SCHEDULE_TIMES` slot or within the catch-up window.
 4. Inspect `.local-data/runtime/cron/state/b1_schedule_state.json` for an `ok`, `error`, or `skipped` status for the slot.
 5. Inspect `.local-data/runtime/cron/output/multi_strategy_latest.json` for a recent `generated_at`, the active suite's candidates, and required context fields.
 6. If automatic exits did not run, inspect the Cron Scheduler process and `.local-data/runtime/logs/niuone_cron_scheduler.log`.

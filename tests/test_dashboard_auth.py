@@ -896,17 +896,27 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(payload['schedule_slot'], '2026-07-10 10:00')
 
     def test_no_candidate_b1_still_refreshes_and_logs_market_context(self):
-        calls = {'refresh_payload': None, 'entries': []}
+        calls = {'summary_trigger': '', 'entries': []}
+        summary = {
+            'ok': True,
+            'available': True,
+            'tone': 'balanced',
+            'tone_label': '平衡',
+            'summary': '实时指数与资金结构平衡。',
+            'generated_at': '2026-07-10 10:00:04',
+            'trigger': 'scheduled',
+        }
         refreshed = {
             'tone': 'balanced',
             'tone_label': '平衡',
-            'source_title': 'B1定时选股实时盘面',
+            'source_title': '此刻盘面总结与评价',
             'source_time': '2026-07-10 10:00:04',
+            'source_kind': 'practice_market_summary',
         }
 
         class TraderStub:
-            def refresh_market_strategy_context_for_b1(self, payload):
-                calls['refresh_payload'] = payload
+            def market_strategy_context_from_summary(self, payload, now=None):
+                calls['summary_payload'] = payload
                 return dict(refreshed)
 
             def compact_market_strategy_context(self, ctx):
@@ -923,8 +933,12 @@ class DashboardAuthTests(unittest.TestCase):
                 return {'decision': {'summary': '持仓退出检查完成'}, 'executed': []}
 
         original_get_trader = dashboard.get_trader_module
+        original_refresh_summary = dashboard.refresh_practice_market_summary_for_decision
         try:
             dashboard.get_trader_module = lambda: TraderStub()
+            dashboard.refresh_practice_market_summary_for_decision = (
+                lambda trigger: calls.__setitem__('summary_trigger', trigger) or dict(summary)
+            )
             result = dashboard.run_practice_decision_logged({
                 'generated_at': '2026-07-10 10:00:05',
                 'items': [],
@@ -933,15 +947,72 @@ class DashboardAuthTests(unittest.TestCase):
             })
         finally:
             dashboard.get_trader_module = original_get_trader
+            dashboard.refresh_practice_market_summary_for_decision = original_refresh_summary
 
         self.assertEqual(result['decision']['summary'], '持仓退出检查完成')
         self.assertEqual(calls['decision_payload']['items'], [])
-        self.assertEqual(calls['refresh_payload']['market_snapshot']['sample_count'], 3000)
+        self.assertEqual(calls['summary_trigger'], 'scheduled')
+        self.assertEqual(calls['summary_payload']['summary'], '实时指数与资金结构平衡。')
+        self.assertEqual(calls['decision_payload']['market_summary']['trigger'], 'scheduled')
         entry, mark_done = calls['entries'][0]
         self.assertFalse(mark_done)
         self.assertEqual(entry['market_decision_context']['tone'], 'balanced')
-        self.assertEqual(entry['decision']['market_guidance']['source_title'], 'B1定时选股实时盘面')
+        self.assertEqual(entry['decision']['market_guidance']['source_title'], '此刻盘面总结与评价')
         self.assertIn('继续检查已有持仓的原策略退出规则', entry['decision']['summary'])
+
+    def test_scheduled_b1_refreshes_unified_summary_before_scan_and_reuses_it_for_decision(self):
+        calls = []
+        summary = {
+            'ok': True,
+            'available': True,
+            'tone': 'balanced',
+            'tone_label': '平衡',
+            'summary': '定时此刻盘面。',
+            'generated_at': '2026-07-10 10:00:01',
+            'trigger': 'scheduled',
+        }
+        originals = {
+            'b1_cache_generated_for_slot': dashboard.b1_cache_generated_for_slot,
+            '_b1_schedule_slot_lag_seconds': dashboard._b1_schedule_slot_lag_seconds,
+            '_mark_b1_schedule_slot': dashboard._mark_b1_schedule_slot,
+            'refresh_practice_market_summary_for_decision': dashboard.refresh_practice_market_summary_for_decision,
+            'trigger_b1_scan': dashboard.trigger_b1_scan,
+            'run_practice_decision_logged': dashboard.run_practice_decision_logged,
+        }
+        try:
+            dashboard.b1_cache_generated_for_slot = lambda _slot: False
+            dashboard._b1_schedule_slot_lag_seconds = lambda _slot: 0
+            dashboard._mark_b1_schedule_slot = lambda slot, status, **fields: calls.append(
+                ('mark', status, fields)
+            )
+            dashboard.refresh_practice_market_summary_for_decision = lambda trigger: (
+                calls.append(('summary', trigger)) or dict(summary)
+            )
+            dashboard.trigger_b1_scan = lambda **kwargs: (
+                calls.append(('scan', kwargs['decision_mode']))
+                or {'items': [], 'count': 0, 'generated_at': '2026-07-10 10:00:05', 'error': ''}
+            )
+
+            def fake_decision(payload, *, record_start=False, refresh_market_summary=True):
+                calls.append((
+                    'decision',
+                    record_start,
+                    refresh_market_summary,
+                    payload['market_summary']['generated_at'],
+                ))
+                return {'executed': []}
+
+            dashboard.run_practice_decision_logged = fake_decision
+
+            dashboard.run_scheduled_b1_scan('2026-07-10 10:00')
+        finally:
+            for name, value in originals.items():
+                setattr(dashboard, name, value)
+
+        self.assertLess(calls.index(('summary', 'scheduled')), calls.index(('scan', 'none')))
+        self.assertIn(('scan', 'none'), calls)
+        self.assertIn(('decision', True, False, '2026-07-10 10:00:01'), calls)
+        self.assertEqual(calls[-1][0:2], ('mark', 'ok'))
 
     def test_manual_practice_cycle_stays_locked_until_trade_decision_finishes(self):
         scan_started = threading.Event()
@@ -3678,11 +3749,14 @@ process.stdout.write(JSON.stringify({{
 
     def test_practice_market_summary_generation_runs_in_one_background_thread(self):
         original_generate = dashboard.generate_practice_market_summary
+        original_publish = dashboard._publish_practice_market_summary_context
         original_state = dict(dashboard.PRACTICE_MARKET_SUMMARY_STATE)
         started = threading.Event()
         release = threading.Event()
+        triggers = []
 
-        def fake_generate():
+        def fake_generate(trigger="manual"):
+            triggers.append(trigger)
             started.set()
             if not release.wait(2):
                 raise TimeoutError("test did not release summary generation")
@@ -3694,6 +3768,9 @@ process.stdout.write(JSON.stringify({{
 
         try:
             dashboard.generate_practice_market_summary = fake_generate
+            dashboard._publish_practice_market_summary_context = lambda payload: {
+                "tone": "balanced", "tone_label": "平衡",
+            }
             accepted = dashboard.start_practice_market_summary()
             self.assertTrue(accepted["accepted"])
             self.assertTrue(accepted["running"])
@@ -3711,10 +3788,12 @@ process.stdout.write(JSON.stringify({{
                 threading.Event().wait(0.01)
             self.assertFalse(status["running"])
             self.assertEqual(status["stage"], "completed")
+            self.assertEqual(status["stage_label"], "此刻盘面总结与评价已更新")
             self.assertEqual(status["generated_at"], "2026-07-14 12:00:00")
             self.assertEqual(status["error"], "")
+            self.assertEqual(triggers, ["manual"])
 
-            dashboard.generate_practice_market_summary = lambda: {
+            dashboard.generate_practice_market_summary = lambda trigger="manual": {
                 "ok": False,
                 "error": "实时盘面抓取不完整：缺少A股实时指数",
             }
@@ -3737,6 +3816,7 @@ process.stdout.write(JSON.stringify({{
                     break
                 threading.Event().wait(0.01)
             dashboard.generate_practice_market_summary = original_generate
+            dashboard._publish_practice_market_summary_context = original_publish
             with dashboard.PRACTICE_MARKET_SUMMARY_STATE_LOCK:
                 dashboard.PRACTICE_MARKET_SUMMARY_STATE.clear()
                 dashboard.PRACTICE_MARKET_SUMMARY_STATE.update(original_state)
@@ -3745,6 +3825,43 @@ process.stdout.write(JSON.stringify({{
         self.assertIn("scheduleMarketSummaryPoll()", PRACTICE_DATA)
         self.assertIn("盘面总结启动请求超时", PRACTICE_DATA)
 
+    def test_scheduled_summary_failure_keeps_last_valid_unified_evaluation(self):
+        cached = {
+            "ok": True,
+            "available": True,
+            "tone": "cautious",
+            "tone_label": "谨慎",
+            "summary": "上一份有效总结。",
+            "generated_at": "2026-07-14 10:00:00",
+        }
+        original_generate = dashboard.generate_practice_market_summary
+        original_cached = dashboard._cached_practice_market_summary
+        original_lock = dashboard.PRACTICE_MARKET_SUMMARY_LOCK
+        original_state = dashboard.PRACTICE_MARKET_SUMMARY_STATE
+        try:
+            dashboard.generate_practice_market_summary = lambda trigger="scheduled": {
+                "ok": False,
+                "available": False,
+                "error": "实时盘面抓取不完整：缺少行业板块资金流",
+            }
+            dashboard._cached_practice_market_summary = lambda: dict(cached)
+            dashboard.PRACTICE_MARKET_SUMMARY_LOCK = threading.Lock()
+            dashboard.PRACTICE_MARKET_SUMMARY_STATE = {"running": False, "stage": "idle"}
+
+            result = dashboard.refresh_practice_market_summary_for_decision("scheduled")
+
+            self.assertEqual(result, cached)
+            self.assertEqual(dashboard.PRACTICE_MARKET_SUMMARY_STATE["stage"], "error")
+            self.assertIn("缺少行业板块资金流", dashboard.PRACTICE_MARKET_SUMMARY_STATE["error"])
+            self.assertTrue(dashboard.PRACTICE_MARKET_SUMMARY_LOCK.acquire(blocking=False))
+        finally:
+            if dashboard.PRACTICE_MARKET_SUMMARY_LOCK.locked():
+                dashboard.PRACTICE_MARKET_SUMMARY_LOCK.release()
+            dashboard.generate_practice_market_summary = original_generate
+            dashboard._cached_practice_market_summary = original_cached
+            dashboard.PRACTICE_MARKET_SUMMARY_LOCK = original_lock
+            dashboard.PRACTICE_MARKET_SUMMARY_STATE = original_state
+
     def test_practice_market_summary_prompts_for_admin_and_retries_generation(self):
         self.assertIn("error?.status === 403", PRACTICE_DATA)
         self.assertIn("error?.code === 'admin_password_required'", PRACTICE_DATA)
@@ -3752,6 +3869,7 @@ process.stdout.write(JSON.stringify({{
         self.assertIn("await authenticateAdmin(adminAuth.credential)", PRACTICE_COMPONENTS)
         self.assertIn('@market-summary="generateMarketSummary"', PRACTICE_COMPONENTS)
         self.assertIn('class="dragon-tiger-admin-backdrop"', PRACTICE_COMPONENTS)
+        self.assertIn("title: '生成此刻盘面总结与评价'", PRACTICE_COMPONENTS)
         self.assertIn("submitLabel: '验证并生成'", PRACTICE_COMPONENTS)
 
     def test_practice_market_summary_result_opens_in_modal_without_inline_card(self):
@@ -3759,6 +3877,15 @@ process.stdout.write(JSON.stringify({{
             ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticeMarketSummary.vue'
         ).read_text(encoding='utf-8')
 
+        overview = (
+            ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticeAccountOverview.vue'
+        ).read_text(encoding='utf-8')
+
+        self.assertIn("生成此刻盘面总结与评价", component)
+        self.assertIn("此刻盘面总结与评价 ·", component)
+        self.assertNotIn("生成今日盘面总结", component)
+        self.assertIn('盘面评价 · {{ summary.tone_label', component)
+        self.assertNotIn('marketContext', overview)
         self.assertIn('class="practice-market-summary-view-btn"', component)
         self.assertIn('aria-haspopup="dialog"', component)
         self.assertIn('<Teleport to="body">', component)
@@ -4485,7 +4612,7 @@ process.stdout.write(JSON.stringify({{
 
     def test_business_settings_are_local_to_dashboard_env(self):
         original_env_file = dashboard.DASHBOARD_ENV_FILE
-        original_b1_times = dashboard.B1_SCHEDULE_TIMES
+        original_schedule_times = dashboard.PRACTICE_SCHEDULE_TIMES
         original_b1_enabled = dashboard.B1_SCHEDULE_ENABLED
         original_indices_ttl = dashboard.API_TTLS["indices"]
         original_env_values = {name: dashboard.os.environ.get(name) for name in dashboard.ADMIN_VISIBLE_ENV_NAMES}
@@ -4500,7 +4627,7 @@ process.stdout.write(JSON.stringify({{
                 'DASHBOARD_NEWS_CONTEXT_LENGTH': '128K',
                 'DASHBOARD_NEWS_BASE_URL': 'https://news.example/v1',
                 'DASHBOARD_NEWS_API_KEY': 'news-secret',
-                'DASHBOARD_B1_SCHEDULE_TIMES': '09:25, 10:00, 14:50',
+                'DASHBOARD_PRACTICE_SCHEDULE_TIMES': '09:25, 10:00, 14:50',
                 'DASHBOARD_US_MARKET_SUMMARY_CRON': '08:01',
                 'DASHBOARD_US_RATING_CRON': '10:30',
                 'DASHBOARD_MARKET_AUCTION_CRON': '09:26',
@@ -4515,7 +4642,7 @@ process.stdout.write(JSON.stringify({{
             payload = dashboard.build_admin_config_payload()
         finally:
             dashboard.DASHBOARD_ENV_FILE = original_env_file
-            dashboard.B1_SCHEDULE_TIMES = original_b1_times
+            dashboard.PRACTICE_SCHEDULE_TIMES = original_schedule_times
             dashboard.B1_SCHEDULE_ENABLED = original_b1_enabled
             dashboard.API_TTLS["indices"] = original_indices_ttl
             for name, value in original_env_values.items():
@@ -4531,7 +4658,7 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(parsed['DASHBOARD_NEWS_CONTEXT_LENGTH'], '128000')
         self.assertEqual(parsed['DASHBOARD_NEWS_BASE_URL'], 'https://news.example/v1')
         self.assertEqual(parsed['DASHBOARD_NEWS_API_KEY'], 'news-secret')
-        self.assertEqual(parsed['DASHBOARD_B1_SCHEDULE_TIMES'], '09:25,10:00,14:50')
+        self.assertEqual(parsed['DASHBOARD_PRACTICE_SCHEDULE_TIMES'], '09:25,10:00,14:50')
         self.assertEqual(parsed['DASHBOARD_US_MARKET_SUMMARY_CRON'], '1 8 * * 1-5')
         self.assertEqual(parsed['DASHBOARD_US_RATING_CRON'], '30 10 * * *')
         self.assertEqual(parsed['DASHBOARD_MARKET_AUCTION_CRON'], '26 9 * * 1-5')
@@ -4624,17 +4751,87 @@ process.stdout.write(JSON.stringify({{
         original_env_file = dashboard.DASHBOARD_ENV_FILE
         try:
             dashboard.DASHBOARD_ENV_FILE = self.tmp_path / 'dashboard.env'
-            dashboard.write_env_file_values({'DASHBOARD_B1_SCHEDULE_TIMES': ''})
+            dashboard.write_env_file_values({'DASHBOARD_PRACTICE_SCHEDULE_TIMES': ''})
             parsed = dashboard.parse_env_file(dashboard.DASHBOARD_ENV_FILE)
             payload = dashboard.build_admin_config_payload()
         finally:
             dashboard.DASHBOARD_ENV_FILE = original_env_file
 
-        self.assertIn('DASHBOARD_B1_SCHEDULE_TIMES', parsed)
-        self.assertEqual(parsed['DASHBOARD_B1_SCHEDULE_TIMES'], '')
-        time_item = next(item for item in payload['items'] if item['name'] == 'DASHBOARD_B1_SCHEDULE_TIMES')
+        self.assertIn('DASHBOARD_PRACTICE_SCHEDULE_TIMES', parsed)
+        self.assertEqual(parsed['DASHBOARD_PRACTICE_SCHEDULE_TIMES'], '')
+        time_item = next(item for item in payload['items'] if item['name'] == 'DASHBOARD_PRACTICE_SCHEDULE_TIMES')
         self.assertEqual(time_item['time_values'], [])
         self.assertEqual(time_item['file_value'], '')
+
+    def test_practice_schedule_times_prefer_new_name_and_support_legacy_name(self):
+        self.assertEqual(
+            dashboard.resolve_practice_schedule_times({
+                'DASHBOARD_B1_SCHEDULE_TIMES': '09:30,13:10',
+            }),
+            ('09:30', '13:10'),
+        )
+        self.assertEqual(
+            dashboard.resolve_practice_schedule_times({
+                'DASHBOARD_B1_SCHEDULE_TIMES': '09:30,13:10',
+                'DASHBOARD_PRACTICE_SCHEDULE_TIMES': '10:00,14:00',
+            }),
+            ('10:00', '14:00'),
+        )
+        self.assertEqual(
+            dashboard.resolve_practice_schedule_times({
+                'DASHBOARD_B1_SCHEDULE_TIMES': '09:30,13:10',
+                'DASHBOARD_PRACTICE_SCHEDULE_TIMES': '',
+            }),
+            (),
+        )
+
+    def test_practice_schedule_setting_migrates_legacy_dashboard_env_key(self):
+        original_env_file = dashboard.DASHBOARD_ENV_FILE
+        original_schedule_times = dashboard.PRACTICE_SCHEDULE_TIMES
+        original_schedule_enabled = dashboard.B1_SCHEDULE_ENABLED
+        env_names = (
+            dashboard.PRACTICE_SCHEDULE_TIMES_ENV,
+            dashboard.LEGACY_B1_SCHEDULE_TIMES_ENV,
+        )
+        original_env_values = {name: dashboard.os.environ.get(name) for name in env_names}
+        try:
+            dashboard.DASHBOARD_ENV_FILE = self.tmp_path / 'dashboard.env'
+            dashboard.DASHBOARD_ENV_FILE.write_text(
+                'DASHBOARD_B1_SCHEDULE_TIMES=09:30,13:10\n',
+                encoding='utf-8',
+            )
+            dashboard.B1_SCHEDULE_ENABLED = False
+            for name in env_names:
+                dashboard.os.environ.pop(name, None)
+
+            before = dashboard.build_admin_config_payload()
+            before_by_name = {item['name']: item for item in before['items']}
+            result = dashboard.persist_and_sync_business_updates({
+                dashboard.PRACTICE_SCHEDULE_TIMES_ENV: '10:00,14:00',
+            })
+            parsed = dashboard.parse_env_file(dashboard.DASHBOARD_ENV_FILE)
+            runtime_schedule_times = dashboard.PRACTICE_SCHEDULE_TIMES
+        finally:
+            dashboard.DASHBOARD_ENV_FILE = original_env_file
+            dashboard.PRACTICE_SCHEDULE_TIMES = original_schedule_times
+            dashboard.B1_SCHEDULE_ENABLED = original_schedule_enabled
+            for name, value in original_env_values.items():
+                if value is None:
+                    dashboard.os.environ.pop(name, None)
+                else:
+                    dashboard.os.environ[name] = value
+
+        self.assertNotIn('DASHBOARD_B1_SCHEDULE_TIMES', before_by_name)
+        new_item = before_by_name['DASHBOARD_PRACTICE_SCHEDULE_TIMES']
+        self.assertEqual(new_item['file_value'], '09:30,13:10')
+        self.assertEqual(new_item['file_state'], '09:30、13:10')
+        self.assertEqual(new_item['time_values'], ['09:30', '13:10'])
+        self.assertEqual(new_item['source'], 'legacy dashboard.env')
+        self.assertNotIn('DASHBOARD_B1_SCHEDULE_TIMES', parsed)
+        self.assertEqual(parsed['DASHBOARD_PRACTICE_SCHEDULE_TIMES'], '10:00,14:00')
+        self.assertEqual(runtime_schedule_times, ('10:00', '14:00'))
+        self.assertIn('DASHBOARD_B1_SCHEDULE_TIMES', result['changed_names'])
+        self.assertIn('practice_schedule_times', result['runtime']['applied'])
 
     @unittest.skipIf(dashboard.yaml is None, 'PyYAML unavailable')
     def test_yaml_config_redacts_and_preserves_secret_placeholders(self):
@@ -4668,7 +4865,7 @@ process.stdout.write(JSON.stringify({{
         original_env_file = dashboard.DASHBOARD_ENV_FILE
         original_admin_limit = dashboard.RATE_LIMIT_ADMIN
         original_restart = dashboard.schedule_niuone_services_restart
-        original_b1_times = dashboard.B1_SCHEDULE_TIMES
+        original_schedule_times = dashboard.PRACTICE_SCHEDULE_TIMES
         original_b1_enabled = dashboard.B1_SCHEDULE_ENABLED
         original_indices_ttl = dashboard.API_TTLS["indices"]
         original_flow_speed = dashboard.INDUSTRY_FLOW_PLAYBACK_SPEED
@@ -4696,7 +4893,7 @@ process.stdout.write(JSON.stringify({{
                 'env__DASHBOARD_NEWS_BASE_URL': 'https://news.example/v1',
                 'env__DASHBOARD_NEWS_API_KEY': 'news-secret',
                 'env__DASHBOARD_DECISION_CONTEXT_LENGTH': '256K',
-                'env__DASHBOARD_B1_SCHEDULE_TIMES': ['', '09:25', '10:00', '', '14:50'],
+                'env__DASHBOARD_PRACTICE_SCHEDULE_TIMES': ['', '09:25', '10:00', '', '14:50'],
                 'env__DASHBOARD_INDICES_TTL_SECONDS': '20',
                 'env__DASHBOARD_INDUSTRY_FLOW_PLAYBACK_SPEED': '0.75',
                 'env__DASHBOARD_INDUSTRY_FLOW_SIDE_LIMIT': '6',
@@ -4731,7 +4928,7 @@ process.stdout.write(JSON.stringify({{
             parsed = dashboard.parse_env_file(dashboard.DASHBOARD_ENV_FILE)
             response_text = handler.wfile.getvalue().decode('utf-8')
             response = json.loads(response_text)
-            runtime_b1_times = dashboard.B1_SCHEDULE_TIMES
+            runtime_schedule_times = dashboard.PRACTICE_SCHEDULE_TIMES
             runtime_indices_ttl = dashboard.API_TTLS['indices']
             runtime_flow_settings = (
                 dashboard.INDUSTRY_FLOW_PLAYBACK_SPEED,
@@ -4743,7 +4940,7 @@ process.stdout.write(JSON.stringify({{
             dashboard.DASHBOARD_ENV_FILE = original_env_file
             dashboard.RATE_LIMIT_ADMIN = original_admin_limit
             dashboard.schedule_niuone_services_restart = original_restart
-            dashboard.B1_SCHEDULE_TIMES = original_b1_times
+            dashboard.PRACTICE_SCHEDULE_TIMES = original_schedule_times
             dashboard.B1_SCHEDULE_ENABLED = original_b1_enabled
             dashboard.API_TTLS["indices"] = original_indices_ttl
             dashboard.INDUSTRY_FLOW_PLAYBACK_SPEED = original_flow_speed
@@ -4772,7 +4969,7 @@ process.stdout.write(JSON.stringify({{
         self.assertNotEqual(config_by_name['DASHBOARD_TELEGRAM_CHAT_ID']['current_state'], telegram_chat_id)
         self.assertEqual(response['restart']['skipped'], 'hot_applied')
         self.assertTrue(response['runtime']['ok'])
-        self.assertIn('b1_schedule_times', response['runtime']['applied'])
+        self.assertIn('practice_schedule_times', response['runtime']['applied'])
         self.assertIn('indices_ttl', response['runtime']['applied'])
         self.assertIn('industry_flow', response['runtime']['applied'])
         self.assertIn('active_strategy', response['runtime']['applied'])
@@ -4786,7 +4983,7 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(parsed['DASHBOARD_NEWS_BASE_URL'], 'https://news.example/v1')
         self.assertEqual(parsed['DASHBOARD_NEWS_API_KEY'], 'news-secret')
         self.assertEqual(parsed['DASHBOARD_DECISION_CONTEXT_LENGTH'], '256000')
-        self.assertEqual(parsed['DASHBOARD_B1_SCHEDULE_TIMES'], '09:25,10:00,14:50')
+        self.assertEqual(parsed['DASHBOARD_PRACTICE_SCHEDULE_TIMES'], '09:25,10:00,14:50')
         self.assertEqual(parsed['DASHBOARD_INDICES_TTL_SECONDS'], '20')
         self.assertEqual(parsed['DASHBOARD_INDUSTRY_FLOW_PLAYBACK_SPEED'], '0.75')
         self.assertEqual(parsed['DASHBOARD_INDUSTRY_FLOW_SIDE_LIMIT'], '6')
@@ -4803,7 +5000,7 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(parsed['DASHBOARD_PRESET_STRATEGY_TEXT'], '只做主线强趋势回踩\\n跌破5日线离场')
         self.assertEqual(parsed['DASHBOARD_TRADE_DISCIPLINE_TEXT'], '纪律一\\n纪律二')
         self.assertEqual(parsed['DASHBOARD_TELEGRAM_CHAT_ID'], telegram_chat_id)
-        self.assertEqual(runtime_b1_times, ('09:25', '10:00', '14:50'))
+        self.assertEqual(runtime_schedule_times, ('09:25', '10:00', '14:50'))
         self.assertEqual(runtime_indices_ttl, 20)
         self.assertEqual(runtime_flow_settings, (
             0.75,

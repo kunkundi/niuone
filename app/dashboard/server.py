@@ -14,6 +14,7 @@ import time
 import subprocess
 import sys
 import threading
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -238,14 +239,27 @@ TRUSTED_PROXY_CIDRS = tuple(
 MAX_POST_BODY_BYTES = int(os.environ.get("DASHBOARD_MAX_POST_BODY_BYTES", str(256 * 1024)) or str(256 * 1024))
 B1_CACHE_MAX_AGE = 720
 B1_SCAN_TIMEOUT_SECONDS = int(os.environ.get("DASHBOARD_B1_SCAN_TIMEOUT_SECONDS", "360") or "360")
-B1_SCHEDULE_TIMES = tuple(
-    value.strip()
-    for value in os.environ.get(
-        "DASHBOARD_B1_SCHEDULE_TIMES",
-        "09:25,10:00,10:30,11:00,11:20,13:00,13:30,14:00,14:30,14:50",
-    ).split(",")
-    if value.strip()
-)
+PRACTICE_SCHEDULE_TIMES_ENV = "DASHBOARD_PRACTICE_SCHEDULE_TIMES"
+LEGACY_B1_SCHEDULE_TIMES_ENV = "DASHBOARD_B1_SCHEDULE_TIMES"
+DEFAULT_PRACTICE_SCHEDULE_TIMES = "09:25,10:00,10:30,11:00,11:20,13:00,13:30,14:00,14:30,14:50"
+
+
+def resolve_practice_schedule_times(values: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    """Resolve the shared Practice schedule, preferring the renamed setting."""
+    source = os.environ if values is None else values
+    raw = (
+        source.get(PRACTICE_SCHEDULE_TIMES_ENV)
+        if PRACTICE_SCHEDULE_TIMES_ENV in source
+        else source.get(LEGACY_B1_SCHEDULE_TIMES_ENV, DEFAULT_PRACTICE_SCHEDULE_TIMES)
+    )
+    return tuple(
+        value.strip()
+        for value in str(raw or "").split(",")
+        if value.strip()
+    )
+
+
+PRACTICE_SCHEDULE_TIMES = resolve_practice_schedule_times()
 B1_SCHEDULE_ENABLED = os.environ.get("DASHBOARD_B1_SCHEDULE_ENABLED", "1").lower() not in {"0", "false", "no"}
 B1_SCHEDULE_STATE_FILE = CRON_STATE_DIR / "b1_schedule_state.json"
 B1_SCHEDULE_CATCHUP_MINUTES = int(os.environ.get("DASHBOARD_B1_SCHEDULE_CATCHUP_MINUTES", "35") or "35")
@@ -460,8 +474,8 @@ ENV_CONFIG_SCHEMA: list[dict[str, str]] = [
     {"name": "DASHBOARD_X_MEDIA_MAX_BYTES", "label": "X 图片代理最大字节", "group": "限流与缓存", "kind": "int", "default": str(8 * 1024 * 1024), "effect": "restart"},
     {"name": "DASHBOARD_PUBLIC_REFRESH_SECONDS", "label": "公开快照刷新秒数", "group": "行情与资金流设置", "kind": "int", "default": "15", "effect": "restart"},
 
-    {"name": "DASHBOARD_B1_SCHEDULE_ENABLED", "label": "启用实战定时选股", "group": "任务调度", "kind": "bool", "default": "1", "effect": "restart"},
-    {"name": "DASHBOARD_B1_SCHEDULE_TIMES", "label": "选股及买卖决策时间点", "group": "选股与买卖设置", "kind": "time_list", "default": "09:25,10:00,10:30,11:00,11:20,13:00,13:30,14:00,14:30,14:50", "effect": "runtime"},
+    {"name": "DASHBOARD_B1_SCHEDULE_ENABLED", "label": "启用实战定时运行", "group": "任务调度", "kind": "bool", "default": "1", "effect": "restart"},
+    {"name": PRACTICE_SCHEDULE_TIMES_ENV, "label": "实战盘面总结、选股及交易时间点", "group": "选股与买卖设置", "kind": "time_list", "default": DEFAULT_PRACTICE_SCHEDULE_TIMES, "effect": "runtime"},
     {"name": STOCK_UNIVERSE_ENV, "label": "选股范围", "group": "选股与买卖设置", "kind": "stock_universe", "default": DEFAULT_STOCK_UNIVERSE, "effect": "runtime"},
     {"name": "DASHBOARD_DISPLAY_CANDIDATE_LIMIT", "label": "候选池展示数量", "group": "选股与买卖设置", "kind": "int", "default": "10", "effect": "runtime"},
     {"name": "DASHBOARD_TRADE_CANDIDATE_LIMIT", "label": "买卖决策候选数量", "group": "选股与买卖设置", "kind": "int", "default": "10", "effect": "runtime"},
@@ -655,7 +669,7 @@ ADMIN_VISIBLE_ENV_NAMES = [
     "DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED",
     "DASHBOARD_TELEGRAM_BOT_TOKEN",
     "DASHBOARD_TELEGRAM_CHAT_ID",
-    "DASHBOARD_B1_SCHEDULE_TIMES",
+    PRACTICE_SCHEDULE_TIMES_ENV,
     STOCK_UNIVERSE_ENV,
     "DASHBOARD_DISPLAY_CANDIDATE_LIMIT",
     "DASHBOARD_TRADE_CANDIDATE_LIMIT",
@@ -1311,6 +1325,10 @@ def normalize_b1_payload_for_trader(b1_payload: dict[str, Any]) -> dict[str, Any
         payload["market_snapshot"] = b1_payload.get("market_snapshot")
     if isinstance(b1_payload.get("sector_tide_context"), dict):
         payload["sector_tide_context"] = b1_payload.get("sector_tide_context")
+    if isinstance(b1_payload.get("market_summary"), dict):
+        payload["market_summary"] = b1_payload.get("market_summary")
+    if isinstance(b1_payload.get("market_decision_context"), dict):
+        payload["market_decision_context"] = b1_payload.get("market_decision_context")
     for key in ("schedule_slot", "schedule_run_kind", "schedule_triggered_at"):
         if b1_payload.get(key):
             payload[key] = b1_payload.get(key)
@@ -1584,18 +1602,29 @@ def record_practice_decision_event(
         print(f"[WARN] 写入实战页面决策日志失败: {type(exc).__name__}: {exc}", flush=True)
 
 
-def run_practice_decision_logged(b1_payload: dict[str, Any], *, record_start: bool = False) -> dict[str, Any]:
+def run_practice_decision_logged(
+    b1_payload: dict[str, Any],
+    *,
+    record_start: bool = False,
+    refresh_market_summary: bool = True,
+) -> dict[str, Any]:
     payload = normalize_b1_payload_for_trader(b1_payload)
     try:
         trader = get_trader_module()
-        if hasattr(trader, "refresh_market_strategy_context_for_b1"):
-            refreshed_ctx = trader.refresh_market_strategy_context_for_b1(payload)
+        summary = payload.get("market_summary") if isinstance(payload.get("market_summary"), dict) else {}
+        if refresh_market_summary:
+            summary_trigger = "scheduled" if payload.get("schedule_slot") else "manual_cycle"
+            summary = refresh_practice_market_summary_for_decision(summary_trigger)
+        if isinstance(summary, dict):
+            payload["market_summary"] = summary
+        if summary.get("available") and hasattr(trader, "market_strategy_context_from_summary"):
+            refreshed_ctx = trader.market_strategy_context_from_summary(summary, current_cn_datetime())
             payload["market_decision_context"] = trader.compact_market_strategy_context(refreshed_ctx)
             with API_RESPONSE_LOCK:
                 API_RESPONSE_CACHE.pop("niuniu_practice", None)
                 API_RESPONSE_CACHE.pop(PRACTICE_FAST_CACHE_KEY, None)
     except Exception as exc:
-        print(f"[WARN] 定时选股盘面标签刷新失败: {type(exc).__name__}: {exc}", flush=True)
+        print(f"[WARN] 此刻盘面总结与评价刷新失败: {type(exc).__name__}: {exc}", flush=True)
     item_count = len(payload.get("items") or [])
     slot_note = ""
     if payload.get("schedule_slot"):
@@ -1794,7 +1823,7 @@ def recent_practice_candidates_for_manual_cycle() -> dict[str, Any] | None:
 
 def _run_practice_manual_cycle() -> None:
     try:
-        _set_practice_manual_cycle_state(stage="screening", stage_label="正在检查候选并生成盘面评价")
+        _set_practice_manual_cycle_state(stage="screening", stage_label="正在检查候选")
         cache = recent_practice_candidates_for_manual_cycle()
         if cache is None:
             cache = trigger_b1_scan(force=True, decision_mode="none")
@@ -1803,7 +1832,7 @@ def _run_practice_manual_cycle() -> None:
 
         _set_practice_manual_cycle_state(
             stage="trading",
-            stage_label="正在执行买卖策略",
+            stage_label="正在生成盘面总结与评价并执行买卖策略",
             candidate_count=int(cache.get("count") or 0),
             generated_at=str(cache.get("generated_at") or ""),
             manual_scan_reused=bool(cache.get("manual_scan_reused")),
@@ -1938,7 +1967,7 @@ def claim_due_b1_schedule_slot(now: datetime | None = None) -> str | None:
     catchup_seconds = max(0, B1_SCHEDULE_CATCHUP_MINUTES) * 60
     stale_seconds = max(60, B1_SCHEDULE_STALE_SECONDS)
     due_slots: list[tuple[datetime, str]] = []
-    for hhmm in B1_SCHEDULE_TIMES:
+    for hhmm in PRACTICE_SCHEDULE_TIMES:
         slot_dt = _b1_schedule_slot_datetime(now, hhmm)
         if not slot_dt:
             continue
@@ -2012,16 +2041,22 @@ def claim_due_b1_schedule_slot(now: datetime | None = None) -> str | None:
 
 def run_scheduled_b1_scan(slot_key: str) -> None:
     try:
-        if b1_cache_generated_for_slot(slot_key):
-            _mark_b1_schedule_slot(slot_key, "ok", reason="cache_already_generated_for_slot")
-            return
         lag_seconds = _b1_schedule_slot_lag_seconds(slot_key)
         run_kind = "catchup" if lag_seconds >= 60 else "scheduled"
         _mark_b1_schedule_slot(slot_key, "running", lag_seconds=round(lag_seconds, 1), run_kind=run_kind)
-        print(f"[B1 schedule] trigger {slot_key} kind={run_kind} lag={lag_seconds:.0f}s", flush=True)
+        summary = refresh_practice_market_summary_for_decision("scheduled")
+        if b1_cache_generated_for_slot(slot_key):
+            _mark_b1_schedule_slot(
+                slot_key,
+                "ok",
+                reason="cache_already_generated_for_slot",
+                market_summary_generated_at=str(summary.get("generated_at") or ""),
+            )
+            return
+        print(f"[Practice schedule] trigger {slot_key} kind={run_kind} lag={lag_seconds:.0f}s", flush=True)
         cache = trigger_b1_scan(
             force=True,
-            decision_mode="sync",
+            decision_mode="none",
             schedule_slot=slot_key,
             schedule_run_kind=run_kind,
         )
@@ -2029,8 +2064,15 @@ def run_scheduled_b1_scan(slot_key: str) -> None:
             API_RESPONSE_CACHE.pop(PRACTICE_CANDIDATES_CACHE_KEY, None)
         if cache.get("error"):
             _mark_b1_schedule_slot(slot_key, "error", error=str(cache.get("error") or "")[:500])
-            print(f"[B1 schedule] {slot_key} failed: {cache.get('error')}", flush=True)
+            print(f"[Practice schedule] {slot_key} failed: {cache.get('error')}", flush=True)
         else:
+            if isinstance(summary, dict):
+                cache["market_summary"] = summary
+            cache["decision_result"] = run_practice_decision_logged(
+                cache,
+                record_start=True,
+                refresh_market_summary=False,
+            )
             _mark_b1_schedule_slot(
                 slot_key,
                 "ok",
@@ -2038,10 +2080,10 @@ def run_scheduled_b1_scan(slot_key: str) -> None:
                 generated_at=cache.get("generated_at") or "",
                 run_kind=run_kind,
             )
-            print(f"[B1 schedule] {slot_key} done: {cache.get('count', 0)} candidates", flush=True)
+            print(f"[Practice schedule] {slot_key} done: {cache.get('count', 0)} candidates", flush=True)
     except Exception as exc:
         _mark_b1_schedule_slot(slot_key, "error", error=f"{type(exc).__name__}: {exc}")
-        print(f"[B1 schedule] {slot_key} error: {type(exc).__name__}: {exc}", flush=True)
+        print(f"[Practice schedule] {slot_key} error: {type(exc).__name__}: {exc}", flush=True)
 
 
 def b1_schedule_loop() -> None:
@@ -2631,13 +2673,13 @@ def start_pending_decision_executor() -> None:
 
 def start_b1_scheduler() -> None:
     global B1_SCHEDULE_THREAD
-    if not B1_SCHEDULE_ENABLED or not B1_SCHEDULE_TIMES:
+    if not B1_SCHEDULE_ENABLED or not PRACTICE_SCHEDULE_TIMES:
         return
     if B1_SCHEDULE_THREAD and B1_SCHEDULE_THREAD.is_alive():
         return
     B1_SCHEDULE_THREAD = threading.Thread(target=b1_schedule_loop, name="b1-scheduler", daemon=True)
     B1_SCHEDULE_THREAD.start()
-    print(f"B1 schedule enabled: {', '.join(B1_SCHEDULE_TIMES)}", flush=True)
+    print(f"Practice schedule enabled: {', '.join(PRACTICE_SCHEDULE_TIMES)}", flush=True)
 
 
 def trade_minute_from_hhmm(hhmm: str) -> int | None:
@@ -2831,45 +2873,108 @@ def fetch_practice_realtime_market_snapshot(now: datetime) -> dict[str, Any]:
     )
 
 
-def generate_practice_market_summary() -> dict[str, Any]:
+def generate_practice_market_summary(trigger: str = "manual") -> dict[str, Any]:
     return practice_market_summary_impl.generate_and_store_summary(
         _practice_market_summary_records(),
         PRACTICE_MARKET_SUMMARY_FILE,
         current_cn_datetime(),
         realtime_snapshot_provider=fetch_practice_realtime_market_snapshot,
         require_realtime=True,
+        trigger=trigger,
     )
+
+
+def _cached_practice_market_summary() -> dict[str, Any]:
+    return practice_market_summary_impl.load_cached_summary(
+        PRACTICE_MARKET_SUMMARY_FILE,
+        current_cn_datetime().strftime("%Y-%m-%d"),
+    )
+
+
+def _publish_practice_market_summary_context(payload: dict[str, Any]) -> dict[str, Any]:
+    trader = get_trader_module()
+    if not hasattr(trader, "persist_market_summary_context"):
+        raise RuntimeError("交易模块不支持统一盘面评价")
+    ctx = trader.persist_market_summary_context(payload, current_cn_datetime())
+    invalidate_api_cache("niuniu_practice", PRACTICE_FAST_CACHE_KEY)
+    return trader.compact_market_strategy_context(ctx)
+
+
+def _generate_and_publish_practice_market_summary(trigger: str) -> dict[str, Any]:
+    _set_practice_market_summary_state(
+        running=True,
+        stage="generating",
+        stage_label="正在抓取实时盘面、资金流动和市场情绪并生成总结与评价",
+        error="",
+    )
+    payload = generate_practice_market_summary(trigger)
+    if not payload.get("ok"):
+        _set_practice_market_summary_state(
+            running=False,
+            stage="error",
+            stage_label="盘面总结与评价生成失败",
+            finished_at=current_cn_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+            error=str(payload.get("error") or "盘面总结与评价生成失败"),
+        )
+        return payload
+    _publish_practice_market_summary_context(payload)
+    _set_practice_market_summary_state(
+        running=False,
+        stage="completed",
+        stage_label="此刻盘面总结与评价已更新",
+        finished_at=current_cn_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+        generated_at=str(payload.get("generated_at") or ""),
+        error="",
+    )
+    return payload
+
+
+def refresh_practice_market_summary_for_decision(trigger: str) -> dict[str, Any]:
+    """Synchronously refresh the unified artifact, preserving the last valid one on failure."""
+    if not PRACTICE_MARKET_SUMMARY_LOCK.acquire(blocking=False):
+        return _cached_practice_market_summary()
+    try:
+        started_at = current_cn_datetime().strftime("%Y-%m-%d %H:%M:%S")
+        _set_practice_market_summary_state(
+            running=True,
+            stage="starting",
+            stage_label="正在启动盘面总结与评价",
+            started_at=started_at,
+            finished_at="",
+            generated_at="",
+            error="",
+        )
+        try:
+            payload = _generate_and_publish_practice_market_summary(trigger)
+        except Exception as exc:
+            payload = {
+                "ok": False,
+                "available": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            _set_practice_market_summary_state(
+                running=False,
+                stage="error",
+                stage_label="盘面总结与评价生成失败",
+                finished_at=current_cn_datetime().strftime("%Y-%m-%d %H:%M:%S"),
+                error=payload["error"],
+            )
+        if payload.get("ok"):
+            return payload
+        cached = _cached_practice_market_summary()
+        return cached if cached.get("available") else payload
+    finally:
+        PRACTICE_MARKET_SUMMARY_LOCK.release()
 
 
 def _run_practice_market_summary() -> None:
     try:
-        _set_practice_market_summary_state(
-            stage="generating",
-            stage_label="正在抓取实时盘面、资金流动和市场情绪并生成总结",
-        )
-        payload = generate_practice_market_summary()
-        if not payload.get("ok"):
-            _set_practice_market_summary_state(
-                running=False,
-                stage="error",
-                stage_label="盘面总结生成失败",
-                finished_at=current_cn_datetime().strftime("%Y-%m-%d %H:%M:%S"),
-                error=str(payload.get("error") or "盘面总结生成失败"),
-            )
-            return
-        _set_practice_market_summary_state(
-            running=False,
-            stage="completed",
-            stage_label="今日盘面总结已生成",
-            finished_at=current_cn_datetime().strftime("%Y-%m-%d %H:%M:%S"),
-            generated_at=str(payload.get("generated_at") or ""),
-            error="",
-        )
+        _generate_and_publish_practice_market_summary("manual")
     except Exception as exc:
         _set_practice_market_summary_state(
             running=False,
             stage="error",
-            stage_label="盘面总结生成失败",
+            stage_label="盘面总结与评价生成失败",
             finished_at=current_cn_datetime().strftime("%Y-%m-%d %H:%M:%S"),
             error=f"{type(exc).__name__}: {exc}",
         )
@@ -2888,7 +2993,7 @@ def start_practice_market_summary() -> dict[str, Any]:
     _set_practice_market_summary_state(
         running=True,
         stage="starting",
-        stage_label="正在启动盘面总结",
+        stage_label="正在启动盘面总结与评价",
         started_at=started_at,
         finished_at="",
         generated_at="",
@@ -2905,7 +3010,7 @@ def start_practice_market_summary() -> dict[str, Any]:
         _set_practice_market_summary_state(
             running=False,
             stage="error",
-            stage_label="盘面总结启动失败",
+            stage_label="盘面总结与评价启动失败",
             finished_at=current_cn_datetime().strftime("%Y-%m-%d %H:%M:%S"),
             error=f"{type(exc).__name__}: {exc}",
         )
@@ -4012,7 +4117,7 @@ def validate_business_updates(updates: dict[str, str]) -> None:
             }[name]
             if number < minimum or number > maximum:
                 raise ValueError(f"{name} 必须在 {minimum} 到 {maximum} 之间")
-        elif name == "DASHBOARD_B1_SCHEDULE_TIMES":
+        elif name == PRACTICE_SCHEDULE_TIMES_ENV:
             normalize_time_list_update(value)
         elif name in {
             "DASHBOARD_B3_EXIT_TIME",
@@ -4099,7 +4204,7 @@ def sync_business_runtime_settings(
     *,
     sync_names: list[str] | set[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    global ADMIN_PASSWORD, B1_CANDIDATE_REFRESH_LAST_TS, B1_SCHEDULE_TIMES
+    global ADMIN_PASSWORD, B1_CANDIDATE_REFRESH_LAST_TS, PRACTICE_SCHEDULE_TIMES
     global INDUSTRY_FLOW_PLAYBACK_SPEED, INDUSTRY_FLOW_SAMPLE_INTERVAL_SECONDS, INDUSTRY_FLOW_SIDE_LIMIT
     global INDUSTRY_FLOW_SAMPLING_WINDOWS
     global TRADER_MODULE, TRADER_MODULE_MTIME, TRADER_SELL_SIGNALS_MTIME
@@ -4122,9 +4227,11 @@ def sync_business_runtime_settings(
     if "DASHBOARD_ADMIN_PASSWORD" in changed_names:
         ADMIN_PASSWORD = str(env_values.get("DASHBOARD_ADMIN_PASSWORD") or "").strip()
         applied.append("admin_password")
-    if "DASHBOARD_B1_SCHEDULE_TIMES" in changed_names:
-        B1_SCHEDULE_TIMES = tuple(split_hhmm_values(env_values.get("DASHBOARD_B1_SCHEDULE_TIMES", "")))
-        applied.append("b1_schedule_times")
+    if PRACTICE_SCHEDULE_TIMES_ENV in changed_names:
+        PRACTICE_SCHEDULE_TIMES = tuple(
+            split_hhmm_values(env_values.get(PRACTICE_SCHEDULE_TIMES_ENV, ""))
+        )
+        applied.append("practice_schedule_times")
         start_b1_scheduler()
 
     if "DASHBOARD_INDICES_TTL_SECONDS" in changed_names:
@@ -4220,12 +4327,15 @@ def persist_and_sync_business_updates(
 ) -> dict[str, Any]:
     """Persist and hot-apply one validated update set as a single operation."""
 
+    migrated_clear_names = set(clear_names or set())
+    if PRACTICE_SCHEDULE_TIMES_ENV in updates:
+        migrated_clear_names.add(LEGACY_B1_SCHEDULE_TIMES_ENV)
     with ENV_FILE_WRITE_LOCK:
         result = _write_env_file_values_unlocked(
             updates,
-            clear_names=clear_names,
+            clear_names=migrated_clear_names,
         )
-        sync_names = set(updates) | set(clear_names or set())
+        sync_names = set(updates) | migrated_clear_names
         result["runtime"] = sync_business_runtime_settings(
             result.get("changed_names") or [],
             sync_names=sync_names,
@@ -4438,17 +4548,39 @@ def build_admin_config_payload() -> dict[str, Any]:
             )
             fallback_source = "legacy strategy settings"
         default_value = schema.get("default", "")
-        if name in os.environ:
-            effective = os.environ.get(name, "")
-        elif name in env_values:
-            effective = env_values.get(name, "")
+        if name == PRACTICE_SCHEDULE_TIMES_ENV:
+            if name in os.environ:
+                effective = os.environ.get(name, "")
+                source = "process env"
+            elif LEGACY_B1_SCHEDULE_TIMES_ENV in os.environ:
+                effective = os.environ.get(LEGACY_B1_SCHEDULE_TIMES_ENV, "")
+                source = "legacy process env"
+            elif name in env_values:
+                effective = env_values.get(name, "")
+                source = "dashboard.env"
+            elif LEGACY_B1_SCHEDULE_TIMES_ENV in env_values:
+                effective = env_values.get(LEGACY_B1_SCHEDULE_TIMES_ENV, "")
+                source = "legacy dashboard.env"
+            else:
+                effective = fallback_value or default_value
+                source = fallback_source
+            file_value = env_values.get(name)
+            if file_value is None:
+                file_value = env_values.get(LEGACY_B1_SCHEDULE_TIMES_ENV)
+            if file_value is None:
+                file_value = default_value
         else:
-            effective = fallback_value or default_value
+            if name in os.environ:
+                effective = os.environ.get(name, "")
+            elif name in env_values:
+                effective = env_values.get(name, "")
+            else:
+                effective = fallback_value or default_value
+            file_value = env_values.get(name)
+            if file_value is None:
+                file_value = "" if schema.get("kind") == "secret" else default_value
+            source = "process env" if name in os.environ else ("dashboard.env" if name in env_values else fallback_source)
         secret = schema.get("kind") == "secret" or is_secret_config_key(name)
-        file_value = env_values.get(name)
-        if file_value is None:
-            file_value = "" if secret else default_value
-        source = "process env" if name in os.environ else ("dashboard.env" if name in env_values else fallback_source)
         item = {
             **schema,
             "secret": secret,
@@ -4467,10 +4599,15 @@ def build_admin_config_payload() -> dict[str, Any]:
                 "day_label": CRON_TIME_CONFIGS[name]["day_label"],
             })
         if schema.get("kind") == "time_list" and not secret:
+            state_value = (
+                file_value
+                if name == PRACTICE_SCHEDULE_TIMES_ENV
+                else env_values.get(name) or fallback_value or default_value
+            )
             item.update({
                 "effective": friendly_time_list_text(effective),
                 "file_value": normalize_time_list_update(str(file_value or "")),
-                "file_state": friendly_time_list_text(env_values.get(name) or fallback_value or default_value),
+                "file_state": friendly_time_list_text(str(state_value or "")),
                 "default": friendly_time_list_text(default_value),
                 "time_values": split_hhmm_values(str(file_value or "")),
             })

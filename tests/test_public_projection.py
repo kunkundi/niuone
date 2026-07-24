@@ -46,6 +46,14 @@ class PublicProjectionTests(unittest.TestCase):
                     "private_note": "secret",
                 }],
             },
+            market_summary={
+                "available": True,
+                "summary": "实时指数与资金结构平衡。",
+                "tone_label": "平衡",
+                "generated_at": "2026-07-21 10:00:05",
+                "stage": "completed",
+                "model_error": "private provider detail",
+            },
         )
 
         self.assertEqual(sections["metadata"]["schema_version"], PUBLIC_SCHEMA_VERSION)
@@ -72,6 +80,10 @@ class PublicProjectionTests(unittest.TestCase):
             {"trend_pullback": 2},
         )
         self.assertNotIn("generated_at", sections["messages"])
+        self.assertEqual(sections["market_summary"]["tone_label"], "平衡")
+        self.assertEqual(sections["market_summary"]["generated_at"], "2026-07-21 10:00:05")
+        self.assertEqual(sections["market_summary"]["status"], "completed")
+        self.assertNotIn("model_error", sections["market_summary"])
         serialized = repr(sections)
         self.assertNotIn("/private/runtime", serialized)
         self.assertNotIn("token=secret", serialized)
