@@ -3754,6 +3754,36 @@ process.stdout.write(JSON.stringify({{
         self.assertIn('class="dragon-tiger-admin-backdrop"', PRACTICE_COMPONENTS)
         self.assertIn("submitLabel: '验证并生成'", PRACTICE_COMPONENTS)
 
+    def test_practice_market_summary_result_opens_in_modal_without_inline_card(self):
+        component = (
+            ROOT / 'web' / 'src' / 'components' / 'practice' / 'PracticeMarketSummary.vue'
+        ).read_text(encoding='utf-8')
+
+        self.assertIn('class="practice-market-summary-view-btn"', component)
+        self.assertIn('aria-haspopup="dialog"', component)
+        self.assertIn('<Teleport to="body">', component)
+        self.assertIn('class="practice-market-summary-dialog"', component)
+        self.assertIn('aria-modal="true"', component)
+        self.assertIn("event.key === 'Escape'", component)
+        self.assertNotIn('class="practice-market-summary-card"', component)
+        self.assertIn('body.practice-market-summary-dialog-open { overflow:hidden; }', DASHBOARD_FRONTEND)
+        self.assertIn('max-height:84dvh;', DASHBOARD_FRONTEND)
+
+    def test_practice_manual_cycle_and_market_summary_actions_share_button_group(self):
+        component_dir = ROOT / 'web' / 'src' / 'components' / 'practice'
+        overview = (component_dir / 'PracticeAccountOverview.vue').read_text(encoding='utf-8')
+        summary = (component_dir / 'PracticeMarketSummary.vue').read_text(encoding='utf-8')
+
+        self.assertNotIn('class="practice-manual-cycle-btn"', overview)
+        self.assertIn(':manual-running="manualRunning"', overview)
+        self.assertIn('@manual-cycle="emit(\'manual-cycle\')"', overview)
+        self.assertIn('class="practice-market-summary-primary-actions"', summary)
+        self.assertLess(
+            summary.index('class="practice-manual-cycle-btn"'),
+            summary.index('class="practice-market-summary-btn"'),
+        )
+        self.assertIn('grid-template-columns:repeat(2,minmax(0,1fr))', DASHBOARD_FRONTEND)
+
     def test_practice_manual_cycle_prompts_for_admin_and_retries_strategy(self):
         self.assertIn("const previousManualCycle = { ...state.manualCycle }", PRACTICE_DATA)
         self.assertIn("return 'admin_password_required'", PRACTICE_DATA)

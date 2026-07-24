@@ -29,13 +29,6 @@ const manualButtonText = computed(() => manualRunning.value
   <section class="sector-cloud" style="margin-bottom:18px">
     <div class="practice-account-head">
       <h3>模拟账户</h3>
-      <button
-        type="button"
-        class="practice-manual-cycle-btn"
-        :disabled="manualRunning"
-        :aria-busy="manualRunning ? 'true' : undefined"
-        @click="emit('manual-cycle')"
-      >{{ manualRunning ? '处理中 · ' : '' }}{{ manualButtonText }}</button>
     </div>
     <div v-if="marketContext.available || marketContext.tone_label" class="practice-market-evaluation">
       <span class="practice-market-evaluation-label">盘面评价 · {{ marketContext.tone_label || '中性' }}</span>
@@ -45,6 +38,9 @@ const manualButtonText = computed(() => manualRunning.value
     <PracticeMarketSummary
       :summary="marketSummary"
       :generating="marketSummaryGenerating"
+      :manual-running="manualRunning"
+      :manual-label="manualButtonText"
+      @manual-cycle="emit('manual-cycle')"
       @generate="emit('market-summary')"
     />
     <div v-if="manualCycle.error" class="practice-manual-cycle-error">本轮执行失败：{{ manualCycle.error }}</div>

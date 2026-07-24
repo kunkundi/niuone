@@ -4,6 +4,7 @@
     html { -webkit-text-size-adjust: 100%; }
     body { margin:0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); overflow-x:hidden; }
     body.compliance-dialog-open { overflow:hidden; }
+    body.practice-market-summary-dialog-open { overflow:hidden; }
     body.x-image-viewer-open { overflow:hidden; }
     .compliance-dialog-backdrop { position:fixed; inset:0; z-index:100; display:grid; place-items:center; padding:20px; background:rgba(15,23,42,.56); }
     .compliance-dialog-backdrop[hidden] { display:none; }
@@ -73,19 +74,27 @@
     .practice-market-evaluation-label { color:#bfdbfe; font-weight:850; }
     .practice-market-evaluation time { margin-left:auto; color:#718096; }
     .practice-market-summary-action { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px; color:#7f8da3; font-size:12px; }
-    .practice-market-summary-btn { border:1px solid rgba(167,139,250,.38); border-radius:9px; background:rgba(124,92,255,.14); color:#ddd6fe; padding:7px 12px; font-size:12px; font-weight:850; cursor:pointer; transition:.16s ease; }
-    .practice-market-summary-btn:hover:not(:disabled) { border-color:rgba(196,181,253,.68); background:rgba(124,92,255,.24); transform:translateY(-1px); }
+    .practice-market-summary-primary-actions { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+    .practice-market-summary-btn, .practice-market-summary-view-btn { flex:0 0 auto; border:1px solid rgba(167,139,250,.38); border-radius:9px; background:rgba(124,92,255,.14); color:#ddd6fe; padding:7px 12px; font-size:12px; font-weight:850; cursor:pointer; transition:.16s ease; }
+    .practice-market-summary-view-btn { border-color:rgba(148,163,184,.22); background:rgba(30,41,59,.42); color:#cbd5e1; }
+    .practice-market-summary-btn:hover:not(:disabled), .practice-market-summary-view-btn:hover { border-color:rgba(196,181,253,.68); background:rgba(124,92,255,.24); transform:translateY(-1px); }
     .practice-market-summary-btn:disabled { cursor:not-allowed; opacity:.68; }
-    .practice-market-summary-card { margin-top:9px; padding:0; overflow:hidden; border:1px solid rgba(167,139,250,.24); border-radius:12px; background:linear-gradient(135deg, rgba(76,29,149,.13), rgba(15,23,42,.62)); color:#cbd5e1; font-size:13px; line-height:1.65; }
-    .practice-market-summary-card.stale { border-style:dashed; }
-    .practice-market-summary-head { width:100%; display:flex; align-items:center; gap:10px; margin:0; padding:10px 13px; border:0; border-radius:0; background:transparent; color:inherit; text-align:left; cursor:pointer; }
-    .practice-market-summary-head:hover { background:rgba(124,92,255,.09); }
-    .practice-market-summary-title { color:#e9d5ff; font-size:13px; font-weight:900; }
-    .practice-market-summary-compact-meta { margin-left:auto; color:#718096; font-size:11px; white-space:nowrap; }
-    .practice-market-summary-chevron { color:#a78bfa; font-size:20px; line-height:1; transition:transform .16s ease; }
-    .practice-market-summary-card.open .practice-market-summary-chevron { transform:rotate(90deg); }
-    .practice-market-summary-body { padding:0 14px 12px; border-top:1px solid rgba(167,139,250,.12); }
-    .practice-market-summary-card p { margin:8px 0 0; color:#dbe5f2; white-space:pre-line; }
+    .practice-market-summary-btn:focus-visible, .practice-market-summary-view-btn:focus-visible, .practice-market-summary-close:focus-visible { outline:2px solid rgba(196,181,253,.86); outline-offset:2px; }
+    .practice-market-summary-status { min-width:0; overflow-wrap:anywhere; }
+    .practice-market-summary-backdrop { position:fixed; inset:0; z-index:87; display:grid; place-items:center; padding:18px; background:rgba(2,6,23,.70); backdrop-filter:blur(10px); }
+    .practice-market-summary-dialog { width:min(760px, calc(100vw - 32px)); max-height:min(82vh, 760px); max-height:min(82dvh, 760px); min-height:0; display:grid; grid-template-rows:auto minmax(0,1fr); overflow:hidden; border:1px solid rgba(167,139,250,.28); border-radius:16px; background:linear-gradient(180deg, rgba(15,23,42,.99), rgba(8,13,24,.99)); color:#cbd5e1; box-shadow:0 28px 90px rgba(0,0,0,.52), inset 0 1px 0 rgba(255,255,255,.06); font-size:13px; line-height:1.65; }
+    .practice-market-summary-dialog.stale { border-style:dashed; }
+    .practice-market-summary-dialog-head { position:static; z-index:auto; display:flex; align-items:center; justify-content:space-between; gap:12px; min-width:0; padding:12px 14px; border-bottom:1px solid rgba(167,139,250,.16); background:rgba(30,41,59,.54); }
+    .practice-market-summary-dialog-heading { min-width:0; }
+    .practice-market-summary-dialog-heading h2 { margin:0; color:#e9d5ff; font-size:15px; line-height:1.35; font-weight:900; }
+    .practice-market-summary-dialog-heading div { margin-top:2px; color:#718096; font-size:11px; line-height:1.4; overflow-wrap:anywhere; }
+    .practice-market-summary-close { width:30px; height:30px; min-width:30px; display:grid; place-items:center; border:1px solid rgba(148,163,184,.18); border-radius:9px; background:rgba(15,23,42,.72); color:#cbd5e1; padding:0; font-size:16px; line-height:1; font-weight:850; cursor:pointer; }
+    .practice-market-summary-close:hover { border-color:rgba(203,213,225,.42); background:rgba(30,41,59,.84); }
+    .practice-market-summary-body { min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:4px 16px 16px; scrollbar-color:rgba(148,163,184,.36) rgba(15,23,42,.36); }
+    .practice-market-summary-body::-webkit-scrollbar { width:9px; }
+    .practice-market-summary-body::-webkit-scrollbar-track { background:rgba(15,23,42,.36); border-radius:999px; }
+    .practice-market-summary-body::-webkit-scrollbar-thumb { background:rgba(148,163,184,.36); border:2px solid rgba(15,23,42,.36); border-radius:999px; }
+    .practice-market-summary-body p { margin:8px 0 0; color:#dbe5f2; white-space:pre-line; }
     .practice-market-summary-section { margin-top:9px; }
     .practice-market-summary-section b { color:#c4b5fd; font-size:12px; }
     .practice-market-summary-section.risk b { color:#fca5a5; }
@@ -1346,6 +1355,16 @@
       .empty { padding:28px 12px; }
       .sector-cloud { padding:11px; border-radius:15px; margin-left:0; margin-right:0; }
       .sector-cloud h3 { font-size:13.5px; margin-bottom:7px; }
+      .practice-market-summary-action { gap:6px; overflow:hidden; }
+      .practice-market-summary-primary-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); flex:1 0 100%; width:100%; gap:6px; }
+      .practice-market-summary-primary-actions .practice-manual-cycle-btn, .practice-market-summary-primary-actions .practice-market-summary-btn { width:100%; min-width:0; overflow:hidden; padding:6px 8px; text-overflow:ellipsis; white-space:nowrap; }
+      .practice-market-summary-view-btn { min-width:0; padding:6px 9px; white-space:nowrap; }
+      .practice-market-summary-status { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .practice-market-summary-backdrop { place-items:end center; padding:8px 8px max(8px, env(safe-area-inset-bottom)); }
+      .practice-market-summary-dialog { width:100%; max-height:84vh; max-height:84dvh; border-radius:16px; }
+      .practice-market-summary-dialog-head { padding:10px 11px; }
+      .practice-market-summary-dialog-heading h2 { font-size:14px; }
+      .practice-market-summary-body { padding:3px 13px 14px; font-size:12.5px; line-height:1.65; }
       .sector-columns { grid-template-columns:1fr; gap:12px; }
       .sector-cloud > div[style*="display:flex"] { flex-direction:column; gap:12px !important; }
       .sector-cloud div[style*="min-width:260px"], .sector-cloud div[style*="min-width:250px"] { min-width:0 !important; width:100%; }
@@ -1522,6 +1541,7 @@
 
     html:not([data-theme="dark"]) .practice-manual-cycle-btn,
     html:not([data-theme="dark"]) .practice-market-summary-btn,
+    html:not([data-theme="dark"]) .practice-market-summary-view-btn,
     html:not([data-theme="dark"]) .practice-rule-btn,
     html:not([data-theme="dark"]) .practice-calendar-open-btn,
     html:not([data-theme="dark"]) .dragon-tiger-unavailable a {
@@ -1533,6 +1553,7 @@
     }
     html:not([data-theme="dark"]) .practice-manual-cycle-btn:hover:not(:disabled),
     html:not([data-theme="dark"]) .practice-market-summary-btn:hover:not(:disabled),
+    html:not([data-theme="dark"]) .practice-market-summary-view-btn:hover,
     html:not([data-theme="dark"]) .practice-rule-btn:hover,
     html:not([data-theme="dark"]) .practice-calendar-open-btn:hover,
     html:not([data-theme="dark"]) .dragon-tiger-unavailable a:hover {
@@ -1593,7 +1614,7 @@
     html:not([data-theme="dark"]) .market-breadth-notice { border-color:#f1d49a; color:#945d0b; background:#fff9eb; }
     html:not([data-theme="dark"]) .practice-market-evaluation time,
     html:not([data-theme="dark"]) .practice-market-summary-action,
-    html:not([data-theme="dark"]) .practice-market-summary-compact-meta,
+    html:not([data-theme="dark"]) .practice-market-summary-dialog-heading div,
     html:not([data-theme="dark"]) .practice-market-summary-meta,
     html:not([data-theme="dark"]) .indices-part-meta,
     html:not([data-theme="dark"]) .index-time,
@@ -1622,21 +1643,27 @@
     html:not([data-theme="dark"]) .dragon-tiger-seat-values small,
     html:not([data-theme="dark"]) .dragon-tiger-foot { color:var(--muted); }
 
-    html:not([data-theme="dark"]) .practice-market-summary-card,
+    html:not([data-theme="dark"]) .practice-market-summary-dialog {
+      border-color:#d7dfec;
+      background:#fff;
+      color:#344054;
+      box-shadow:none;
+    }
     html:not([data-theme="dark"]) .thread-original {
       border-color:#d7dfec;
       background:#f7f9fc;
       color:#344054;
       box-shadow:none;
     }
-    html:not([data-theme="dark"]) .practice-market-summary-head:hover,
+    html:not([data-theme="dark"]) .practice-market-summary-dialog-head { border-color:#d7dfec; background:#f7f9fc; }
+    html:not([data-theme="dark"]) .practice-market-summary-close { border-color:#cfd8e6; background:#fff; color:#475467; }
+    html:not([data-theme="dark"]) .practice-market-summary-close:hover,
     html:not([data-theme="dark"]) .x-row:hover,
     html:not([data-theme="dark"]) .dragon-tiger-item > summary:hover { background:#f4f7fc; }
-    html:not([data-theme="dark"]) .practice-market-summary-title,
+    html:not([data-theme="dark"]) .practice-market-summary-dialog-heading h2,
     html:not([data-theme="dark"]) .practice-market-summary-section b,
-    html:not([data-theme="dark"]) .practice-market-summary-chevron,
     html:not([data-theme="dark"]) .thread-original-content::first-line { color:#2457c5; }
-    html:not([data-theme="dark"]) .practice-market-summary-card p,
+    html:not([data-theme="dark"]) .practice-market-summary-body p,
     html:not([data-theme="dark"]) .practice-market-summary-body,
     html:not([data-theme="dark"]) .thread-original-content,
     html:not([data-theme="dark"]) .thread-reply-content,
@@ -2182,6 +2209,7 @@
 
     html[data-theme="dark"] .practice-manual-cycle-btn,
     html[data-theme="dark"] .practice-market-summary-btn,
+    html[data-theme="dark"] .practice-market-summary-view-btn,
     html[data-theme="dark"] .practice-rule-btn,
     html[data-theme="dark"] .practice-calendar-open-btn,
     html[data-theme="dark"] .dragon-tiger-unavailable a {
@@ -2198,14 +2226,12 @@
     }
     html[data-theme="dark"] .practice-market-evaluation-label,
     html[data-theme="dark"] .indices-cache-notice span:last-child { color:var(--accent-text); }
-    html[data-theme="dark"] .practice-market-summary-card,
     html[data-theme="dark"] .thread-original {
       border-color:#36445c;
       background:#141b27;
       color:#d7dee8;
       box-shadow:none;
     }
-    html[data-theme="dark"] .practice-market-summary-head:hover,
     html[data-theme="dark"] .x-row:hover,
     html[data-theme="dark"] .dragon-tiger-item > summary:hover { background:#18202c; }
     html[data-theme="dark"] .dragon-tiger-name-has-limit-up-reason { color:#fda4af; text-decoration-color:rgba(253,164,175,.68); }
