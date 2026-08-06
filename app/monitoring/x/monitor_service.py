@@ -17,6 +17,7 @@ from core.model_api import ModelResponseParseError, build_model_request, request
 from niuone_paths import get_dashboard_env_file, get_dashboard_home
 
 if __package__ == "app":
+    from .monitoring.x.runtime import x_watchlist_enabled as _x_watchlist_enabled
     from .monitoring.x.config import (
         env_token_count as _env_token_count,
         parse_watchlist_accounts as _parse_watchlist_accounts,
@@ -57,6 +58,7 @@ if __package__ == "app":
         should_retry_sent_context,
     )
 else:
+    from monitoring.x.runtime import x_watchlist_enabled as _x_watchlist_enabled
     from monitoring.x.config import (
         env_token_count as _env_token_count,
         parse_watchlist_accounts as _parse_watchlist_accounts,
@@ -108,6 +110,7 @@ def load_dashboard_env() -> None:
         "DASHBOARD_GROK_CONTEXT_LENGTH",
         "DASHBOARD_GROK_BASE_URL",
         "DASHBOARD_GROK_API_KEY",
+        "X_WATCHLIST_ENABLED",
         "X_WATCHLIST_MODEL",
         "X_WATCHLIST_CONTEXT_LENGTH",
         "X_WATCHLIST_MAX_TOKENS",
@@ -135,6 +138,10 @@ def load_dashboard_env() -> None:
 load_dashboard_env()
 DASHBOARD_HOME = get_dashboard_home(PROJECT_ROOT)
 os.environ.setdefault("DASHBOARD_HOME", str(DASHBOARD_HOME))
+
+
+def x_watchlist_enabled() -> bool:
+    return _x_watchlist_enabled(os.environ)
 
 try:
     import push_history
@@ -1434,6 +1441,8 @@ def send_ready_items(base_url, api_key, state, items, latest, deadline, limit=10
 
 
 def main():
+    if not x_watchlist_enabled():
+        return
     started = time.monotonic()
     self_deadline = started + int(os.environ.get("X_WATCHLIST_DEADLINE_SECONDS", str(TOTAL_DEADLINE_SECONDS)))
     base_url, api_key = load_config()

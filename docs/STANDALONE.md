@@ -105,7 +105,8 @@ NiuOne 需要接入大模型后才能驱动完整工作流。没有模型配置�
 
 | 场景 | 推荐模型 | 主要配置项 |
 |---|---|---|
-| X 关注列表监控、美股机构评级日报 | Grok | `DASHBOARD_GROK_BASE_URL`、`DASHBOARD_GROK_API_KEY`、`DASHBOARD_GROK_MODEL`、`DASHBOARD_GROK_API_MODE`、`X_WATCHLIST_MAX_TOKENS`、`US_RATING_MAX_TOKENS` |
+| X 关注列表监控 | Grok | `X_WATCHLIST_ENABLED`、`DASHBOARD_GROK_BASE_URL`、`DASHBOARD_GROK_API_KEY`、`DASHBOARD_GROK_MODEL`、`DASHBOARD_GROK_API_MODE`、`X_WATCHLIST_MAX_TOKENS` |
+| 美股机构评级日报 | 具备实时搜索能力的模型；留空时复用 Grok | `US_RATING_MODEL`、`US_RATING_BASE_URL`、`US_RATING_API_KEY`、`US_RATING_MAX_TOKENS` |
 | A 股盘面总结增强 | 兼容 `/chat/completions` 的模型 | `A_SHARE_MODEL_SUMMARY_BASE_URL`、`A_SHARE_MODEL_SUMMARY_API_KEY`、`A_SHARE_MODEL_SUMMARY_MODEL`、`A_SHARE_MODEL_SUMMARY_MAX_TOKENS`；留空时复用 `DASHBOARD_GROK_*` |
 | A 股候选股及龙虎榜连板/连榜消息面预检 | 具备实时搜索能力的模型 | `DASHBOARD_NEWS_BASE_URL`、`DASHBOARD_NEWS_API_KEY`、`DASHBOARD_NEWS_MODEL`、`DASHBOARD_NEWS_API_MODE`、`DASHBOARD_NEWS_MAX_TOKENS`、`DASHBOARD_NEWS_CONCURRENCY` |
 | 问财龙虎榜研究数据 | 同花顺问财 OpenAPI | `IWENCAI_ENABLED`、`IWENCAI_BASE_URL`、`IWENCAI_API_KEY`、`IWENCAI_TIMEOUT_SECONDS`、`IWENCAI_MAX_RETRIES`、`IWENCAI_MAX_CONCURRENCY`、`IWENCAI_CACHE_TTL_SECONDS`、`IWENCAI_DRAGON_TIGER_CRON` |
@@ -113,7 +114,7 @@ NiuOne 需要接入大模型后才能驱动完整工作流。没有模型配置�
 | 买卖决策情报包 | 本地聚合，不需要额外模型 | `DASHBOARD_DECISION_INTELLIGENCE_ENABLED`、`DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS`、`DASHBOARD_DECISION_INTELLIGENCE_MAX_ITEMS` |
 
 启动后点击页面上的设置按钮，在设置页维护模型、任务时间和推文监控作者。所有需要模型和 API Key 的分组均可点击“测试模型连接”，测试页面当前填写值但不会自动保存；API Key 留空时复用已保存密钥。推文监控作者填写 X/Twitter handle，不需要 `@`。
-推文监控和美股评级相关设置由“开启牛牛美股”开关控制；关闭时这些设置会折叠隐藏，后台 X 监控和美股评级定时任务会跳过。
+推文监控和美股评级相关设置由“开启牛牛美股”总开关控制；关闭时这些设置会折叠隐藏，后台 X 监控和美股评级定时任务会跳过。只关闭“开启 X 关注列表监控”时，X 守护进程和直接执行入口都会跳过查询，美股评级日报仍按计划运行。
 `DASHBOARD_GROK_API_MODE` 默认 `auto`：Grok 4.5 使用带搜索工具的 Responses API，其他模型使用 Chat Completions；也可显式填写 `responses` 或 `chat`。`X_WATCHLIST_REQUEST_TIMEOUT_SECONDS` 默认 `45` 秒。
 `DASHBOARD_NEWS_API_MODE` 默认 `auto`：Grok 4.5 和 GPT-5 系列搜索模型使用带 `web_search` 工具的 Responses API；Grok Responses 预检模型还会加入 `x_search`。其他模型以 `web_search` 检索可公开索引的雪球/X 页面，不会回退到 `DASHBOARD_GROK_*`。
 `*_CONTEXT_LENGTH` 只表示模型上下文窗口，默认 `128000`；`*_MAX_TOKENS` 表示本次请求的最大输出长度，调用层会按 Chat 或 Responses 接口映射兼容参数。JSON 与 SSE 返回均受支持。

@@ -14,10 +14,18 @@ from niuone_paths import apply_container_runtime_overrides, get_dashboard_env_fi
 
 if __package__ == "app":
     from .monitoring.x.runtime import env_int as _env_int
-    from .monitoring.x.runtime import parse_env_text, us_features_enabled as _us_features_enabled
+    from .monitoring.x.runtime import (
+        parse_env_text,
+        us_features_enabled as _us_features_enabled,
+        x_watchlist_enabled as _x_watchlist_enabled,
+    )
 else:
     from monitoring.x.runtime import env_int as _env_int
-    from monitoring.x.runtime import parse_env_text, us_features_enabled as _us_features_enabled
+    from monitoring.x.runtime import (
+        parse_env_text,
+        us_features_enabled as _us_features_enabled,
+        x_watchlist_enabled as _x_watchlist_enabled,
+    )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -76,6 +84,10 @@ def us_features_enabled(env: dict[str, str] | None = None) -> bool:
     return _us_features_enabled(env if env is not None else runtime_env())
 
 
+def x_watchlist_enabled(env: dict[str, str] | None = None) -> bool:
+    return _x_watchlist_enabled(env if env is not None else runtime_env())
+
+
 def current_interval_seconds() -> int:
     env = runtime_env()
     return max(1, env_int("X_WATCHLIST_DAEMON_INTERVAL_SECONDS", DEFAULT_INTERVAL_SECONDS, env))
@@ -85,6 +97,9 @@ def run_once() -> None:
     env = runtime_env()
     if not us_features_enabled(env):
         log("skip inner: DASHBOARD_US_FEATURES_ENABLED is disabled")
+        return
+    if not x_watchlist_enabled(env):
+        log("skip inner: X_WATCHLIST_ENABLED is disabled")
         return
     env.setdefault("NIUONE_ROOT", str(PROJECT_ROOT))
     env.setdefault("DASHBOARD_HOME", str(DASHBOARD_HOME))

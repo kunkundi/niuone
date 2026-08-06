@@ -57,6 +57,10 @@ class ModelConnectivityTests(unittest.TestCase):
             {"news-precheck", "decision-model", "us-market", "market-monitoring"},
         )
         self.assertTrue(all("API_KEY" in " ".join(item["field_names"]) for item in metadata))
+        rating = next(item for item in metadata if item["id"] == "us-rating-model")
+        self.assertIn("US_RATING_MODEL", rating["field_names"])
+        self.assertIn("US_RATING_BASE_URL", rating["field_names"])
+        self.assertIn("US_RATING_API_KEY", rating["field_names"])
 
     def test_successful_decision_test_sends_one_small_authenticated_request(self):
         calls = []
@@ -148,6 +152,25 @@ class ModelConnectivityTests(unittest.TestCase):
         self.assertEqual((rating.model, rating.base_url, rating.api_key, rating.api_mode), (
             "shared-grok", "https://grok.example/v1", "grok-key", "responses",
         ))
+
+    def test_rating_target_prefers_complete_dedicated_configuration(self):
+        rating = resolve_model_test_config(
+            "us-rating-model",
+            {
+                "US_RATING_MODEL": "gpt-5-search",
+                "US_RATING_BASE_URL": "https://rating.example/v1",
+                "US_RATING_API_KEY": "rating-key",
+                "DASHBOARD_GROK_MODEL": "shared-grok",
+                "DASHBOARD_GROK_BASE_URL": "https://grok.example/v1",
+                "DASHBOARD_GROK_API_KEY": "grok-key",
+                "DASHBOARD_GROK_API_MODE": "auto",
+            },
+        )
+
+        self.assertEqual(
+            (rating.model, rating.base_url, rating.api_key, rating.api_mode),
+            ("gpt-5-search", "https://rating.example/v1", "rating-key", "auto"),
+        )
 
     def test_failures_are_actionable_and_do_not_expose_provider_bodies(self):
         missing = run_model_connection_test("news-precheck", {})

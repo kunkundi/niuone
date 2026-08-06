@@ -36,10 +36,16 @@ def env_int(name: str, default: int, environ: Mapping[str, str]) -> int:
         return default
 
 
+def env_flag(name: str, default: bool, environ: Mapping[str, str]) -> bool:
+    raw = environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def us_features_enabled(environ: Mapping[str, str]) -> bool:
-    return str(environ.get("DASHBOARD_US_FEATURES_ENABLED") or "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return env_flag("DASHBOARD_US_FEATURES_ENABLED", False, environ)
+
+
+def x_watchlist_enabled(environ: Mapping[str, str]) -> bool:
+    return env_flag("X_WATCHLIST_ENABLED", True, environ)

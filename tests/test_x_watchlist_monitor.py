@@ -435,6 +435,26 @@ print(json.dumps({{
             self.assertEqual(data['returned_accounts'], [])
             self.assertEqual(data['last_issue'], 'watchlist_accounts_empty')
 
+    def test_disabled_monitor_returns_before_loading_credentials_or_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env['DASHBOARD_HOME'] = tmp
+            env['DASHBOARD_ENV_FILE'] = str(Path(tmp) / 'dashboard.env')
+            env['X_WATCHLIST_ENABLED'] = '0'
+            code = f"""
+import importlib.util, json, sys
+sys.path[:0] = [{str(COMPAT)!r}, {str(SRC)!r}]
+spec = importlib.util.spec_from_file_location('x_watchlist_monitor_under_test', {str(COMPAT / 'x_watchlist_monitor.py')!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.load_config = lambda: (_ for _ in ()).throw(AssertionError('credentials loaded'))
+m.load_state = lambda: (_ for _ in ()).throw(AssertionError('state loaded'))
+m.main()
+print(json.dumps({{'enabled': m.x_watchlist_enabled()}}, ensure_ascii=False))
+"""
+            out = subprocess.check_output([sys.executable, '-c', textwrap.dedent(code)], env=env, text=True)
+            self.assertFalse(json.loads(out)['enabled'])
+
     def test_send_ready_items_writes_to_dashboard_database_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()

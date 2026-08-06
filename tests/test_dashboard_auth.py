@@ -5795,6 +5795,18 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(handler.status, 200)
         self.assertEqual(len(payload['groups']), 14)
         self.assertEqual(item_names, set(dashboard.ADMIN_VISIBLE_ENV_NAMES))
+        for name in (
+            'US_RATING_MODEL',
+            'US_RATING_BASE_URL',
+            'US_RATING_API_KEY',
+            'X_WATCHLIST_ENABLED',
+        ):
+            self.assertIn(name, item_names)
+        x_watchlist_enabled = next(
+            item for item in payload['items'] if item['name'] == 'X_WATCHLIST_ENABLED'
+        )
+        self.assertEqual(x_watchlist_enabled['kind'], 'bool')
+        self.assertEqual(x_watchlist_enabled['default'], '1')
         self.assertIn('<div id="app">', index_body)
         self.assertNotIn("name='env__", index_body)
         self.assertIn('<AdminSettingsIndex', ADMIN_FRONTEND)
@@ -5849,7 +5861,7 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(grouped_names, set(dashboard.ADMIN_VISIBLE_ENV_NAMES))
         self.assertIn(':to="`/admin/settings/${group.slug}`"', ADMIN_FRONTEND)
         self.assertIn('保存本组设置', ADMIN_FRONTEND)
-        self.assertEqual(len(dashboard.admin_setting_group_env_names('us-market')), 16)
+        self.assertEqual(len(dashboard.admin_setting_group_env_names('us-market')), 20)
         self.assertEqual(len(dashboard.admin_setting_group_env_names('iwencai')), 8)
         self.assertEqual(
             dashboard.admin_setting_group_env_names('about'),

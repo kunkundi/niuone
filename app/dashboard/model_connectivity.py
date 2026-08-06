@@ -89,7 +89,7 @@ MODEL_TEST_TARGETS: tuple[ModelTestTarget, ...] = (
         id="us-rating-model",
         group_slug="us-market",
         label="美股评级模型",
-        description="优先验证美股评级专用地址和密钥，留空时复用 Grok。",
+        description="优先验证美股评级专用模型、地址和密钥，留空时复用 Grok。",
         model_names=("US_RATING_MODEL", "DASHBOARD_GROK_MODEL"),
         base_url_names=(
             "US_RATING_BASE_URL",
@@ -103,6 +103,7 @@ MODEL_TEST_TARGETS: tuple[ModelTestTarget, ...] = (
         ),
         api_mode_names=("DASHBOARD_GROK_API_MODE",),
         override_names=(
+            "US_RATING_MODEL",
             "US_RATING_BASE_URL",
             "US_RATING_API_KEY",
             "DASHBOARD_GROK_MODEL",
