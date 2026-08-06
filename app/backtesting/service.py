@@ -165,6 +165,7 @@ def load_current_classification_snapshot(
         )
         from app.market_data.iwencai_boards import (
             IwencaiBoardError,
+            fetch_iwencai_board_snapshot,
             load_iwencai_board_snapshot,
         )
         from app.market_data.iwencai_client import (
@@ -180,6 +181,7 @@ def load_current_classification_snapshot(
         )
         from market_data.iwencai_boards import (
             IwencaiBoardError,
+            fetch_iwencai_board_snapshot,
             load_iwencai_board_snapshot,
         )
         from market_data.iwencai_client import (
@@ -190,7 +192,6 @@ def load_current_classification_snapshot(
     project_root = Path(__file__).resolve().parents[2]
     output_dir = get_dashboard_home(project_root) / "cron" / "output"
     active_eastmoney_loader = eastmoney_loader or load_eastmoney_board_snapshot
-    active_iwencai_loader = iwencai_loader or load_iwencai_board_snapshot
     eastmoney_error: Exception | None = None
     try:
         return active_eastmoney_loader(
@@ -212,8 +213,12 @@ def load_current_classification_snapshot(
             "可在设置中启用并配置问财数据源作为首次部署备用源"
         ) from eastmoney_error
     try:
-        return active_iwencai_loader(
-            cache_path=output_dir / "iwencai_stock_boards.json"
+        cache_path = output_dir / "iwencai_stock_boards.json"
+        if iwencai_loader is not None:
+            return iwencai_loader(cache_path=cache_path)
+        return load_iwencai_board_snapshot(
+            cache_path=cache_path,
+            fetcher=lambda: fetch_iwencai_board_snapshot(config=iwencai_config),
         )
     except (IwencaiBoardError, IwencaiError, OSError) as exc:
         raise CurrentClassificationError(

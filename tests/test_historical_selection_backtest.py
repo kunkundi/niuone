@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 import tempfile
 from pathlib import Path
@@ -81,6 +82,55 @@ class HistoricalSelectionBacktestServiceTests(unittest.TestCase):
 
         self.assertIs(snapshot, expected)
         self.assertEqual(calls, ["iwencai_stock_boards.json"])
+
+    def test_current_classification_passes_explicit_env_to_default_iwencai_fetch(self):
+        expected = IwencaiBoardSnapshot(
+            captured_at="2026-08-06 16:00:00",
+            as_of_date="2026-08-06",
+            stocks={
+                "600519": IwencaiStockBoard(
+                    code="600519",
+                    industry="白酒",
+                    concepts=("超级品牌",),
+                )
+            },
+        )
+        explicit_env = {
+            "IWENCAI_ENABLED": "1",
+            "IWENCAI_BASE_URL": "https://openapi.iwencai.com",
+            "IWENCAI_API_KEY": "test-key",
+        }
+        observed_configs = []
+
+        def fetcher(*, config):
+            observed_configs.append(config)
+            return expected
+
+        with tempfile.TemporaryDirectory(
+            prefix="niuone-current-classification-"
+        ) as directory, patch(
+            "app.core.paths.get_dashboard_home",
+            return_value=Path(directory),
+        ), patch(
+            "app.market_data.iwencai_boards.fetch_iwencai_board_snapshot",
+            side_effect=fetcher,
+        ), patch.dict(
+            os.environ,
+            {},
+            clear=True,
+        ):
+            snapshot = load_current_classification_snapshot(
+                {"600519"},
+                env=explicit_env,
+                eastmoney_loader=lambda **_kwargs: (_ for _ in ()).throw(
+                    OSError("eastmoney unavailable")
+                ),
+            )
+
+        self.assertIs(snapshot, expected)
+        self.assertEqual(len(observed_configs), 1)
+        self.assertTrue(observed_configs[0].enabled)
+        self.assertEqual(observed_configs[0].api_key, "test-key")
 
     def test_current_classification_does_not_hide_missing_fallback_configuration(self):
         with self.assertRaisesRegex(CurrentClassificationError, "问财数据源"):
