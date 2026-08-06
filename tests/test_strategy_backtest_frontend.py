@@ -144,6 +144,41 @@ class StrategyBacktestFrontendTests(unittest.TestCase):
         self.assertNotIn("{{ signal.symbol }}", source)
         self.assertNotIn("{{ item.symbol }}", source)
 
+    def test_backtest_diagnostics_localize_warnings_and_reason_codes(self):
+        source = (
+            ROOT / "web" / "src" / "components" / "AdminBacktestPage.vue"
+        ).read_text(encoding="utf-8")
+
+        expected_reasons = {
+            "markup_rebalance_rule": "主升回补条件未满足",
+            "markup_upgrade_same_day_add": "主升升级当日不重复加仓",
+            "markup_upgrade_early_done": "启动阶段升级加仓已完成",
+            "markup_upgrade_confirmed_done": "主升阶段升级加仓已完成",
+            "markup_upgrade_rule": "主升阶段升级加仓条件未满足",
+            "markup_momentum_identity_block": "主升动量试仓不符合策略身份条件",
+            "reversal_execution_gap": "试仓次日开盘跳空超过执行上限",
+            "markup_momentum_execution_gap": "主升动量试仓次日跳空超过执行上限",
+        }
+        for code, label in expected_reasons.items():
+            self.assertIn(f"{code}: '{label}'", source)
+        self.assertIn("? '其他策略限制' : value", source)
+
+        expected_warnings = {
+            "NiuOne structural stops use the completed daily low": "结构止损假设",
+            "NiuOne entries use 100% of the deterministic maximum risk-permitted": (
+                "定仓差异"
+            ),
+            "NiuOne aggressive backtest profile increases account-risk": "进取参数",
+        }
+        for legacy_text, label in expected_warnings.items():
+            self.assertIn(f"text.includes('{legacy_text}')", source)
+            self.assertIn(f"return '{label}'", source)
+        self.assertIn("牛牛结构止损使用已完成日 K 的最低价判断触发", source)
+        self.assertIn("组合收益和回撤反映最大定仓情景", source)
+        self.assertIn("不会放宽价格形态、结构止损、涨停或 T+1 规则", source)
+        self.assertIn("部分标的历史行情获取失败", source)
+        self.assertIn("选股回放缓存未能持久化", source)
+
 
 if __name__ == "__main__":
     unittest.main()

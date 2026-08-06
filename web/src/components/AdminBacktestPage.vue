@@ -121,14 +121,31 @@ const statusLabels = {
 }
 const signalStatusLabels = { evaluated: '已评估', skipped: '已跳过', rejected: '不可评估' }
 const signalStatusReasonLabels = {
+  unknown: '未记录具体原因',
   cooldown: '冷却期内重复信号',
+  unknown_symbol: '候选股票不在历史行情范围',
+  no_next_session: '回测区间内没有下一交易日',
+  missing_next_session_bar: '缺少下一交易日行情',
+  suspended_or_zero_volume: '下一交易日停牌或成交量为零',
+  insufficient_forward_data: '缺少完整的后续收益区间',
   open_at_limit_up: '次日开盘涨停，无法按规则成交',
   position_open: '已有持仓，不重复买入',
   entry_pending: '已有待执行买入信号',
+  holding_upgrade_missing_position: '阶段升级信号缺少对应持仓',
+  markup_upgrade_same_day_add: '主升升级当日不重复加仓',
+  markup_upgrade_early_done: '启动阶段升级加仓已完成',
+  markup_upgrade_confirmed_done: '主升阶段升级加仓已完成',
+  markup_upgrade_rule: '主升阶段升级加仓条件未满足',
+  markup_rebalance_rule: '主升回补条件未满足',
   reversal_same_day_add: '牛牛试仓当日不重复加仓',
   reversal_upgrade_unconfirmed: '试仓尚未满足启动/主线升级条件',
   emerging_upgrade_unconfirmed: '启动观察仓尚未确认升级为主线',
   mixed_strategy_add: '不允许混合不同阶段的加仓路径',
+  unsupported_strategy: '策略类型不支持组合定仓',
+  markup_momentum_identity_block: '主升动量试仓不符合策略身份条件',
+  missing_signal_close: '缺少信号日收盘价，无法校验次日执行',
+  reversal_execution_gap: '试仓次日开盘跳空超过执行上限',
+  markup_momentum_execution_gap: '主升动量试仓次日跳空超过执行上限',
   max_open_positions: '已达到当前风险档位的持仓数量上限',
   max_new_positions: '当日新仓数量已达当前风险档位上限',
   max_industry_positions: '同一主题持仓数量已达当前风险档位上限',
@@ -140,6 +157,7 @@ const signalStatusReasonLabels = {
   target_position_reached: '当前持仓已达到该阶段风险仓位上限',
   below_board_lot: '风险预算不足 1 手，未成交',
   insufficient_cash: '现金不足或低于策略现金储备',
+  entry_risk_rejected: '买入未通过风险定仓规则',
 }
 const diagnosticFamilyLabels = {
   risk_structure: '结构风险', daily_v_structure: '日线 V 型结构', price_structure: '价格结构',
@@ -456,7 +474,9 @@ function compactDiagnosticReasons(values, actionable = false) {
 
 function signalStatusReason(reason) {
   const value = String(reason || '')
-  return signalStatusReasonLabels[value] || value
+  if (!value) return '未记录具体原因'
+  return signalStatusReasonLabels[value]
+    || (/^[a-z][a-z0-9_]*$/.test(value) ? '其他策略限制' : value)
 }
 
 function warningSymbolCount(value) {
@@ -471,9 +491,14 @@ function warningText(value) {
     const count = warningSymbolCount(text)
     return count ? `部分标的发生行情源降级：${count} 只` : '部分标的发生行情源降级。'
   }
+  if (text.includes('partial universe fetched because')) return '部分标的历史行情获取失败，本次回测仅使用成功获取的标的。'
   if (text.includes('survivorship bias')) return '自动候选范围使用当前上市状态，无法补回已退市股票或精确还原历史上市成员，结果可能存在幸存者偏差。'
+  if (text.includes('NiuOne structural stops use the completed daily low')) return '牛牛结构止损使用已完成日 K 的最低价判断触发，并以止损价或开盘价作为成交参考；其他退出使用收盘价。日 K 无法还原盘中精确触发时点与排队优先级。'
+  if (text.includes('NiuOne entries use 100% of the deterministic maximum risk-permitted')) return '牛牛回测按风控允许的确定性最大整手数量下单；模拟交易使用模型指定股数，超出上限时会拒单而非自动缩量。因此本回测的组合收益和回撤反映最大定仓情景。'
+  if (text.includes('NiuOne aggressive backtest profile increases account-risk')) return '牛牛进取回测参数提高账户风险、组合/题材敞口与持仓数量预算，但不会放宽价格形态、结构止损、涨停或 T+1 规则。'
   if (text.includes('completed daily bars at the close')) return '卖出规则使用每日收盘后可见的日 K 数据回放，触发时按当日收盘价估算成交；日 K 无法还原盘中精确触发时点与排队次序。'
   if (text.includes('historical universe coverage')) return `历史行情覆盖率：${text.split(':').slice(1).join(':').trim()}`
+  if (text.includes('selection replay cache could not be persisted')) return '选股回放缓存未能持久化；本次回测已使用内存中的回放数据正常完成。'
   return text
 }
 
@@ -482,7 +507,12 @@ function warningLabel(value) {
   if (text.includes('look-ahead bias')) return '前视偏差'
   if (text.includes('survivorship bias')) return '幸存者偏差'
   if (text.includes('fallback source')) return '行情源降级'
+  if (text.includes('partial universe fetched because')) return '行情缺失'
+  if (text.includes('NiuOne structural stops use the completed daily low')) return '结构止损假设'
+  if (text.includes('NiuOne entries use 100% of the deterministic maximum risk-permitted')) return '定仓差异'
+  if (text.includes('NiuOne aggressive backtest profile increases account-risk')) return '进取参数'
   if (text.includes('completed daily bars at the close')) return '卖出成交假设'
+  if (text.includes('selection replay cache could not be persisted')) return '缓存降级'
   return '其他提示'
 }
 
