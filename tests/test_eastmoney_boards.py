@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from app.market_data.eastmoney_boards import (
     EastmoneyBoardError,
@@ -88,6 +89,29 @@ class EastmoneyBoardTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(snapshot.stocks["000977"].themes, ("存储芯片",))
 
+    def test_fetch_retries_a_page_after_both_hosts_fail_transiently(self):
+        calls = []
+
+        def opener(request, **_kwargs):
+            calls.append(request.full_url)
+            if len(calls) <= 2:
+                raise OSError("temporary outage")
+            return _Response(payload([{
+                "f12": "000977",
+                "f14": "浪潮信息",
+                "f100": "计算机设备",
+                "f103": "存储芯片",
+            }]))
+
+        with patch("app.market_data.eastmoney_boards.time.sleep"):
+            snapshot = fetch_eastmoney_board_snapshot(
+                opener=opener,
+                now=datetime(2026, 8, 2, 10, 0, 0),
+            )
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(snapshot.stocks["000977"].industry, "计算机设备")
+
     def test_stale_cache_is_used_only_after_eastmoney_refresh_fails(self):
         with tempfile.TemporaryDirectory(prefix="niuone-eastmoney-board-") as directory:
             path = Path(directory) / "boards.json"
@@ -112,6 +136,27 @@ class EastmoneyBoardTests(unittest.TestCase):
 
         self.assertTrue(loaded.stale)
         self.assertEqual(loaded.theme_map({"000977"}), {"000977": ("存储芯片",)})
+
+    def test_stale_cache_does_not_hide_programming_errors(self):
+        with tempfile.TemporaryDirectory(prefix="niuone-eastmoney-board-") as directory:
+            path = Path(directory) / "boards.json"
+            cached = EastmoneyBoardSnapshot(
+                captured_at="2026-08-01 15:00:00",
+                as_of_date="2026-08-01",
+                stocks={
+                    "000977": EastmoneyStockBoard(code="000977", industry="计算机设备")
+                },
+            )
+            path.write_text(json.dumps(cached.to_dict(), ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(AssertionError, "programming error"):
+                load_eastmoney_board_snapshot(
+                    cache_path=path,
+                    ttl_seconds=-1,
+                    fetcher=lambda: (_ for _ in ()).throw(
+                        AssertionError("programming error")
+                    ),
+                )
 
 
 if __name__ == "__main__":

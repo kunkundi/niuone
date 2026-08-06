@@ -48,8 +48,7 @@ from .selection import (
     SelectionBacktestConfig,
 )
 from .service import (
-    load_current_industry_map,
-    load_current_theme_map,
+    load_current_classification_snapshot,
     run_historical_selection_backtest,
 )
 
@@ -447,8 +446,9 @@ def run_strategy_backtest_request(
         ),
         position_exit_strategy=position_exit_strategy,
         minimum_coverage_ratio=MIN_HISTORICAL_COVERAGE_RATIO,
-        industry_loader=load_current_industry_map if needs_industry else None,
-        theme_loader=load_current_theme_map if needs_industry else None,
+        classification_loader=(
+            load_current_classification_snapshot if needs_industry else None
+        ),
         name_by_symbol=universe.get("name_by_symbol"),
         progress_callback=progress_callback,
         replay_cache=(
@@ -501,9 +501,20 @@ def run_strategy_backtest_request(
     }
     payload["universe"] = copy.deepcopy(universe["metadata"])
     if needs_industry:
-        payload["universe"]["classification_provider"] = "eastmoney"
+        quality = payload.get("industry_quality")
+        classification_source = str(
+            quality.get("source") if isinstance(quality, Mapping) else ""
+        )
+        classification_provider = (
+            "iwencai"
+            if classification_source == "iwencai_current_industry_concept"
+            else "eastmoney"
+        )
+        payload["universe"]["classification_provider"] = classification_provider
         payload["universe"]["classification_basis"] = (
-            "eastmoney_concept" if suite_id == "niuone" else "eastmoney_industry"
+            f"{classification_provider}_concept"
+            if suite_id == "niuone"
+            else f"{classification_provider}_industry"
         )
     payload["warnings"].append(
         "automatic universe uses today's listed-stock membership; delisted and historically "

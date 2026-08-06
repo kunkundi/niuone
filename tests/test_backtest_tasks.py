@@ -217,6 +217,43 @@ class BacktestTaskTests(unittest.TestCase):
         self.assertEqual(payload["data"]["series"]["sh600000"]["name"], "浦发银行")
         self.assertEqual(payload["data"]["source_counts"], {"eastmoney": 1})
 
+    def test_niuone_runner_reports_the_actual_classification_fallback(self):
+        request = normalize_backtest_request({
+            "strategy_id": "niuone",
+            "start_date": "2026-01-01",
+            "end_date": "2026-02-01",
+            "adjustment": "qfq",
+            "source": "auto",
+        })
+        run = Mock()
+        run.to_dict.return_value = {
+            "selection": {},
+            "warnings": [],
+            "industry_quality": {
+                "source": "iwencai_current_industry_concept",
+            },
+        }
+        run.data.series = {}
+        run.data.failures = {}
+        universe = {
+            "reference_symbols": ("sh600000",),
+            "eligible_symbols": ("sh600000",),
+            "name_by_symbol": {"sh600000": "浦发银行"},
+            "metadata": {"mode": "strategy_auto"},
+        }
+
+        with patch(
+            "app.backtesting.tasks.run_historical_selection_backtest",
+            return_value=run,
+        ):
+            payload = run_strategy_backtest_request(
+                request,
+                universe_loader=lambda _strategy: universe,
+            )
+
+        self.assertEqual(payload["universe"]["classification_provider"], "iwencai")
+        self.assertEqual(payload["universe"]["classification_basis"], "iwencai_concept")
+
     def test_niuone_runner_uses_trade_lifecycle_exit_strategy_without_cooldown(self):
         request = normalize_backtest_request({
             "strategy_id": "niuone",
@@ -281,8 +318,9 @@ class BacktestTaskTests(unittest.TestCase):
             .lifecycle_climax_partial_ratio,
             1.0 / 3.0,
         )
-        self.assertIsNotNone(call.kwargs["industry_loader"])
-        self.assertIsNotNone(call.kwargs["theme_loader"])
+        self.assertIsNotNone(call.kwargs["classification_loader"])
+        self.assertNotIn("industry_loader", call.kwargs)
+        self.assertNotIn("theme_loader", call.kwargs)
         self.assertTrue(any(
             "completed daily low as the trigger" in warning
             for warning in payload["warnings"]

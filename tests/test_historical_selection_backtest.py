@@ -12,10 +12,143 @@ from app.backtesting.selection import (
     SelectionCostModel,
     SelectionSignal,
 )
-from app.backtesting.service import run_historical_selection_backtest
+from app.backtesting.service import (
+    CurrentClassificationError,
+    load_current_classification_snapshot,
+    run_historical_selection_backtest,
+)
+from app.market_data.eastmoney_boards import EastmoneyBoardSnapshot, EastmoneyStockBoard
+from app.market_data.iwencai_boards import IwencaiBoardSnapshot, IwencaiStockBoard
 
 
 class HistoricalSelectionBacktestServiceTests(unittest.TestCase):
+    def test_current_classification_prefers_a_stale_eastmoney_snapshot(self):
+        expected = EastmoneyBoardSnapshot(
+            captured_at="2026-08-05 15:00:00",
+            as_of_date="2026-08-05",
+            stocks={
+                "600519": EastmoneyStockBoard(code="600519", industry="白酒")
+            },
+            stale=True,
+        )
+
+        snapshot = load_current_classification_snapshot(
+            {"600519"},
+            env={
+                "IWENCAI_ENABLED": "1",
+                "IWENCAI_BASE_URL": "https://openapi.iwencai.com",
+                "IWENCAI_API_KEY": "test-key",
+            },
+            eastmoney_loader=lambda **_kwargs: expected,
+            iwencai_loader=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("iWencai must not replace a validated Eastmoney snapshot")
+            ),
+        )
+
+        self.assertIs(snapshot, expected)
+
+    def test_current_classification_falls_back_to_configured_iwencai(self):
+        expected = IwencaiBoardSnapshot(
+            captured_at="2026-08-06 16:00:00",
+            as_of_date="2026-08-06",
+            stocks={
+                "600519": IwencaiStockBoard(
+                    code="600519",
+                    industry="白酒",
+                    concepts=("超级品牌",),
+                )
+            },
+        )
+        calls = []
+
+        def eastmoney_loader(**_kwargs):
+            raise OSError("eastmoney unavailable")
+
+        def iwencai_loader(**kwargs):
+            calls.append(kwargs["cache_path"].name)
+            return expected
+
+        snapshot = load_current_classification_snapshot(
+            {"600519"},
+            env={
+                "IWENCAI_ENABLED": "1",
+                "IWENCAI_BASE_URL": "https://openapi.iwencai.com",
+                "IWENCAI_API_KEY": "test-key",
+            },
+            eastmoney_loader=eastmoney_loader,
+            iwencai_loader=iwencai_loader,
+        )
+
+        self.assertIs(snapshot, expected)
+        self.assertEqual(calls, ["iwencai_stock_boards.json"])
+
+    def test_current_classification_does_not_hide_missing_fallback_configuration(self):
+        with self.assertRaisesRegex(CurrentClassificationError, "问财数据源"):
+            load_current_classification_snapshot(
+                {"600519"},
+                env={"IWENCAI_ENABLED": "0"},
+                eastmoney_loader=lambda **_kwargs: (_ for _ in ()).throw(
+                    OSError("eastmoney unavailable")
+                ),
+            )
+
+    def test_combined_classification_loader_is_called_once_for_both_maps(self):
+        rows = [
+            {"date": "2026-01-05", "open": 10, "high": 10, "low": 10,
+             "close": 10, "volume": 100},
+            {"date": "2026-01-06", "open": 10, "high": 10, "low": 10,
+             "close": 10, "volume": 100},
+        ]
+        calls = []
+        snapshot = IwencaiBoardSnapshot(
+            captured_at="2026-08-06 16:00:00",
+            as_of_date="2026-08-06",
+            stocks={
+                "600519": IwencaiStockBoard(
+                    code="600519",
+                    industry="白酒",
+                    concepts=("超级品牌",),
+                )
+            },
+        )
+
+        def fetcher(_symbol, _start, _end, _adjustment, _timeout):
+            return rows
+
+        def classification_loader(symbols):
+            calls.append(set(symbols))
+            return snapshot
+
+        observed = []
+
+        def selector(context):
+            bar = context.bars["sh600519"]
+            observed.append((bar.industry, tuple(bar.extras.get("themes") or ())))
+            return []
+
+        result = run_historical_selection_backtest(
+            ["600519"],
+            "2026-01-05",
+            "2026-01-05",
+            selector,
+            warmup_calendar_days=0,
+            forward_calendar_days=1,
+            fetch_config=HistoricalFetchConfig(
+                sources=("tencent",), max_attempts_per_source=1,
+            ),
+            source_fetchers={"tencent": fetcher},
+            classification_loader=classification_loader,
+        )
+
+        self.assertEqual(calls, [{"600519"}])
+        self.assertEqual(observed, [("白酒", ("超级品牌",))])
+        self.assertEqual(result.industry_quality.mode, "iwencai_current")
+        self.assertEqual(result.industry_quality.source, "iwencai_current_industry_concept")
+        self.assertIn(
+            "current classification fallback used: iwencai_current_industry_concept",
+            result.warnings,
+        )
+
     def test_reuses_cached_selection_tape_without_calling_selector_again(self):
         rows = [
             {"date": f"2026-01-0{day}", "open": 10, "high": 11,

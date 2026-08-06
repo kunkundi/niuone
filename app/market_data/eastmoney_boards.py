@@ -6,6 +6,7 @@ import math
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -34,6 +35,7 @@ EASTMONEY_BOARD_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 EASTMONEY_BOARD_PAGE_SIZE = 100
 EASTMONEY_BOARD_MAX_PAGES = 80
 EASTMONEY_BOARD_MAX_WORKERS = 4
+EASTMONEY_BOARD_MAX_ATTEMPTS_PER_PAGE = 2
 EASTMONEY_BOARD_SOURCE = "eastmoney_current_industry_concept"
 _CACHE_LOCK = threading.Lock()
 
@@ -252,18 +254,27 @@ def fetch_eastmoney_board_snapshot(
     """Fetch one complete current snapshot with bounded paging and host fallback."""
     def fetch_page(page: int) -> Mapping[str, Any]:
         last_error: Exception | None = None
-        for index, url in enumerate(EASTMONEY_BOARD_URLS):
-            try:
-                return _download_payload(
-                    url,
-                    page=page,
-                    timeout_seconds=timeout_seconds,
-                    opener=opener,
-                )
-            except Exception as exc:
-                last_error = exc
-                if index + 1 < len(EASTMONEY_BOARD_URLS):
-                    time.sleep(0.1)
+        for attempt in range(EASTMONEY_BOARD_MAX_ATTEMPTS_PER_PAGE):
+            for index, url in enumerate(EASTMONEY_BOARD_URLS):
+                try:
+                    return _download_payload(
+                        url,
+                        page=page,
+                        timeout_seconds=timeout_seconds,
+                        opener=opener,
+                    )
+                except (
+                    EastmoneyBoardError,
+                    urllib.error.HTTPError,
+                    urllib.error.URLError,
+                    TimeoutError,
+                    OSError,
+                ) as exc:
+                    last_error = exc
+                    if index + 1 < len(EASTMONEY_BOARD_URLS):
+                        time.sleep(0.1)
+            if attempt + 1 < EASTMONEY_BOARD_MAX_ATTEMPTS_PER_PAGE:
+                time.sleep(min(0.25 * (2**attempt), 1.0))
         raise EastmoneyBoardError(
             f"Eastmoney board page {page} is unavailable "
             f"({type(last_error).__name__})"
@@ -322,7 +333,13 @@ def load_eastmoney_board_snapshot(
             archive_path = path.parent / "eastmoney_board_snapshots" / f"{snapshot.as_of_date}.json"
             write_json_cache(archive_path, snapshot.to_dict())
             return snapshot
-        except Exception:
+        except (
+            EastmoneyBoardError,
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+        ):
             if stale is not None:
                 return EastmoneyBoardSnapshot(
                     captured_at=stale.captured_at,
@@ -336,6 +353,7 @@ def load_eastmoney_board_snapshot(
 
 __all__ = [
     "EASTMONEY_BOARD_CACHE_TTL_SECONDS",
+    "EASTMONEY_BOARD_MAX_ATTEMPTS_PER_PAGE",
     "EASTMONEY_BOARD_SOURCE",
     "EastmoneyBoardError",
     "EastmoneyBoardSnapshot",

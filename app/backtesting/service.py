@@ -1,6 +1,7 @@
 """Compose historical data clients with selection-signal backtesting."""
 from __future__ import annotations
 
+import os
 import re
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -34,6 +35,7 @@ from .replay_cache import ReplayTapeCache, build_replay_cache_key
 
 IndustryMapLoader = Callable[[set[str]], Mapping[str, str]]
 ThemeMapLoader = Callable[[set[str]], Mapping[str, Iterable[str]]]
+ClassificationSnapshotLoader = Callable[[set[str]], Any]
 BacktestProgress = Callable[[int, str, str], None]
 AnnotationProgress = Callable[[int, int, str], None]
 
@@ -138,32 +140,94 @@ class _ClassificationMap(dict):
         self.stale = stale
 
 
-def _current_eastmoney_snapshot(symbols: Iterable[str]):
+class CurrentClassificationError(RuntimeError):
+    """Raised when no complete current classification snapshot is available."""
+
+
+def load_current_classification_snapshot(
+    symbols: Iterable[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    eastmoney_loader: Callable[..., Any] | None = None,
+    iwencai_loader: Callable[..., Any] | None = None,
+):
+    """Prefer Eastmoney, then use configured iWencai only when no snapshot exists."""
+
     codes = {_code(symbol) for symbol in symbols}
     codes.discard("")
     if not codes:
         return None
     try:
         from app.core.paths import get_dashboard_home
-        from app.market_data.eastmoney_boards import load_eastmoney_board_snapshot
+        from app.market_data.eastmoney_boards import (
+            EastmoneyBoardError,
+            load_eastmoney_board_snapshot,
+        )
+        from app.market_data.iwencai_boards import (
+            IwencaiBoardError,
+            load_iwencai_board_snapshot,
+        )
+        from app.market_data.iwencai_client import (
+            IwencaiConfig,
+            IwencaiConfigurationError,
+            IwencaiError,
+        )
     except ImportError:  # pragma: no cover - legacy top-level import path
         from core.paths import get_dashboard_home
-        from market_data.eastmoney_boards import load_eastmoney_board_snapshot
+        from market_data.eastmoney_boards import (
+            EastmoneyBoardError,
+            load_eastmoney_board_snapshot,
+        )
+        from market_data.iwencai_boards import (
+            IwencaiBoardError,
+            load_iwencai_board_snapshot,
+        )
+        from market_data.iwencai_client import (
+            IwencaiConfig,
+            IwencaiConfigurationError,
+            IwencaiError,
+        )
     project_root = Path(__file__).resolve().parents[2]
-    cache_path = (
-        get_dashboard_home(project_root)
-        / "cron" / "output" / "eastmoney_stock_boards.json"
-    )
-    return load_eastmoney_board_snapshot(cache_path=cache_path)
+    output_dir = get_dashboard_home(project_root) / "cron" / "output"
+    active_eastmoney_loader = eastmoney_loader or load_eastmoney_board_snapshot
+    active_iwencai_loader = iwencai_loader or load_iwencai_board_snapshot
+    eastmoney_error: Exception | None = None
+    try:
+        return active_eastmoney_loader(
+            cache_path=output_dir / "eastmoney_stock_boards.json"
+        )
+    except (EastmoneyBoardError, OSError) as exc:
+        eastmoney_error = exc
+
+    values = os.environ if env is None else env
+    try:
+        iwencai_config = IwencaiConfig.from_env(values)
+    except IwencaiConfigurationError as exc:
+        raise CurrentClassificationError(
+            "板块分类数据不可用：东方财富获取失败，问财备用源配置无效"
+        ) from exc
+    if not iwencai_config.enabled or not iwencai_config.api_key:
+        raise CurrentClassificationError(
+            "板块分类数据不可用：东方财富获取失败且没有可用旧快照；"
+            "可在设置中启用并配置问财数据源作为首次部署备用源"
+        ) from eastmoney_error
+    try:
+        return active_iwencai_loader(
+            cache_path=output_dir / "iwencai_stock_boards.json"
+        )
+    except (IwencaiBoardError, IwencaiError, OSError) as exc:
+        raise CurrentClassificationError(
+            "板块分类数据不可用：东方财富和问财备用源均获取失败"
+        ) from exc
 
 
 def load_current_industry_map(symbols: Iterable[str]) -> dict[str, str]:
-    """Return current Eastmoney ``f100`` industries for one bounded universe."""
+    """Return a validated current industry map for one bounded universe."""
     codes = {_code(symbol) for symbol in symbols}
     codes.discard("")
     if not codes:
         return {}
-    snapshot = _current_eastmoney_snapshot(codes)
+    snapshot = load_current_classification_snapshot(codes)
     if snapshot is None:
         return {}
     return _ClassificationMap(
@@ -175,12 +239,12 @@ def load_current_industry_map(symbols: Iterable[str]) -> dict[str, str]:
 
 
 def load_current_theme_map(symbols: Iterable[str]) -> Mapping[str, Iterable[str]]:
-    """Return current Eastmoney concepts, falling back only to Eastmoney industry."""
+    """Return validated current concepts, falling back only to source industry."""
     codes = {_code(symbol) for symbol in symbols}
     codes.discard("")
     if not codes:
         return {}
-    snapshot = _current_eastmoney_snapshot(codes)
+    snapshot = load_current_classification_snapshot(codes)
     if snapshot is None:
         return {}
     return _ClassificationMap(
@@ -252,6 +316,7 @@ def _annotated_bars(
     theme_by_symbol: Mapping[str, Iterable[str]] | None,
     theme_loader: ThemeMapLoader | None,
     name_by_symbol: Mapping[str, str] | None,
+    classification_loader: ClassificationSnapshotLoader | None = None,
     progress_callback: AnnotationProgress | None = None,
 ) -> tuple[
     Mapping[str, tuple[HistoricalBar, ...]],
@@ -266,7 +331,19 @@ def _annotated_bars(
     static_themes = _normalized_theme_map(theme_by_symbol)
     classification_source = ""
     classification_summary: dict[str, Any] = {}
-    if industry_loader is not None:
+    if classification_loader is not None:
+        snapshot = classification_loader({_code(symbol) for symbol in symbols})
+        if snapshot is not None:
+            static_industries.update(
+                _normalized_metadata_map(snapshot.industry_map(symbols))
+            )
+            static_themes.update(_normalized_theme_map(snapshot.theme_map(symbols)))
+            classification_source = str(getattr(snapshot, "source", "") or "")
+            classification_summary.update({
+                "as_of_date": str(getattr(snapshot, "as_of_date", "") or ""),
+                "stale": bool(getattr(snapshot, "stale", False)),
+            })
+    elif industry_loader is not None:
         loaded = industry_loader({_code(symbol) for symbol in symbols})
         static_industries.update(_normalized_metadata_map(loaded))
         classification_source = str(getattr(loaded, "source", "") or "")
@@ -274,7 +351,7 @@ def _annotated_bars(
             "as_of_date": str(getattr(loaded, "as_of_date", "") or ""),
             "stale": bool(getattr(loaded, "stale", False)),
         })
-    if theme_loader is not None:
+    if classification_loader is None and theme_loader is not None:
         loaded_themes = theme_loader({_code(symbol) for symbol in symbols})
         static_themes.update(_normalized_theme_map(loaded_themes))
         classification_source = str(
@@ -320,7 +397,7 @@ def _annotated_bars(
                 covered_symbols.add(symbol)
             else:
                 # Raw rows do not own classification metadata. Missing current
-                # Eastmoney coverage must remain visibly unclassified.
+                # provider coverage must remain visibly unclassified.
                 row.pop("industry", None)
                 row.pop("sector", None)
                 row.pop("themes", None)
@@ -350,8 +427,24 @@ def _annotated_bars(
     missing_bar_count = max(0, total_bar_count - matched_bar_count)
     snapshot_summary: Mapping[str, Any] | None = classification_summary or None
     source = classification_source
+    if source == "iwencai_current_industry_concept":
+        warnings.append(
+            "current classification fallback used: iwencai_current_industry_concept"
+        )
+    if classification_summary.get("stale"):
+        warnings.append(
+            "stale current classification snapshot used: "
+            f"{classification_summary.get('as_of_date') or 'unknown date'}"
+        )
+    mode = "missing"
+    if static_industries or static_themes:
+        mode = (
+            "iwencai_current"
+            if source == "iwencai_current_industry_concept"
+            else "eastmoney_current"
+        )
     quality = IndustryAnnotationQuality(
-        mode="eastmoney_current" if static_industries or static_themes else "missing",
+        mode=mode,
         total_bar_count=total_bar_count,
         matched_bar_count=matched_bar_count,
         missing_bar_count=missing_bar_count,
@@ -377,6 +470,7 @@ def run_historical_selection_backtest(
     minimum_coverage_ratio: float = 0.0,
     source_fetchers: Mapping[str, SourceFetcher] | None = None,
     industry_by_symbol: Mapping[str, str] | None = None,
+    classification_loader: ClassificationSnapshotLoader | None = None,
     industry_loader: IndustryMapLoader | None = None,
     theme_by_symbol: Mapping[str, Iterable[str]] | None = None,
     theme_loader: ThemeMapLoader | None = None,
@@ -451,6 +545,7 @@ def run_historical_selection_backtest(
         data,
         tuple(data.bars_by_symbol),
         industry_by_symbol=industry_by_symbol,
+        classification_loader=classification_loader,
         industry_loader=industry_loader,
         theme_by_symbol=theme_by_symbol,
         theme_loader=theme_loader,
@@ -658,9 +753,12 @@ def run_historical_selection_backtest(
 __all__ = [
     "HistoricalSelectionBacktestRun",
     "BacktestProgress",
+    "ClassificationSnapshotLoader",
+    "CurrentClassificationError",
     "IndustryMapLoader",
     "ThemeMapLoader",
     "IndustryAnnotationQuality",
+    "load_current_classification_snapshot",
     "load_current_industry_map",
     "load_current_theme_map",
     "run_historical_selection_backtest",
