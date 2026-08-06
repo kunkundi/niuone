@@ -492,6 +492,13 @@ function warningText(value) {
     return count ? `部分标的发生行情源降级：${count} 只` : '部分标的发生行情源降级。'
   }
   if (text.includes('partial universe fetched because')) return '部分标的历史行情获取失败，本次回测仅使用成功获取的标的。'
+  if (text.includes('current classification fallback used: iwencai_current_industry_concept')) return '当前行业/概念分类已改用问财备用源。'
+  if (text.includes('stale current classification snapshot used')) {
+    const snapshotDate = text.split(':').slice(1).join(':').trim()
+    return snapshotDate && snapshotDate !== 'unknown date'
+      ? `当前行业/概念分类使用了过期快照：${snapshotDate}。`
+      : '当前行业/概念分类使用了日期未知的过期快照。'
+  }
   if (text.includes('survivorship bias')) return '自动候选范围使用当前上市状态，无法补回已退市股票或精确还原历史上市成员，结果可能存在幸存者偏差。'
   if (text.includes('NiuOne structural stops use the completed daily low')) return '牛牛结构止损使用已完成日 K 的最低价判断触发，并以止损价或开盘价作为成交参考；其他退出使用收盘价。日 K 无法还原盘中精确触发时点与排队优先级。'
   if (text.includes('NiuOne entries use 100% of the deterministic maximum risk-permitted')) return '牛牛回测按风控允许的确定性最大整手数量下单；模拟交易使用模型指定股数，超出上限时会拒单而非自动缩量。因此本回测的组合收益和回撤反映最大定仓情景。'
@@ -508,6 +515,8 @@ function warningLabel(value) {
   if (text.includes('survivorship bias')) return '幸存者偏差'
   if (text.includes('fallback source')) return '行情源降级'
   if (text.includes('partial universe fetched because')) return '行情缺失'
+  if (text.includes('current classification fallback used: iwencai_current_industry_concept')) return '分类源降级'
+  if (text.includes('stale current classification snapshot used')) return '分类快照过期'
   if (text.includes('NiuOne structural stops use the completed daily low')) return '结构止损假设'
   if (text.includes('NiuOne entries use 100% of the deterministic maximum risk-permitted')) return '定仓差异'
   if (text.includes('NiuOne aggressive backtest profile increases account-risk')) return '进取参数'

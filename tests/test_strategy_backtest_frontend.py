@@ -164,6 +164,10 @@ class StrategyBacktestFrontendTests(unittest.TestCase):
         self.assertIn("? '其他策略限制' : value", source)
 
         expected_warnings = {
+            "current classification fallback used: iwencai_current_industry_concept": (
+                "分类源降级"
+            ),
+            "stale current classification snapshot used": "分类快照过期",
             "NiuOne structural stops use the completed daily low": "结构止损假设",
             "NiuOne entries use 100% of the deterministic maximum risk-permitted": (
                 "定仓差异"
@@ -177,6 +181,9 @@ class StrategyBacktestFrontendTests(unittest.TestCase):
         self.assertIn("组合收益和回撤反映最大定仓情景", source)
         self.assertIn("不会放宽价格形态、结构止损、涨停或 T+1 规则", source)
         self.assertIn("部分标的历史行情获取失败", source)
+        self.assertIn("当前行业/概念分类已改用问财备用源", source)
+        self.assertIn("当前行业/概念分类使用了过期快照", source)
+        self.assertIn("日期未知的过期快照", source)
         self.assertIn("选股回放缓存未能持久化", source)
 
 
