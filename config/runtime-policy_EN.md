@@ -56,13 +56,14 @@ Recommended usage:
 
 | Purpose | Recommended model | Settings |
 |---|---|---|
-| X watchlist monitoring and the daily U.S. institutional-rating report | Grok | `DASHBOARD_GROK_BASE_URL`, `DASHBOARD_GROK_API_KEY`, `DASHBOARD_GROK_MODEL`, `DASHBOARD_GROK_API_MODE` |
+| X watchlist monitoring | Grok with `x_search` support | `X_WATCHLIST_ENABLED`, `DASHBOARD_GROK_BASE_URL`, `DASHBOARD_GROK_API_KEY`, `DASHBOARD_GROK_MODEL`, `DASHBOARD_GROK_API_MODE` |
+| Daily U.S. institutional-rating report | A model with real-time web search; reuses Grok when left blank | `US_RATING_MODEL`, `US_RATING_BASE_URL`, `US_RATING_API_KEY`, `US_RATING_MAX_TOKENS` |
 | Enhanced A-share market summaries | A model compatible with `/chat/completions` | `A_SHARE_MODEL_SUMMARY_BASE_URL`, `A_SHARE_MODEL_SUMMARY_API_KEY`, `A_SHARE_MODEL_SUMMARY_MODEL`; reuse `DASHBOARD_GROK_*` when left empty |
 | News prechecks for A-share candidates and dragon-tiger limit-up-streak/consecutive-listing stocks | A model with real-time search capability | `DASHBOARD_NEWS_BASE_URL`, `DASHBOARD_NEWS_API_KEY`, `DASHBOARD_NEWS_MODEL`, `DASHBOARD_NEWS_API_MODE` |
 | Buy and sell decisions after candidate screening | DeepSeek recommended; other compatible models may be used | `DASHBOARD_DECISION_BASE_URL`, `DASHBOARD_DECISION_API_KEY`, `DASHBOARD_DECISION_MODEL` |
 | Comprehensive decision reference | Local aggregation; no additional model required | `DASHBOARD_DECISION_INTELLIGENCE_ENABLED`, `DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS`, `DASHBOARD_DECISION_INTELLIGENCE_MAX_ITEMS` |
 
-X watchlist monitoring and the daily U.S. institutional-rating report are controlled by the `DASHBOARD_US_FEATURES_ENABLED` master switch. When it is disabled, the settings page hides the related configuration, and the background X daemon and scheduled U.S. rating task skip execution.
+X watchlist monitoring and the daily U.S. institutional-rating report are controlled by the `DASHBOARD_US_FEATURES_ENABLED` master switch. When it is disabled, the settings page hides the related configuration, and the background X daemon and scheduled U.S. rating task skip execution. `X_WATCHLIST_ENABLED` is an independent X-monitoring switch that defaults to enabled. Setting it explicitly to `0` makes both the X daemon and direct entry point return before any model request without affecting the U.S. rating task. When the switch is set explicitly in the process or container environment, it takes precedence over the same value in `dashboard.env`.
 
 The comprehensive decision reference reads local market-data caches, market-message history, and simulated-account state, then writes a compressed summary to the decision log. It introduces no additional model keys, but the log may contain candidate-news summaries and must still be reviewed under this runtime-data policy before any public troubleshooting disclosure.
 

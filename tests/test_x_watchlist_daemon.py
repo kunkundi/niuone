@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 import importlib.util
+import json
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -38,6 +42,55 @@ class XWatchlistDaemonTests(unittest.TestCase):
         self.assertTrue(daemon.x_watchlist_enabled({"X_WATCHLIST_ENABLED": "1"}))
         self.assertFalse(daemon.x_watchlist_enabled({"X_WATCHLIST_ENABLED": "0"}))
         self.assertFalse(daemon.x_watchlist_enabled({"X_WATCHLIST_ENABLED": "false"}))
+
+    def test_runtime_env_preserves_explicit_x_watchlist_disable(self):
+        daemon = load_daemon_module()
+        old_parse_env_file = daemon.parse_env_file
+        old_value = os.environ.get("X_WATCHLIST_ENABLED")
+        try:
+            os.environ["X_WATCHLIST_ENABLED"] = "0"
+            daemon.parse_env_file = lambda: {"X_WATCHLIST_ENABLED": "1"}
+
+            self.assertEqual(daemon.runtime_env()["X_WATCHLIST_ENABLED"], "0")
+            self.assertFalse(daemon.x_watchlist_enabled())
+        finally:
+            daemon.parse_env_file = old_parse_env_file
+            if old_value is None:
+                os.environ.pop("X_WATCHLIST_ENABLED", None)
+            else:
+                os.environ["X_WATCHLIST_ENABLED"] = old_value
+
+    def test_standalone_launcher_preserves_explicit_x_watchlist_disable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env_file = root / "dashboard.env"
+            env_file.write_text("X_WATCHLIST_ENABLED=1\n", encoding="utf-8")
+            probe = root / "probe.py"
+            probe.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os\n"
+                "print(json.dumps({'enabled': os.environ.get('X_WATCHLIST_ENABLED')}))\n",
+                encoding="utf-8",
+            )
+            probe.chmod(0o700)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "DASHBOARD_ENV_FILE": str(env_file),
+                    "DASHBOARD_HOME": str(root / "runtime"),
+                    "PYTHON_BIN": str(probe),
+                    "X_WATCHLIST_ENABLED": "0",
+                }
+            )
+
+            output = subprocess.check_output(
+                ["bash", str(ROOT / "run-x-watchlist-daemon.sh")],
+                cwd=ROOT,
+                env=env,
+                text=True,
+            )
+
+            self.assertEqual(json.loads(output)["enabled"], "0")
 
     def test_run_once_skips_inner_monitor_when_us_features_disabled(self):
         daemon = load_daemon_module()

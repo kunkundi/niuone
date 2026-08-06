@@ -75,9 +75,9 @@ def handle_stop(signum: int, _frame: object) -> None:
 
 
 def runtime_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env.update(parse_env_file())
-    return env
+    env = parse_env_file()
+    env.update(os.environ)
+    return apply_container_runtime_overrides(env, PROJECT_ROOT)
 
 
 def us_features_enabled(env: dict[str, str] | None = None) -> bool:

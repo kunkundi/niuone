@@ -56,13 +56,14 @@ Dashboard 增量接口只允许返回 `.local-data/runtime/public-data/` 中由 
 
 | 用途 | 推荐模型 | 配置项 |
 |---|---|---|
-| X 关注列表监控、美股机构评级日报 | Grok | `DASHBOARD_GROK_BASE_URL`、`DASHBOARD_GROK_API_KEY`、`DASHBOARD_GROK_MODEL`、`DASHBOARD_GROK_API_MODE` |
+| X 关注列表监控 | 具备 `x_search` 能力的 Grok | `X_WATCHLIST_ENABLED`、`DASHBOARD_GROK_BASE_URL`、`DASHBOARD_GROK_API_KEY`、`DASHBOARD_GROK_MODEL`、`DASHBOARD_GROK_API_MODE` |
+| 美股机构评级日报 | 具备实时网页搜索能力的模型；留空时复用 Grok | `US_RATING_MODEL`、`US_RATING_BASE_URL`、`US_RATING_API_KEY`、`US_RATING_MAX_TOKENS` |
 | A 股盘面总结增强 | 兼容 `/chat/completions` 的模型 | `A_SHARE_MODEL_SUMMARY_BASE_URL`、`A_SHARE_MODEL_SUMMARY_API_KEY`、`A_SHARE_MODEL_SUMMARY_MODEL`；留空时复用 `DASHBOARD_GROK_*` |
 | A 股候选股及龙虎榜连板/连榜股票消息面预检 | 具备实时搜索能力的模型 | `DASHBOARD_NEWS_BASE_URL`、`DASHBOARD_NEWS_API_KEY`、`DASHBOARD_NEWS_MODEL`、`DASHBOARD_NEWS_API_MODE` |
 | 选股后的买卖决策 | 推荐 DeepSeek，可用其他兼容模型 | `DASHBOARD_DECISION_BASE_URL`、`DASHBOARD_DECISION_API_KEY`、`DASHBOARD_DECISION_MODEL` |
 | 综合决策参考 | 本地聚合，不需要额外模型 | `DASHBOARD_DECISION_INTELLIGENCE_ENABLED`、`DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS`、`DASHBOARD_DECISION_INTELLIGENCE_MAX_ITEMS` |
 
-X 关注列表监控和美股机构评级日报由 `DASHBOARD_US_FEATURES_ENABLED` 总开关控制。关闭时设置页隐藏相关配置，后台 X 守护进程和美股评级定时任务跳过执行。
+X 关注列表监控和美股机构评级日报由 `DASHBOARD_US_FEATURES_ENABLED` 总开关控制。关闭时设置页隐藏相关配置，后台 X 守护进程和美股评级定时任务跳过执行。`X_WATCHLIST_ENABLED` 是默认开启的 X 监控独立开关；显式设为 `0` 时，X 守护进程和直接执行入口都会在模型请求前返回，不影响美股评级任务。若进程或容器环境显式设置该开关，其优先级高于 `dashboard.env` 中的同名值。
 
 综合决策参考会读取本地行情缓存、盘面消息历史和模拟账户状态，并把压缩后的摘要写入决策日志；它不新增模型密钥，但日志中可能包含候选消息面摘要，公开排障前仍需按运行数据策略检查。
 

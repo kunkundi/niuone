@@ -66,6 +66,7 @@ class ContainerDeploymentTests(unittest.TestCase):
                         "PYTHON_BIN=/host/python",
                         "DASHBOARD_CONFIG=/host/config.yaml",
                         "DASHBOARD_NIUNIU_DB=/host/niuniu.db",
+                        "X_WATCHLIST_ENABLED=1",
                         "CUSTOM_FROM_ENV=loaded",
                     )
                 )
@@ -80,6 +81,7 @@ class ContainerDeploymentTests(unittest.TestCase):
                     "NIUONE_CONTAINER_HOST": "0.0.0.0",
                     "NIUONE_CONTAINER_PORT": "8787",
                     "PYTHON_BIN": sys.executable,
+                    "X_WATCHLIST_ENABLED": "0",
                 }
             )
             container_python = Path(sys.executable).resolve()
@@ -99,6 +101,8 @@ result = {
     'process': {key: os.environ.get(key) for key in keys},
     'scheduler': {key: niuone_cron_scheduler.parse_env_file().get(key) for key in keys},
     'watchlist': {key: x_watchlist_daemon.parse_env_file().get(key) for key in keys},
+    'x_watchlist_process_enabled': os.environ.get('X_WATCHLIST_ENABLED'),
+    'x_watchlist_runtime_enabled': x_watchlist_daemon.runtime_env().get('X_WATCHLIST_ENABLED'),
 }
 niuone_dashboard.write_env_file_values({'DASHBOARD_RATE_LIMIT_ANON': '241'})
 result['persisted'] = Path(os.environ['DASHBOARD_ENV_FILE']).read_text()
@@ -130,6 +134,8 @@ print(json.dumps(result))
                 self.assertEqual(runtime_values["DASHBOARD_CONFIG"], str(data_dir / "runtime" / "config.yaml"))
                 self.assertEqual(runtime_values["DASHBOARD_NIUNIU_DB"], str(data_dir / "runtime" / "niuniu.db"))
                 self.assertEqual(runtime_values["CUSTOM_FROM_ENV"], "loaded")
+            self.assertEqual(values["x_watchlist_process_enabled"], "0")
+            self.assertEqual(values["x_watchlist_runtime_enabled"], "0")
             self.assertIn("DASHBOARD_RATE_LIMIT_ANON=241", values["persisted"])
             self.assertNotIn("NIUONE_ROOT=", values["persisted"])
             self.assertNotIn("DASHBOARD_LOG_DIR=", values["persisted"])

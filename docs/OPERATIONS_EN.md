@@ -77,7 +77,7 @@ The final **About** settings group shows the project author, GitHub repository, 
 
 ## 3. Model Configuration
 
-NiuOne requires a large language model to run the complete workflow. Grok is recommended for X watchlist monitoring and the daily U.S. institutional ratings report. Enhanced A-share market summaries can use any model compatible with `/chat/completions`. A-share candidates plus dragon-tiger limit-up-streak or consecutive-listing stocks use the separately configured news-precheck model with real-time search support. Trading decisions after stock selection can use a compatible model, with DeepSeek recommended.
+NiuOne requires a large language model to run the complete workflow. X watchlist monitoring uses Grok with `x_search` support. The daily U.S. institutional ratings report can use a dedicated model with real-time web search and reuses Grok when those settings are blank. Enhanced A-share market summaries can use any model compatible with `/chat/completions`. A-share candidates plus dragon-tiger limit-up-streak or consecutive-listing stocks use the separately configured news-precheck model with real-time search support. Trading decisions after stock selection can use a compatible model, with DeepSeek recommended.
 
 Core configuration items:
 
