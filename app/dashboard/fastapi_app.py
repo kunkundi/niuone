@@ -168,6 +168,7 @@ def create_app(
             legacy.start_market_breadth_sampler()
             legacy.start_market_breadth_auto_recovery()
             legacy.start_industry_flow_sampler()
+            legacy.start_market_api_prewarm()
             projection_enabled = str(
                 os.environ.get("DASHBOARD_PUBLIC_PROJECTION_ENABLED", "1") or "1"
             ).strip().lower() not in {"0", "false", "no", "off"}

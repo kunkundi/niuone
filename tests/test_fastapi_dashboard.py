@@ -386,7 +386,16 @@ class FastApiDashboardTests(unittest.TestCase):
         ])
         self.assertEqual(
             non_cacheable_keys,
-            ["us_sectors", "money_flow", "industry_flow", "industry_flow:compact:v1"],
+            [
+                "indices",
+                "sectors",
+                "hot_stocks:turnover",
+                "hot_stocks:amount",
+                "us_sectors",
+                "money_flow",
+                "industry_flow",
+                "industry_flow:compact:v1",
+            ],
         )
         self.assertEqual(head.status_code, 200)
         self.assertEqual(head.content, b"")

@@ -5459,6 +5459,46 @@ process.stdout.write(JSON.stringify({
         self.assertLessEqual(cached['ts'], before - 60)
         self.assertFalse(dashboard.seed_api_cache_from_json_file('sectors', snapshot, 60))
 
+    def test_durable_snapshot_revives_cache_older_than_stale_window(self):
+        snapshot = self.tmp_path / 'sectors-recovery.json'
+        snapshot.write_text(
+            json.dumps({'items': [{'name': '最新持久化快照'}]}),
+            encoding='utf-8',
+        )
+        cache_key = 'sectors:too-old'
+        dashboard.API_RESPONSE_CACHE[cache_key] = {
+            'ts': (
+                dashboard.time.time()
+                - 60
+                - dashboard.API_STALE_WHILE_REFRESH_SECONDS
+                - 1
+            ),
+            'payload': json.dumps({'items': [{'name': '过期内存值'}]}).encode('utf-8'),
+        }
+
+        self.assertTrue(
+            dashboard.seed_api_cache_from_json_file(cache_key, snapshot, 60)
+        )
+        recovered = json.loads(dashboard.API_RESPONSE_CACHE[cache_key]['payload'])
+        self.assertTrue(recovered['stale_cache'])
+        self.assertEqual(recovered['items'][0]['name'], '最新持久化快照')
+
+    def test_market_api_prewarm_loop_runs_without_browser_request(self):
+        stop_event = threading.Event()
+        calls = []
+
+        def run_once():
+            calls.append('prewarm')
+            stop_event.set()
+
+        dashboard.market_api_prewarm_loop(
+            stop_event=stop_event,
+            poll_seconds=30,
+            run_once=run_once,
+        )
+
+        self.assertEqual(calls, ['prewarm'])
+
     def test_indices_snapshot_only_replaces_cache_with_nonempty_success(self):
         valid = {
             'generated_at': '2026-07-17 10:00:00',
@@ -5524,8 +5564,8 @@ process.stdout.write(JSON.stringify({
 
     def test_indices_frontend_prioritizes_primary_quotes_and_labels_stale_cache(self):
         index_fetch = DASHBOARD_FRONTEND.index("fetchJson('/api/indices'")
-        sector_fetch = DASHBOARD_FRONTEND.index("fetchJson('/api/sectors'")
-        self.assertLess(index_fetch, sector_fetch)
+        auxiliary_fetch = DASHBOARD_FRONTEND.index('loadAuxiliaryMarketData()', index_fetch)
+        self.assertLess(index_fetch, auxiliary_fetch)
         self.assertIn('正在后台更新实时行情', DASHBOARD_FRONTEND)
         self.assertIn('indices-cache-notice', DASHBOARD_FRONTEND)
 
