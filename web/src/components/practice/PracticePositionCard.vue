@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import {
   formatPracticeAmount,
   formatPracticeNumber,
+  localizePracticeReason,
   PRACTICE_BUY_NAMES,
   practiceValueColor,
   signedPracticeAmount,
@@ -43,7 +44,9 @@ const buyStrategyLabels = computed(() => {
   for (const [key, meta] of Object.entries(props.strategyMeta || {})) names[key] = meta?.label || names[key] || key
   return uniquePracticeLabels(splitPracticeTags(props.position.buy_strategy).map(key => names[key] || key))
 })
-const buyReasonText = computed(() => String(props.position.entry_reason || props.position.buy_reason || '').trim())
+const buyReasonText = computed(() => localizePracticeReason(
+  props.position.entry_reason || props.position.buy_reason || '',
+).trim())
 </script>
 
 <template>

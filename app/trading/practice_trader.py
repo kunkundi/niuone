@@ -103,6 +103,13 @@ from strategies.exits import (
     niuone_climax_runner_active,
     resolve_niuone_partial_take_profit,
 )
+from strategies.display import (
+    localize_decision_display_fields,
+    localize_strategy_text,
+    mainline_mode_label,
+    mainline_state_label,
+    stock_role_label,
+)
 from strategies.lifecycle import NIUONE_LIFECYCLE_STAGES
 from trading.fees import (
     A_SHARE_COMMISSION_RATE,
@@ -7907,7 +7914,7 @@ def current_trade_discipline_text(position_limit_desc: str, adaptive: dict[str, 
                 "\n- 牛牛战法执行层动态风险预算：进攻/轮动/修复/防守的单笔权益风险分别≤1.50%/1.00%/0.60%/0.30%，"
                 "策略内组合风险≤4.50%/3.00%/1.80%/0.90%，总仓≤70%/55%/35%/20%，主题风险≤3.00%/2.00%/1.20%/0.60%，主题敞口≤55%/40%/25%/12%；仅市场复合硬停止禁止新仓。"
                 f"领涨/转强/启动/试仓单票30%/25%/15%/6.25%仅为绝对上限，同一主题最多2只、当日跨轮最多新开{NIUONE_MAX_NEW_POSITIONS_PER_TRADING_DAY}只、同时最多持有{NIUONE_MAX_OPEN_POSITIONS}只。"
-                "\n- 牛牛战法按主线酝酿→主升→高潮→分歧→退幕识别；试仓只参与candidate/emerging早段，主升阶段围绕启动/领涨，高潮不追普遍新仓，分歧只观察核心股调整后转强或减仓，持续回落不触发买点，退幕只退出。最近30根日K还须满足：左侧至少回落5日和8%，低点后至少修复3日和6%，收复左侧跌幅须在60%（含）至200%（不含）之间，并确认右侧持续抬高；达到200%后不再按早期试仓。"
+                "\n- 牛牛战法按主线酝酿→主升→高潮→分歧→退幕识别；试仓只参与酝酿候选和启动早段，主升阶段围绕启动/领涨，高潮不追普遍新仓，分歧只观察核心股调整后转强或减仓，持续回落不触发买点，退幕只退出。最近30根日K还须满足：左侧至少回落5日和8%，低点后至少修复3日和6%，收复左侧跌幅须在60%（含）至200%（不含）之间，并确认右侧持续抬高；达到200%后不再按早期试仓。"
                 "试仓在进攻/轮动/修复/防守的单笔权益风险分别≤0.35%/0.30%/0.25%/0.15%，以右侧最近3根日K低点为止损；试仓/启动持仓浮盈在2%～12%、仍处主升且个股保持强势领涨时，跨日延续先向10%上限加仓，主线确认后再向20%上限加仓，每级一次，分歧/高潮/退幕不加仓。"
                 "\n- 牛牛战法退出：试仓所属题材首次进入退幕即退出，3个交易日未延续右侧趋势也退出；成熟路径另按连续两个交易日跌出行业前三龙头梯队、主线连续转弱、市场硬停止叠加退幕和策略时间窗退出；高潮且不亏先减仓1/3，进攻/修复/防守试仓盘中达到0.75R先减仓50%，轮动试仓及成熟路径达到1R先减仓45%，余仓成本保护并按2ATR跟踪。"
             )
@@ -8115,11 +8122,11 @@ def call_model_decision(
                 f"行业:{c.get('industry') or c.get('sector') or '-'} "
                 f"归因:{c.get('signal_theme_attribution_score','-')}/"
                 f"{c.get('signal_theme_attribution_weight','-')} "
-                f"主线:{c.get('mainline_state','-')}/{c.get('mainline_score','-')} "
-                f"模式:{c.get('mainline_mode','none')} 核心:{c.get('mainline_primary') or '-'}"
+                f"主线:{mainline_state_label(c.get('mainline_state'))}/{c.get('mainline_score','-')} "
+                f"模式:{mainline_mode_label(c.get('mainline_mode'))} 核心:{c.get('mainline_primary') or '-'}"
                 f"/{c.get('mainline_secondary') or '-'} "
                 f"强股:{c.get('strong_stock_count','-')} 有效强股:{c.get('effective_strong_count','-')} "
-                f"龙头集中度:{c.get('leader_concentration','-')} 个股角色:{c.get('stock_role','-')} "
+                f"龙头集中度:{c.get('leader_concentration','-')} 个股角色:{stock_role_label(c.get('stock_role'))} "
                 f"个股强度:{c.get('stock_strong_score','-')} 主线排名:{c.get('stock_sector_rank','-')} "
                 f"止损:{c.get('stop_price','-')}({c.get('stop_distance_pct','-')}%) "
                 f"有效损失:{c.get('effective_loss_distance_pct','-')}% "
@@ -8162,7 +8169,7 @@ def call_model_decision(
             tide_detail = (
                 f" 题材:{c.get('signal_theme') or c.get('industry') or c.get('sector') or '-'}"
                 f" 行业:{c.get('industry') or c.get('sector') or '-'}"
-                f" 主线:{c.get('mainline_state','-')}/{c.get('mainline_score','-')}"
+                f" 主线:{mainline_state_label(c.get('mainline_state'))}/{c.get('mainline_score','-')}"
             )
         held_candidate_lines.append(
             f"  {code} {c.get('name') or pos.get('name')} 当前仓位{pos.get('position_pct')}% "
@@ -8282,6 +8289,7 @@ def call_model_decision(
     result["provider"] = PROVIDER_DISPLAY_NAME
     result["market_guidance"] = compact_market_strategy_context(market_strategy_ctx)
     result["decision_intelligence"] = decision_intelligence_ctx
+    localize_decision_display_fields(result)
     audit_generated_at = now_ts()
     if strategy_suite == STRATEGY_SOURCE_PRESET_TEXT:
         interpretation = normalize_preset_strategy_interpretation(
@@ -8398,6 +8406,7 @@ def _fallback_refine_overlimit_buys(
     decision["buy_refinement"] = refinement
     if dropped:
         decision["summary"] = f"{decision.get('summary') or '模型决策'}；二次取舍保留{len(kept_codes)}笔，放弃{len(dropped)}笔"
+    localize_decision_display_fields(decision)
     return refinement
 
 
@@ -8492,6 +8501,7 @@ def refine_overlimit_buy_actions(
             f"{decision.get('summary') or '模型决策'}；二次取舍保留{len(keep_codes)}笔，"
             f"放弃{len(dropped)}笔：{refinement['summary'] or '按盘面上限择优'}"
         )
+        localize_decision_display_fields(decision)
         return refinement
     except Exception as exc:
         return _fallback_refine_overlimit_buys(
@@ -10390,7 +10400,7 @@ def _fallback_action_reason(action: dict[str, Any], candidate: dict[str, Any] | 
     """Build a non-empty trade reason when the model omits one."""
     explicit = str(action.get("reason") or "").strip()
     if explicit:
-        return explicit
+        return localize_strategy_text(explicit)
     if act == "BUY" and candidate:
         strategy = candidate.get("score_basis") or candidate.get("best_strategy") or "候选战法"
         score = candidate.get("best_score", candidate.get("score"))
@@ -10996,7 +11006,7 @@ def build_trade_rule_note() -> str:
         f"总仓位最高{MAX_TOTAL_POSITION_PCT:g}%并至少保留{MIN_CASH_RESERVE_PCT:g}%现金；其他人格仓位由模型结合盘面与风险决定。"
         f"板块潮汐另行按市场状态硬执行单笔/组合/行业动态风险预算、总仓45%/30%/15%、行业敞口12%/10%/6%；"
         f"单票8%/6%/4%仅为绝对天花板。"
-        f"牛牛战法按主线酝酿→主升→高潮→分歧→退幕识别，试仓只参与candidate/emerging早段，candidate强势股等待启动确认；主升围绕启动/领涨，高潮不追普遍新仓，分歧只观察核心股调整后转强或减仓，持续回落不触发买点，退幕只退出。"
+        f"牛牛战法按主线酝酿→主升→高潮→分歧→退幕识别，试仓只参与酝酿候选和启动早段，酝酿候选中的强势股等待启动确认；主升围绕启动/领涨，高潮不追普遍新仓，分歧只观察核心股调整后转强或减仓，持续回落不触发买点，退幕只退出。"
         f"当日跨决策轮次累计最多新开{NIUONE_MAX_NEW_POSITIONS_PER_TRADING_DAY}只、最多同时持有{NIUONE_MAX_OPEN_POSITIONS}只，并硬执行单笔/组合/主题风险预算；总仓70%/55%/35%、主题敞口55%/40%/25%，"
         f"领涨/转强/启动/试仓单票绝对上限30%/25%/15%/6.25%，试仓单笔风险仅0.35%/0.30%/0.25%。"
         f"允许无明确主线；单只股票独强不得确认主线，日线V型结构则按独立试仓路径评估。"
