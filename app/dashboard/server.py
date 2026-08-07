@@ -379,6 +379,7 @@ MARKET_BREADTH_HISTORY_LOCK = threading.RLock()
 MARKET_BREADTH_REFRESH_LOCK = threading.Lock()
 MARKET_BREADTH_SAMPLER_THREAD: threading.Thread | None = None
 DAILY_MARKET_HISTORY_RESET_THREAD: threading.Thread | None = None
+MARKET_API_PREWARM_THREAD: threading.Thread | None = None
 MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS = _bounded_int_value(
     os.environ.get(
         "DASHBOARD_MARKET_BREADTH_SAMPLE_INTERVAL_SECONDS",
@@ -1403,6 +1404,58 @@ def apply_hot_stocks_sort(data: dict[str, Any], sort_by: str) -> dict[str, Any]:
     else:
         payload["items"] = payload.get("amount_top", payload.get("items", []))
     return payload
+
+
+def market_indices_available(payload: dict[str, Any]) -> bool:
+    return bool(payload.get("items")) and not payload.get("error")
+
+
+def market_sectors_available(payload: dict[str, Any]) -> bool:
+    return bool(
+        payload.get("sectors")
+        or payload.get("items")
+        or payload.get("gain_top")
+        or payload.get("loss_top")
+    ) and not payload.get("error")
+
+
+def market_hot_stocks_available(payload: dict[str, Any]) -> bool:
+    return any(
+        bool(payload.get(key))
+        for key in ("items", "amount_top", "turnover_top", "volume_top", "gain_top")
+    ) and not payload.get("error")
+
+
+def produce_sectors_data() -> dict[str, Any]:
+    return run_dashboard_helper(
+        "sectors_dashboard_api.py",
+        {
+            "sectors": [],
+            "items": [],
+            "gain_top": [],
+            "loss_top": [],
+            "industry_gain_top": [],
+            "industry_loss_top": [],
+            "concept_gain_top": [],
+            "concept_loss_top": [],
+        },
+        timeout=120,
+    )
+
+
+def produce_hot_stocks_data(sort_by: str = "amount") -> dict[str, Any]:
+    payload = run_dashboard_helper(
+        "hot_stocks_dashboard_api.py",
+        {
+            "items": [],
+            "amount_top": [],
+            "turnover_top": [],
+            "volume_top": [],
+            "gain_top": [],
+        },
+        timeout=120,
+    )
+    return apply_hot_stocks_sort(payload, sort_by)
 
 
 def get_practice_payload() -> dict[str, Any]:
@@ -5033,7 +5086,96 @@ def seed_api_cache_from_json_file(
         entries_lock=API_RESPONSE_LOCK,
         transform=transform,
         cacheable=cacheable,
+        stale_while_refresh_seconds=API_STALE_WHILE_REFRESH_SECONDS,
     )
+
+
+def prewarm_market_api_cache() -> None:
+    """Keep expensive market endpoints warm without depending on browser visits."""
+
+    indices_ttl = API_TTLS["indices"]
+    seed_api_cache_from_json_file(
+        "indices",
+        INDICES_SNAPSHOT_FILE,
+        indices_ttl,
+        cacheable=market_indices_available,
+    )
+    cached_json_data(
+        "indices",
+        indices_ttl,
+        produce_indices_data,
+        {"items": []},
+        cacheable=market_indices_available,
+    )
+
+    sectors_ttl = API_TTLS["sectors"]
+    sectors_snapshot = CRON_OUTPUT_DIR / "sectors_dashboard_cache.json"
+    seed_api_cache_from_json_file(
+        "sectors",
+        sectors_snapshot,
+        sectors_ttl,
+        cacheable=market_sectors_available,
+    )
+    cached_json_data(
+        "sectors",
+        sectors_ttl,
+        produce_sectors_data,
+        {"sectors": [], "items": []},
+        cacheable=market_sectors_available,
+    )
+
+    hot_ttl = API_TTLS["hot_stocks"]
+    hot_snapshot = CRON_OUTPUT_DIR / "hot_stocks_dashboard_cache.json"
+    seed_api_cache_from_json_file(
+        "hot_stocks:amount",
+        hot_snapshot,
+        hot_ttl,
+        lambda payload: apply_hot_stocks_sort(payload, "amount"),
+        cacheable=market_hot_stocks_available,
+    )
+    cached_json_data(
+        "hot_stocks:amount",
+        hot_ttl,
+        produce_hot_stocks_data,
+        {"items": []},
+        cacheable=market_hot_stocks_available,
+    )
+
+
+def market_api_prewarm_loop(
+    *,
+    stop_event: threading.Event | None = None,
+    poll_seconds: float = 30.0,
+    run_once=None,
+) -> None:
+    """Refresh shared market caches periodically, independent of active pages."""
+
+    stop_event = stop_event or threading.Event()
+    active_run_once = run_once or prewarm_market_api_cache
+    while not stop_event.is_set():
+        try:
+            active_run_once()
+        except Exception as exc:
+            print(
+                f"[WARN] 行情缓存预热失败: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+        if stop_event.wait(max(5.0, float(poll_seconds))):
+            return
+
+
+def start_market_api_prewarm() -> None:
+    global MARKET_API_PREWARM_THREAD
+    if MARKET_API_PREWARM_THREAD and MARKET_API_PREWARM_THREAD.is_alive():
+        return
+    MARKET_API_PREWARM_THREAD = threading.Thread(
+        target=market_api_prewarm_loop,
+        name="market-api-prewarm",
+        daemon=True,
+    )
+    MARKET_API_PREWARM_THREAD.start()
+    print("Market API cache prewarm enabled: 30s", flush=True)
 
 
 def invalidate_api_cache(*cache_keys: str) -> None:

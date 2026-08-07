@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB_SRC = ROOT / "web" / "src"
 VISIBLE_POLLING_PATH = WEB_SRC / "utils" / "visiblePolling.js"
 PUBLIC_PROJECTION_PATH = WEB_SRC / "composables" / "usePublicProjection.js"
+INDICES_DATA_PATH = WEB_SRC / "composables" / "useIndicesData.js"
 
 
 class FrontendPerformanceTests(unittest.TestCase):
@@ -228,6 +229,86 @@ console.log(JSON.stringify({{
                 "nextDelay": 1000,
                 "hiddenAgainTimers": 0,
                 "listenerRemoved": True,
+            },
+        )
+
+    def test_index_polling_does_not_abort_slow_auxiliary_market_requests(self):
+        scenario = f"""
+const pending = new Map();
+const aborted = [];
+let indicesFetches = 0;
+let auxiliaryFetches = 0;
+globalThis.CustomEvent = class {{
+  constructor(name, options) {{ this.type = name; this.detail = options?.detail; }}
+}};
+globalThis.window = {{ dispatchEvent() {{}} }};
+globalThis.document = {{
+  visibilityState: 'visible',
+  createElement() {{ return {{}}; }},
+}};
+function response(payload) {{
+  return {{ ok: true, async json() {{ return payload; }} }};
+}}
+globalThis.fetch = (url, options = {{}}) => {{
+  if (url === '/api/indices') {{
+    indicesFetches += 1;
+    return Promise.resolve(response({{items: [{{name: '上证指数'}}]}}));
+  }}
+  auxiliaryFetches += 1;
+  return new Promise((resolve, reject) => {{
+    const abort = () => {{
+      aborted.push(url);
+      const error = new Error('aborted');
+      error.name = 'AbortError';
+      reject(error);
+    }};
+    options.signal?.addEventListener('abort', abort, {{once: true}});
+    pending.set(url, payload => resolve(response(payload)));
+  }});
+}};
+const {{ useIndicesData }} = await import(
+  {json.dumps(INDICES_DATA_PATH.as_uri())} + '?auxiliary-abort-test=1'
+);
+const api = useIndicesData();
+const first = api.refreshIndices();
+for (let index = 0; index < 5 && pending.size < 6; index += 1) {{
+  await new Promise(resolve => setImmediate(resolve));
+}}
+const second = api.refreshIndices({{background: true}});
+await new Promise(resolve => setImmediate(resolve));
+const payloads = {{
+  '/api/market_breadth': {{latest: {{}}, timeline: [{{generated_at: 'now'}}]}},
+  '/api/sectors': {{sectors: [{{name: '银行'}}]}},
+  '/api/us_sectors': {{items: [{{name: '科技'}}]}},
+  '/api/hot_stocks': {{items: [{{name: '样本股'}}]}},
+  '/api/market_flow': {{total_inflow_yi: 1}},
+  '/api/money_flow': {{inflow: [{{name: '半导体'}}], outflow: []}},
+}};
+for (const [url, resolve] of pending.entries()) resolve(payloads[url]);
+await Promise.all([first, second]);
+await new Promise(resolve => setImmediate(resolve));
+console.log(JSON.stringify({{
+  aborted,
+  indicesFetches,
+  auxiliaryFetches,
+  sector: api.state.sectors.sectors?.[0]?.name,
+}}));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", scenario],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=ROOT,
+        )
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "aborted": [],
+                "indicesFetches": 2,
+                "auxiliaryFetches": 6,
+                "sector": "银行",
             },
         )
 
