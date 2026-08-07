@@ -1313,8 +1313,15 @@ def fetch_dragon_tiger(
     env: Mapping[str, str] | None = None,
     client: IwencaiClient | None = None,
     now: datetime | None = None,
+    on_core_payload: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Fetch one normalized daily dragon-tiger list without exposing free-form queries."""
+    """Fetch one normalized daily dragon-tiger list without exposing free-form queries.
+
+    ``on_core_payload`` runs synchronously after the stock list and sector data
+    are available, but before the slower seat-detail query starts.  Scheduled
+    jobs use it to durably publish the newest core list even if an outer process
+    deadline interrupts optional enrichment later in the run.
+    """
 
     normalized_date = normalize_trade_date(trade_date, now=now)
     normalized_page = normalize_page(page)
@@ -1385,20 +1392,6 @@ def fetch_dragon_tiger(
         if code and code not in sector_by_code:
             sector_by_code[code] = _sector_values(raw_item)
 
-    seat_error = ""
-    seat_trace_id = ""
-    seat_reported_count = 0
-    try:
-        seat_rows, seat_reported_count, seat_trace_id = _query_all_stock_rows(
-            active_client,
-            seat_query,
-            max_pages=MAX_SEAT_SOURCE_PAGES,
-        )
-    except IwencaiError as exc:
-        seat_error = exc.code
-        seat_rows = []
-    seats_by_code = _seats_by_code(seat_rows, normalized_date)
-
     normalized_items: list[dict[str, Any]] = []
     for raw_item in raw_items:
         sector, sector_path = sector_by_code.get(_stock_code(raw_item), ("", ""))
@@ -1411,7 +1404,7 @@ def fetch_dragon_tiger(
             )
         )
     all_items = deduplicate_dragon_tiger_items(normalized_items)
-    _attach_seats(all_items, seats_by_code)
+    _attach_seats(all_items, {})
     unique_count = len(all_items)
     offset = (normalized_page - 1) * normalized_limit
     items = all_items[offset : offset + normalized_limit]
@@ -1429,8 +1422,10 @@ def fetch_dragon_tiger(
         "generated_at": datetime.now(CN_TZ).isoformat(timespec="seconds"),
         "query": query,
         "sector_query": sector_query,
+        "sector_data_complete": not sector_error,
         "seat_query": seat_query,
-        "seat_data_complete": not seat_error,
+        "seat_data_complete": False,
+        "seat_enrichment_pending": True,
         # Compatibility aliases for existing API consumers.
         "institution_query": seat_query,
         "page": normalized_page,
@@ -1443,11 +1438,50 @@ def fetch_dragon_tiger(
         "has_more": has_more,
         "count_mismatch": unique_count != reported_count,
         "trace_id": trace_id,
+        "seat_available": False,
+        "seat_reported_count": 0,
+        "seat_raw_returned_count": 0,
+        "seat_stock_count": 0,
+        "seat_record_count": 0,
+        "seat_trace_id": "",
+        "institution_available": False,
+        "institution_reported_count": 0,
+        "institution_raw_returned_count": 0,
+        "institution_stock_count": 0,
+        "institution_record_count": 0,
+        "institution_trace_id": "",
+        "items": items,
+    }
+    if sector_error:
+        payload["sector_error"] = sector_error
+
+    if on_core_payload is not None and items:
+        on_core_payload(payload)
+
+    seat_error = ""
+    seat_trace_id = ""
+    seat_reported_count = 0
+    try:
+        seat_rows, seat_reported_count, seat_trace_id = _query_all_stock_rows(
+            active_client,
+            seat_query,
+            max_pages=MAX_SEAT_SOURCE_PAGES,
+        )
+    except IwencaiError as exc:
+        seat_error = exc.code
+        seat_rows = []
+    seats_by_code = _seats_by_code(seat_rows, normalized_date)
+    _attach_seats(all_items, seats_by_code)
+    payload.update({
+        "seat_data_complete": not seat_error,
+        "seat_enrichment_pending": False,
         "seat_available": not seat_error,
         "seat_reported_count": seat_reported_count,
         "seat_raw_returned_count": len(seat_rows),
         "seat_stock_count": sum(1 for item in all_items if item.get("seat_record_count")),
-        "seat_record_count": sum(int(item.get("seat_record_count") or 0) for item in all_items),
+        "seat_record_count": sum(
+            int(item.get("seat_record_count") or 0) for item in all_items
+        ),
         "seat_trace_id": seat_trace_id,
         "institution_available": not seat_error,
         "institution_reported_count": sum(
@@ -1463,10 +1497,8 @@ def fetch_dragon_tiger(
             int(item.get("institution_record_count") or 0) for item in all_items
         ),
         "institution_trace_id": seat_trace_id,
-        "items": items,
-    }
-    if sector_error:
-        payload["sector_error"] = sector_error
+        "items": all_items[offset : offset + normalized_limit],
+    })
     if seat_error:
         payload["seat_error"] = seat_error
         payload["institution_error"] = seat_error

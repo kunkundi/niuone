@@ -172,8 +172,30 @@ def refresh_snapshot(
     env: dict[str, str] | None = None,
     trade_date: str | None = None,
 ) -> tuple[dict[str, object], bool]:
-    previous_snapshot, _ = backfill_snapshot_news(path, env=env)
-    payload = fetch_dragon_tiger(trade_date) if trade_date else fetch_dragon_tiger()
+    previous_snapshot = read_dragon_tiger_snapshot(path)
+    core_saved = False
+
+    def persist_core_snapshot(core_payload: Mapping[str, Any]) -> None:
+        nonlocal core_saved
+        calendar = trading_day_status(
+            str(core_payload.get("date") or ""),
+            allow_refresh=False,
+        )
+        staged = mark_consecutive_dragon_tiger_items(
+            core_payload,
+            previous_snapshot,
+            previous_trading_day=str(calendar.get("previous_trading_day") or ""),
+        )
+        staged["snapshot_stage"] = "core"
+        core_saved = write_dragon_tiger_snapshot(path, staged)
+
+    fetch_kwargs = {"on_core_payload": persist_core_snapshot}
+    payload = (
+        fetch_dragon_tiger(trade_date, **fetch_kwargs)
+        if trade_date
+        else fetch_dragon_tiger(**fetch_kwargs)
+    )
+    detail_saved = False
     if payload.get("available") is True and payload.get("items"):
         calendar = trading_day_status(
             str(payload.get("date") or ""),
@@ -184,12 +206,15 @@ def refresh_snapshot(
             previous_snapshot,
             previous_trading_day=str(calendar.get("previous_trading_day") or ""),
         )
+        payload["snapshot_stage"] = "details"
+        detail_saved = write_dragon_tiger_snapshot(path, payload)
         payload = enrich_consecutive_dragon_tiger_news(
             payload,
             env=env,
             previous_snapshot=previous_snapshot,
         )
-    saved = write_dragon_tiger_snapshot(path, payload)
+        payload["snapshot_stage"] = "news"
+    saved = write_dragon_tiger_snapshot(path, payload) or detail_saved or core_saved
     if saved:
         try:
             payload["expired_archive_count"] = expire_dragon_tiger_archives(
