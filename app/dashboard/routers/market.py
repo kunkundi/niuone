@@ -195,7 +195,9 @@ def create_market_router(
                 "indices",
                 services.INDICES_SNAPSHOT_FILE,
                 ttl,
+                cacheable=services.market_indices_available,
             ),
+            cacheable=services.market_indices_available,
         )
 
     @router.api_route("/api/market_breadth", methods=["GET", "HEAD"])
@@ -214,32 +216,20 @@ def create_market_router(
     @router.api_route("/api/sectors", methods=["GET", "HEAD"])
     async def sectors(request: Request) -> Response:
         ttl = services.API_TTLS["sectors"]
-        fallback = {
-            "sectors": [],
-            "items": [],
-            "gain_top": [],
-            "loss_top": [],
-            "industry_gain_top": [],
-            "industry_loss_top": [],
-            "concept_gain_top": [],
-            "concept_loss_top": [],
-        }
         return await cached_response(
             request,
             cache_key="sectors",
             ttl=ttl,
-            producer=lambda: services.run_dashboard_helper(
-                "sectors_dashboard_api.py",
-                fallback,
-                timeout=120,
-            ),
+            producer=services.produce_sectors_data,
             edge_ttl=ttl,
             browser_ttl=15,
             before_cache=lambda: services.seed_api_cache_from_json_file(
                 "sectors",
                 services.CRON_OUTPUT_DIR / "sectors_dashboard_cache.json",
                 ttl,
+                cacheable=services.market_sectors_available,
             ),
+            cacheable=services.market_sectors_available,
         )
 
     @router.api_route("/api/hot_stocks", methods=["GET", "HEAD"])
@@ -262,25 +252,11 @@ def create_market_router(
         def transform(payload: dict[str, Any]) -> dict[str, Any]:
             return services.apply_hot_stocks_sort(payload, sort_by)
 
-        def produce() -> dict[str, Any]:
-            payload = services.run_dashboard_helper(
-                "hot_stocks_dashboard_api.py",
-                {
-                    "items": [],
-                    "amount_top": [],
-                    "turnover_top": [],
-                    "volume_top": [],
-                    "gain_top": [],
-                },
-                timeout=120,
-            )
-            return transform(payload)
-
         return await cached_response(
             request,
             cache_key=cache_key,
             ttl=ttl,
-            producer=produce,
+            producer=lambda: services.produce_hot_stocks_data(sort_by),
             edge_ttl=ttl,
             browser_ttl=15,
             before_cache=lambda: services.seed_api_cache_from_json_file(
@@ -288,7 +264,9 @@ def create_market_router(
                 services.CRON_OUTPUT_DIR / "hot_stocks_dashboard_cache.json",
                 ttl,
                 transform,
+                cacheable=services.market_hot_stocks_available,
             ),
+            cacheable=services.market_hot_stocks_available,
         )
 
     @router.api_route("/api/us_quotes", methods=["GET", "HEAD"])

@@ -142,12 +142,23 @@ def seed_from_json_file(
     entries_lock: Any,
     transform: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     cacheable: PayloadCachePredicate | None = None,
+    stale_while_refresh_seconds: int = 0,
     now: Callable[[], float] = time.time,
 ) -> bool:
-    """Seed a cold entry just beyond its TTL for stale-while-refresh use."""
+    """Seed a cold or unusably old entry for stale-while-refresh use.
 
+    A durable last-good snapshot may replace an in-memory value only after the
+    latter has aged beyond both its TTL and stale-serving window.  This keeps a
+    long-idle endpoint responsive without disturbing a fresh entry or a refresh
+    already covered by the normal stale window.
+    """
+
+    current_time = now()
     with entries_lock:
-        if cache_key in entries:
+        existing = entries.get(cache_key)
+        if existing and current_time - float(existing.get("ts") or 0) < (
+            max(0, ttl) + max(0, stale_while_refresh_seconds)
+        ):
             return False
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -166,10 +177,14 @@ def seed_from_json_file(
         return False
 
     with entries_lock:
-        if cache_key in entries:
+        current_time = now()
+        existing = entries.get(cache_key)
+        if existing and current_time - float(existing.get("ts") or 0) < (
+            max(0, ttl) + max(0, stale_while_refresh_seconds)
+        ):
             return False
         entries[cache_key] = {
-            "ts": now() - max(0, ttl) - 0.001,
+            "ts": current_time - max(0, ttl) - 0.001,
             "payload": payload,
         }
     return True
