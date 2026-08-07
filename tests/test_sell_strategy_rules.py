@@ -2068,9 +2068,9 @@ class SellStrategyRuleTests(unittest.TestCase):
             def fake_request(base_url, api_key, payload, model_name, max_retries=3, timeout=60):
                 self.assertIn("最多允许新开仓：1笔", payload["messages"][0]["content"])
                 return json.dumps({
-                    "summary": "优选股确定性更高，放弃先给股",
+                    "summary": "emerging题材中的leader确定性更高，放弃follower",
                     "keep_buy_codes": ["600002"],
-                    "drop_buys": [{"code": "600001", "reason": "确定性不如优选股"}],
+                    "drop_buys": [{"code": "600001", "reason": "follower确定性不如leader"}],
                 }, ensure_ascii=False)
 
             trader.request_chat_content = fake_request
@@ -2105,6 +2105,12 @@ class SellStrategyRuleTests(unittest.TestCase):
         self.assertEqual(refinement["status"], "model_refined")
         self.assertEqual(refinement["kept_codes"], ["600002"])
         self.assertEqual(decision["actions"][0]["action"], "HOLD")
+        self.assertIn("启动阶段题材中的领涨股", decision["summary"])
+        self.assertEqual(
+            decision["buy_refinement"]["summary"],
+            "启动阶段题材中的领涨股确定性更高，放弃跟随股",
+        )
+        self.assertIn("跟随股确定性不如领涨股", decision["actions"][0]["reason"])
         self.assertEqual(len(executed), 1)
         self.assertEqual(executed[0]["code"], "600002")
         self.assertIn("600002", state["positions"])

@@ -1,8 +1,12 @@
 import { currentChinaDateKey } from './practiceChart.js'
-import { formatPracticeAmount, formatPracticeNumber } from './practiceDisplay.js'
+import {
+  formatPracticeAmount,
+  formatPracticeNumber,
+  localizePracticeReason,
+} from './practiceDisplay.js'
 
 function compactText(value, limit = 120) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  const text = localizePracticeReason(value).replace(/\s+/g, ' ').trim()
   return text.length > limit ? `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…` : text
 }
 
@@ -120,7 +124,7 @@ function textValue(value) {
   if (value == null) return ''
   if (Array.isArray(value)) return value.map(textValue).filter(Boolean).join('；')
   if (typeof value === 'object') return textValue(value.summary || value.reason || value.detail || '')
-  return String(value || '').trim()
+  return localizePracticeReason(value).trim()
 }
 
 export function practiceLogRawText(item) {
