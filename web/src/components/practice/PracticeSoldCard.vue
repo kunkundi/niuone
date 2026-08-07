@@ -4,6 +4,7 @@ import {
   formatPracticeAmount,
   formatPracticeNumber,
   inferPracticeExitRules,
+  localizePracticeReason,
   PRACTICE_EXIT_NAMES,
   practiceValueColor,
   signedPracticeAmount,
@@ -27,7 +28,7 @@ const afterText = computed(() => Number.isFinite(afterPnl.value)
 const observation = computed(() => Number.isFinite(afterPnl.value)
   ? (afterPnl.value > 0 ? '卖出后上涨' : afterPnl.value < 0 ? '卖出后回落' : '卖出后持平')
   : '等待行情')
-const reasonText = computed(() => String(props.sold.reason || '').trim())
+const reasonText = computed(() => localizePracticeReason(props.sold.reason || '').trim())
 const exitRuleLabels = computed(() => {
   const rawRules = Array.isArray(props.sold.exit_rules) && props.sold.exit_rules.length
     ? props.sold.exit_rules

@@ -34,6 +34,36 @@ export const PRACTICE_EXIT_NAMES = {
   other_exit: '其他卖出',
 }
 
+const PRACTICE_REASON_ENUM_LABELS = {
+  candidate: '酝酿候选阶段',
+  emerging: '启动阶段',
+  mainline: '主线阶段',
+  diverging: '分歧阶段',
+  fading: '退潮阶段',
+  inactive: '失效阶段',
+  leader: '领涨股',
+  core: '核心股',
+  follower: '跟随股',
+  strong: '强势股',
+  today_leader: '当日领涨股',
+  today_core: '当日核心股',
+  unknown: '未识别角色',
+}
+
+const PRACTICE_REASON_ENUM_RE = new RegExp(
+  `(?<![A-Za-z0-9_])(?:${Object.keys(PRACTICE_REASON_ENUM_LABELS)
+    .sort((left, right) => right.length - left.length)
+    .join('|')})(?![A-Za-z0-9_])`,
+  'gi',
+)
+
+export function localizePracticeReason(value) {
+  return String(value || '').replace(
+    PRACTICE_REASON_ENUM_RE,
+    match => PRACTICE_REASON_ENUM_LABELS[match.toLowerCase()] || match,
+  )
+}
+
 export function formatPracticeNumber(value, digits = 2) {
   const number = Number(value)
   return Number.isFinite(number)
