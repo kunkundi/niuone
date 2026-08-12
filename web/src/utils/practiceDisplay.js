@@ -48,19 +48,33 @@ const PRACTICE_REASON_ENUM_LABELS = {
   today_leader: '当日领涨股',
   today_core: '当日核心股',
   unknown: '未识别角色',
+  dual: '双主线',
+  single: '单主线',
+  none: '无主线',
 }
 
 const PRACTICE_REASON_ENUM_RE = new RegExp(
-  `(?<![A-Za-z0-9_])(?:${Object.keys(PRACTICE_REASON_ENUM_LABELS)
+  `(^|[^A-Za-z0-9_])(${Object.keys(PRACTICE_REASON_ENUM_LABELS)
     .sort((left, right) => right.length - left.length)
-    .join('|')})(?![A-Za-z0-9_])`,
-  'gi',
+    .join('|')})(?=$|[^A-Za-z0-9_])`,
+  'g',
 )
+const PRACTICE_REASON_CJK_RE = /[\u3400-\u9fff\uf900-\ufaff]/
 
 export function localizePracticeReason(value) {
-  return String(value || '').replace(
+  const text = String(value || '')
+  return text.replace(
     PRACTICE_REASON_ENUM_RE,
-    match => PRACTICE_REASON_ENUM_LABELS[match.toLowerCase()] || match,
+    (match, prefix, token, offset) => {
+      const tokenStart = offset + prefix.length
+      const tokenEnd = tokenStart + token.length
+      const hasChineseContext = PRACTICE_REASON_CJK_RE.test(text[tokenStart - 1] || '')
+        || PRACTICE_REASON_CJK_RE.test(text[tokenEnd] || '')
+      const replacement = text.trim() === token || hasChineseContext
+        ? PRACTICE_REASON_ENUM_LABELS[token]
+        : token
+      return `${prefix}${replacement || token}`
+    },
   )
 }
 

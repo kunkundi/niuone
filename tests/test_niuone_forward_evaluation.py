@@ -14,7 +14,8 @@ from unittest import mock
 
 from app.strategies.lifecycle import NIUONE_LIFECYCLE_STAGES
 from app.trading.niuone_forward import (
-    evaluate_niuone_forward,
+    DEFAULT_COHORT_START,
+    evaluate_niuone_forward as _evaluate_niuone_forward,
     load_niuone_forward_daily_equity_from_db,
     load_niuone_forward_decisions_from_db,
     load_niuone_forward_trades_from_db,
@@ -38,6 +39,14 @@ from app.trading.niuone_forward_service import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+LEGACY_TEST_COHORT_START = "2026-08-04"
+
+
+def evaluate_niuone_forward(*args, **kwargs):
+    """Keep historical fixtures explicit while production starts a v33 cohort."""
+
+    kwargs.setdefault("cohort_start", LEGACY_TEST_COHORT_START)
+    return _evaluate_niuone_forward(*args, **kwargs)
 
 
 def complete_context(**overrides):
@@ -410,12 +419,14 @@ def operating_settings(*times: str) -> dict[str, str]:
 
 class NiuOneForwardEvaluationTests(unittest.TestCase):
     def test_protocol_identity_covers_evidence_pipeline_and_effective_paths(self):
+        self.assertEqual(DEFAULT_COHORT_START, "2026-08-13")
         expected_sources = {
             "app/automation/cron.py",
             "app/automation/scheduler_service.py",
             "app/dashboard/server.py",
             "app/entrypoints/evaluate_niuone_forward.py",
             "app/storage/practice_db.py",
+            "app/strategies/display.py",
             "app/trading/niuone_forward.py",
             "app/trading/niuone_forward_service.py",
             "app/trading/practice_trader.py",
@@ -868,7 +879,7 @@ class NiuOneForwardEvaluationTests(unittest.TestCase):
 
         self.assertEqual(first_code, 0)
         self.assertEqual(first_report["protocol_integrity"]["status"], "frozen")
-        self.assertEqual(first_report["protocol_integrity"]["source_file_count"], 21)
+        self.assertEqual(first_report["protocol_integrity"]["source_file_count"], 22)
         self.assertEqual(first_report["protocol_integrity"]["runtime_setting_count"], 56)
         self.assertEqual(
             first_report["evidence_gate"]["status"],
@@ -2635,7 +2646,7 @@ class NiuOneForwardEvaluationTests(unittest.TestCase):
 
         self.assertEqual(report["overall"]["completed_trade_count"], 1)
         self.assertEqual(report["coverage"]["duplicate_trade_count"], 2)
-        self.assertEqual(report["protocol"]["version"], "niuone-strict-forward-v32")
+        self.assertEqual(report["protocol"]["version"], "niuone-strict-forward-v33")
         self.assertEqual(
             report["protocol"][
                 "niuone_markup_upgrade_absolute_position_cap_pct"

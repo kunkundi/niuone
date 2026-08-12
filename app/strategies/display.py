@@ -39,13 +39,14 @@ MAINLINE_MODE_LABELS = {
 _PROSE_LABELS = {
     **MAINLINE_STATE_LABELS,
     **STOCK_ROLE_LABELS,
+    **MAINLINE_MODE_LABELS,
 }
 _PROSE_ENUM_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
     + "|".join(re.escape(key) for key in sorted(_PROSE_LABELS, key=len, reverse=True))
-    + r")(?![A-Za-z0-9_])",
-    re.IGNORECASE,
+    + r")(?![A-Za-z0-9_])"
 )
+_CJK_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
 
 
 def _enum_label(value: Any, labels: Mapping[str, str], fallback: str = "-") -> str:
@@ -71,8 +72,19 @@ def localize_strategy_text(value: Any) -> str:
     """Translate standalone internal enums while preserving identifiers/acronyms."""
 
     text = str(value or "")
+
+    def replace_enum(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if text.strip() == token:
+            return _PROSE_LABELS[token]
+        left = text[match.start() - 1] if match.start() > 0 else ""
+        right = text[match.end()] if match.end() < len(text) else ""
+        if _CJK_RE.fullmatch(left) or _CJK_RE.fullmatch(right):
+            return _PROSE_LABELS[token]
+        return token
+
     return _PROSE_ENUM_RE.sub(
-        lambda match: _PROSE_LABELS[match.group(0).lower()],
+        replace_enum,
         text,
     )
 
@@ -92,4 +104,9 @@ def localize_decision_display_fields(decision: dict[str, Any]) -> dict[str, Any]
         for key in ("summary", "reason"):
             if isinstance(refinement.get(key), str):
                 refinement[key] = localize_strategy_text(refinement[key])
+        dropped = refinement.get("dropped")
+        if isinstance(dropped, list):
+            for item in dropped:
+                if isinstance(item, dict) and isinstance(item.get("reason"), str):
+                    item["reason"] = localize_strategy_text(item["reason"])
     return decision

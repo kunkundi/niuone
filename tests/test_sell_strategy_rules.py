@@ -2110,6 +2110,10 @@ class SellStrategyRuleTests(unittest.TestCase):
             decision["buy_refinement"]["summary"],
             "启动阶段题材中的领涨股确定性更高，放弃跟随股",
         )
+        self.assertEqual(
+            decision["buy_refinement"]["dropped"][0]["reason"],
+            "跟随股确定性不如领涨股",
+        )
         self.assertIn("跟随股确定性不如领涨股", decision["actions"][0]["reason"])
         self.assertEqual(len(executed), 1)
         self.assertEqual(executed[0]["code"], "600002")

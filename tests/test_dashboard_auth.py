@@ -7684,7 +7684,7 @@ process.stdout.write(JSON.stringify({{
             if item['name'] == dashboard.NIUONE_FORWARD_COHORT_START_ENV
         )
 
-        self.assertEqual(item['default'], '2026-08-04')
+        self.assertEqual(item['default'], '2026-08-13')
         self.assertEqual(item['effect'], 'next_run')
         preflight = next(
             item

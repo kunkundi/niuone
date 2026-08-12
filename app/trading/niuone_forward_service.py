@@ -58,6 +58,7 @@ PROTOCOL_SOURCE_PATHS = (
     "app/entrypoints/evaluate_niuone_forward.py",
     "app/storage/practice_db.py",
     "app/strategies/attribution.py",
+    "app/strategies/display.py",
     "app/strategies/exits.py",
     "app/strategies/lifecycle.py",
     "app/strategies/niuone_risk.py",

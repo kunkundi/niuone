@@ -162,7 +162,7 @@ By default, runtime data is stored in:
 | `DASHBOARD_NIUONE_FORWARD_PREFLIGHT_CRON` | `5 9 * * 1-5` | Verify the strict-forward protocol immediately at Scheduler startup and again at 09:05 Monday through Friday |
 | `DASHBOARD_NIUONE_EQUITY_SNAPSHOT_CRON` | `15 15 * * 1-5` | Refresh marks without trading and persist account equity after each actual A-share session |
 | `DASHBOARD_NIUONE_FORWARD_CRON` | `20 15 * * 1-5` | Recompute the NiuOne strict-forward report from the durable fill ledger after each Monday-through-Friday session; applies on the next Cron cycle |
-| `DASHBOARD_NIUONE_FORWARD_COHORT_START` | `2026-08-04` | Strict-forward cohort start; archive the old protocol lock and restart from a new trading day after a rule change |
+| `DASHBOARD_NIUONE_FORWARD_COHORT_START` | `2026-08-13` | Strict-forward cohort start; archive the old protocol lock and restart from a new trading day after a rule change |
 | `DASHBOARD_ACTIVE_STRATEGY` | `niuone` | Active independent strategy; changes apply to the next scan without a restart |
 | `DASHBOARD_PRACTICE_SCHEDULE_TIMES` | `09:25,10:00,10:30,11:00,11:20,13:00,13:30,14:00,14:30,14:50` | Shared schedule for market summaries, screening, and simulated decisions |
 | `DASHBOARD_KLINE_BOOTSTRAP_ENABLED` | `1` | Prepare full-market daily K lines immediately after a first deployment or cache expiry; requires a restart |
@@ -229,6 +229,8 @@ v30 adds 20-session market-neutral return-wave attribution. It compares the stoc
 v31 fixes repeated dilution in multi-concept leadership. The 15% weight floor remains for ordinary weak branches, while the stock's highest-scoring theme gets one low-share exception when its attribution score is at least 60. Qualified structural and intraday leaders then rank by raw strength and same-day return respectively, with attribution score used only as a tie-breaker. Weighted breadth, amount, concentration, and every trading-risk gate remain unchanged. Context/cache schemas are v12/v10 and standalone strict-forward/backtest protocols are `niuone-strict-forward-v31`/`niuone-backtest-v32`; archive old protocol locks, reports, and backtests before deployment.
 
 v32 adds a stock capital-activity gate to mature mainline entries: Leading, Resumption, and Launch require at least the 60th market-wide amount percentile and the 50th percentile inside the action-selected theme, while missing amount evidence fails closed. Probe remains available for early discovery with an explicit activity warning. Amount weight in stock strength rises to 15% and 5-day strength falls to 20%; size and turnover rate are not direct rewards. Context/dedicated-cache schemas are v13/v11, candidate-evidence schema is v2, and standalone strict-forward/backtest protocols are `niuone-strict-forward-v32`/`niuone-backtest-v33`; archive old locks, reports, and backtests before deployment.
+
+v33 localizes internal enums only in user-facing strategy prose. Prompts use Chinese lifecycle, role, and mainline-mode labels; persistence and historical rendering convert standalone lowercase enums only in Chinese strategy context, including nested dropped-buy reasons. Proper names, English technical prose, errors, acronyms, and identifiers remain unchanged, and all strategy gates and risk controls are identical. The display mapping joins the protocol fingerprint, standalone strict-forward advances to `niuone-strict-forward-v33`, and the default new cohort begins on `2026-08-13`; archive the v32 lock and report before deployment.
 
 ### One-Click Enablement
 

@@ -6,8 +6,12 @@ import {
 } from './practiceDisplay.js'
 
 function compactText(value, limit = 120) {
-  const text = localizePracticeReason(value).replace(/\s+/g, ' ').trim()
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
   return text.length > limit ? `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…` : text
+}
+
+function compactStrategyText(value, limit = 120) {
+  return compactText(localizePracticeReason(value), limit)
 }
 
 export function practiceOperationLogDate(payload) {
@@ -30,7 +34,7 @@ function tradeLogEntry(trade, index) {
     shares,
     Number.isFinite(amount) ? `额 ${formatPracticeAmount(amount)}` : '',
     isSell && Number.isFinite(pnl) ? `盈亏 ${pnl >= 0 ? '+' : ''}${formatPracticeAmount(pnl)}` : '',
-    compactText(trade.reason || trade.trade_reason || '', 100),
+    compactStrategyText(trade.reason || trade.trade_reason || '', 100),
   ].filter(Boolean)
   return {
     key: `trade-${index}`,
@@ -79,7 +83,7 @@ function decisionLogEntry(entry, index) {
   const dropped = Array.isArray(refinement.dropped) ? refinement.dropped : []
   const kept = Array.isArray(refinement.kept_codes) ? refinement.kept_codes : []
   const refinementText = dropped.length || kept.length
-    ? ['二次取舍', kept.length ? `保留${kept.join('、')}` : '未保留新仓', dropped.length ? `放弃${dropped.map(item => [item.code, item.name].filter(Boolean).join(' ')).join('、')}` : '', compactText(refinement.summary || refinement.reason || '', 90)].filter(Boolean).join('：')
+    ? ['二次取舍', kept.length ? `保留${kept.join('、')}` : '未保留新仓', dropped.length ? `放弃${dropped.map(item => [item.code, item.name].filter(Boolean).join(' ')).join('、')}` : '', compactStrategyText(refinement.summary || refinement.reason || '', 90)].filter(Boolean).join('：')
     : ''
   const executionTimes = [...new Set(executed.map(item => String(item?.time || '').slice(11, 19)).filter(Boolean))]
   const executionRange = executionTimes.length
@@ -95,12 +99,12 @@ function decisionLogEntry(entry, index) {
     raw: entry,
     badgeClass: 'decision',
     badge: '决策',
-    summary: compactText(decision.summary || entry.trade_reason || '模型决策', 120),
+    summary: compactStrategyText(decision.summary || entry.trade_reason || '模型决策', 120),
     detail: [
-      compactText(entry.trade_reason || '', 90),
+      compactStrategyText(entry.trade_reason || '', 90),
       actionText,
       refinementText,
-      blocked.length ? `拦截：${compactText(blocked.join('；'), 140)}` : '',
+      blocked.length ? `拦截：${compactStrategyText(blocked.join('；'), 140)}` : '',
       executionNote,
       decision.error ? compactText(decision.error, 90) : '',
     ].filter(Boolean).join('｜'),
@@ -120,22 +124,22 @@ export function normalizePracticeOperationLogs(payload) {
   return entries.sort((left, right) => right.time.localeCompare(left.time) || left.order - right.order)
 }
 
-function textValue(value) {
+function textValue(value, localize = false) {
   if (value == null) return ''
-  if (Array.isArray(value)) return value.map(textValue).filter(Boolean).join('；')
-  if (typeof value === 'object') return textValue(value.summary || value.reason || value.detail || '')
-  return localizePracticeReason(value).trim()
+  if (Array.isArray(value)) return value.map(item => textValue(item, localize)).filter(Boolean).join('；')
+  if (typeof value === 'object') return textValue(value.summary || value.reason || value.detail || '', localize)
+  return (localize ? localizePracticeReason(value) : String(value || '')).trim()
 }
 
 export function practiceLogRawText(item) {
   const raw = item?.raw && typeof item.raw === 'object' ? item.raw : {}
-  if (item?.kind === 'trade') return textValue(raw.reason || raw.trade_reason || item.detail || item.summary)
+  if (item?.kind === 'trade') return textValue(raw.reason || raw.trade_reason || item.detail || item.summary, true)
   const decision = raw.decision && typeof raw.decision === 'object' ? raw.decision : {}
   const parts = [
-    textValue(decision.summary),
-    textValue(raw.trade_reason),
-    textValue(decision.execution_blocked_reasons || decision.execution_blocked_reason),
-    textValue(decision.buy_refinement),
+    textValue(decision.summary, true),
+    textValue(raw.trade_reason, true),
+    textValue(decision.execution_blocked_reasons || decision.execution_blocked_reason, true),
+    textValue(decision.buy_refinement, true),
     textValue(decision.error),
   ].filter(Boolean)
   return [...new Set(parts)].join('\n\n') || item?.detail || item?.summary || '无原文'
