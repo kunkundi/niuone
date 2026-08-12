@@ -313,6 +313,79 @@ console.log(JSON.stringify({{
             },
         )
 
+    def test_slow_auxiliary_request_does_not_block_other_refresh_intervals(self):
+        scenario = f"""
+let now = 0;
+Date.now = () => now;
+const counts = new Map();
+globalThis.CustomEvent = class {{
+  constructor(name, options) {{ this.type = name; this.detail = options?.detail; }}
+}};
+globalThis.window = {{ dispatchEvent() {{}} }};
+globalThis.document = {{
+  visibilityState: 'visible',
+  createElement() {{ return {{}}; }},
+}};
+function response(payload) {{
+  return {{ ok: true, async json() {{ return payload; }} }};
+}}
+globalThis.fetch = (url, options = {{}}) => {{
+  counts.set(url, (counts.get(url) || 0) + 1);
+  if (url === '/api/indices') {{
+    return Promise.resolve(response({{items: [{{name: '上证指数'}}]}}));
+  }}
+  if (url === '/api/us_sectors') {{
+    return new Promise((resolve, reject) => {{
+      options.signal?.addEventListener('abort', () => {{
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }}, {{once: true}});
+    }});
+  }}
+  const payloads = {{
+    '/api/market_breadth': {{latest: {{}}, timeline: [{{generated_at: 'now'}}]}},
+    '/api/sectors': {{sectors: [{{name: '银行'}}]}},
+    '/api/hot_stocks': {{items: [{{name: '样本股'}}]}},
+    '/api/market_flow': {{total_inflow_yi: 1}},
+    '/api/money_flow': {{inflow: [{{name: '半导体'}}], outflow: []}},
+  }};
+  return Promise.resolve(response(payloads[url]));
+}};
+const {{ useIndicesData }} = await import(
+  {json.dumps(INDICES_DATA_PATH.as_uri())} + '?auxiliary-independent-test=1'
+);
+const api = useIndicesData();
+await api.refreshIndices();
+await new Promise(resolve => setImmediate(resolve));
+now = 31_000;
+await api.refreshIndices({{background: true}});
+await new Promise(resolve => setImmediate(resolve));
+api.deactivateIndices();
+await new Promise(resolve => setImmediate(resolve));
+console.log(JSON.stringify(Object.fromEntries(counts)));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", scenario],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=ROOT,
+        )
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "/api/indices": 2,
+                "/api/market_breadth": 2,
+                "/api/sectors": 1,
+                "/api/us_sectors": 1,
+                "/api/hot_stocks": 1,
+                "/api/market_flow": 2,
+                "/api/money_flow": 1,
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

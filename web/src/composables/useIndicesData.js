@@ -30,8 +30,7 @@ const view = reactive({
 let users = 0
 let stopRefreshPolling = null
 let requestController = null
-let auxiliaryController = null
-let auxiliaryPromise = null
+const auxiliaryRequests = new Map()
 let auxiliaryGeneration = 0
 let loadSequence = 0
 let lastLoadedAt = 0
@@ -70,14 +69,32 @@ function isDue(hasRows, lastFetchAt, intervalMs) {
   return !hasRows || Date.now() - lastFetchAt >= intervalMs
 }
 
-function loadAuxiliaryMarketData() {
-  if (auxiliaryPromise) return auxiliaryPromise
+function loadAuxiliaryPayload(key, fetchPayload, apply) {
+  const activeRequest = auxiliaryRequests.get(key)
+  if (activeRequest) return activeRequest.promise
+
   const generation = auxiliaryGeneration
   const controller = new AbortController()
-  auxiliaryController = controller
+  const request = { controller, promise: null }
   const isCurrent = () => (
-    generation === auxiliaryGeneration && auxiliaryController === controller
+    generation === auxiliaryGeneration && auxiliaryRequests.get(key) === request
   )
+  request.promise = applyPayloadAsReady(
+    fetchPayload(controller.signal),
+    apply,
+    isCurrent,
+  )
+    .catch((error) => {
+      if (error?.name !== 'AbortError') console.error(`${key} data failed`, error)
+    })
+    .finally(() => {
+      if (auxiliaryRequests.get(key) === request) auxiliaryRequests.delete(key)
+    })
+  auxiliaryRequests.set(key, request)
+  return request.promise
+}
+
+function loadAuxiliaryMarketData() {
   const requests = []
 
   if (isDue(
@@ -85,15 +102,15 @@ function loadAuxiliaryMarketData() {
     marketBreadthLastFetchAt,
     MARKET_BREADTH_REFRESH_INTERVAL_MS,
   )) {
-    requests.push(applyPayloadAsReady(
-      fetchJson('/api/market_breadth', { latest: {}, timeline: [] }, controller.signal),
+    requests.push(loadAuxiliaryPayload(
+      'market breadth',
+      signal => fetchJson('/api/market_breadth', { latest: {}, timeline: [] }, signal),
       (marketBreadth) => {
         state.marketBreadth = marketBreadth.error && state.marketBreadth.timeline?.length
           ? { ...state.marketBreadth, error: marketBreadth.error }
           : marketBreadth
         if (!marketBreadth.error) marketBreadthLastFetchAt = Date.now()
       },
-      isCurrent,
     ))
   }
   if (isDue(
@@ -101,33 +118,33 @@ function loadAuxiliaryMarketData() {
     sectorsLastFetchAt,
     SECTORS_REFRESH_INTERVAL_MS,
   )) {
-    requests.push(applyPayloadAsReady(
-      fetchJson('/api/sectors', { sectors: [] }, controller.signal),
+    requests.push(loadAuxiliaryPayload(
+      'sectors',
+      signal => fetchJson('/api/sectors', { sectors: [] }, signal),
       (sectors) => {
         state.sectors = sectors
         if (!sectors.error) sectorsLastFetchAt = Date.now()
       },
-      isCurrent,
     ))
   }
   if (isDue(state.usSectors.items?.length, usSectorsLastFetchAt, US_SECTORS_REFRESH_INTERVAL_MS)) {
-    requests.push(applyPayloadAsReady(
-      fetchJson('/api/us_sectors', { items: [] }, controller.signal),
+    requests.push(loadAuxiliaryPayload(
+      'US sectors',
+      signal => fetchJson('/api/us_sectors', { items: [] }, signal),
       (usSectors) => {
         state.usSectors = usSectors
         if (!usSectors.error) usSectorsLastFetchAt = Date.now()
       },
-      isCurrent,
     ))
   }
   if (isDue(state.hotStocks.items?.length, hotStocksLastFetchAt, HOT_STOCKS_REFRESH_INTERVAL_MS)) {
-    requests.push(applyPayloadAsReady(
-      fetchJson('/api/hot_stocks', { items: [] }, controller.signal),
+    requests.push(loadAuxiliaryPayload(
+      'hot stocks',
+      signal => fetchJson('/api/hot_stocks', { items: [] }, signal),
       (hotStocks) => {
         state.hotStocks = hotStocks
         if (!hotStocks.error) hotStocksLastFetchAt = Date.now()
       },
-      isCurrent,
     ))
   }
   if (isDue(
@@ -135,13 +152,13 @@ function loadAuxiliaryMarketData() {
     marketFlowLastFetchAt,
     MARKET_FLOW_REFRESH_INTERVAL_MS,
   )) {
-    requests.push(applyPayloadAsReady(
-      fetchJson('/api/market_flow', { total_inflow_yi: null }, controller.signal),
+    requests.push(loadAuxiliaryPayload(
+      'market flow',
+      signal => fetchJson('/api/market_flow', { total_inflow_yi: null }, signal),
       (marketFlow) => {
         state.marketFlow = marketFlow
         if (!marketFlow.error) marketFlowLastFetchAt = Date.now()
       },
-      isCurrent,
     ))
   }
   if (isDue(
@@ -149,26 +166,17 @@ function loadAuxiliaryMarketData() {
     moneyFlowLastFetchAt,
     MONEY_FLOW_REFRESH_INTERVAL_MS,
   )) {
-    requests.push(applyPayloadAsReady(
-      fetchJson('/api/money_flow', { inflow: [], outflow: [] }, controller.signal),
+    requests.push(loadAuxiliaryPayload(
+      'money flow',
+      signal => fetchJson('/api/money_flow', { inflow: [], outflow: [] }, signal),
       (moneyFlow) => {
         state.moneyFlow = moneyFlow
         if (!moneyFlow.error) moneyFlowLastFetchAt = Date.now()
       },
-      isCurrent,
     ))
   }
 
-  const pending = Promise.all(requests)
-    .catch((error) => {
-      if (error?.name !== 'AbortError') console.error('market auxiliary data failed', error)
-    })
-    .finally(() => {
-      if (auxiliaryController === controller) auxiliaryController = null
-      if (auxiliaryPromise === pending) auxiliaryPromise = null
-    })
-  auxiliaryPromise = pending
-  return pending
+  return Promise.all(requests)
 }
 
 async function loadIndices({ background = false } = {}) {
@@ -225,9 +233,8 @@ function deactivateIndices() {
   requestController?.abort()
   requestController = null
   auxiliaryGeneration += 1
-  auxiliaryController?.abort()
-  auxiliaryController = null
-  auxiliaryPromise = null
+  for (const request of auxiliaryRequests.values()) request.controller.abort()
+  auxiliaryRequests.clear()
 }
 
 function adoptMoneyFlow(payload) {

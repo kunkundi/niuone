@@ -74,7 +74,7 @@ Dashboard 使用 Vue 3 + Vite 和 FastAPI/Uvicorn，并保持单进程、单监�
 - `public_projection.py` 只接受显式源数据，并用字段白名单生成展示模型；
 - `public_snapshots.py` 原子发布内容寻址对象、manifest 和 latest 指针；
 - `projection_service.py` 在后台固定频率读取服务端状态，浏览器轮询不会触发交易、行情或历史重算；
-- Dashboard 后台会主动预热指数、板块和热门股票共享缓存；即使没有浏览器停留在行情页，首次访问也优先返回最近成功快照并在后台刷新；
+- Dashboard 后台会在对应市场活跃时段主动预热指数、板块和热门股票共享缓存，失败后有界退避；休市时只复用最近成功快照，首次访问仍可立即返回快照并在后台刷新；
 - 候选与题材投影分别读取 `practice_candidates_latest.json` 和 `niuone_mainline_summary_latest.json`；二者排除全市场题材上下文和逐股归因状态，并按文件身份、大小与纳秒修改时间复用解析结果。完整扫描缓存继续供交易、分钟题材连续性和旧入口使用；小型快照缺失或落后时只读取一次完整缓存并自动补建；
 - `fastapi_app.py` 是唯一 HTTP 监听者，只组合中间件、Vue 构建、共享缓存响应和领域路由；
 - `routers/` 显式声明 system、messages、market、practice、admin 五组浏览器接口；

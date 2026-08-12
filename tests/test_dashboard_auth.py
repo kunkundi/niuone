@@ -5483,6 +5483,37 @@ process.stdout.write(JSON.stringify({
         self.assertTrue(recovered['stale_cache'])
         self.assertEqual(recovered['items'][0]['name'], '最新持久化快照')
 
+    def test_durable_snapshot_does_not_replace_newer_in_memory_success(self):
+        snapshot = self.tmp_path / 'indices-older-snapshot.json'
+        snapshot.write_text(
+            json.dumps({
+                'generated_at': '2026-08-12 09:00:00',
+                'items': [{'name': '较旧持久化快照'}],
+            }),
+            encoding='utf-8',
+        )
+        cache_key = 'indices:newer-memory'
+        dashboard.API_RESPONSE_CACHE[cache_key] = {
+            'ts': (
+                dashboard.time.time()
+                - 60
+                - dashboard.API_STALE_WHILE_REFRESH_SECONDS
+                - 1
+            ),
+            'payload': json.dumps({
+                'generated_at': '2026-08-12 10:00:00',
+                'items': [{'name': '较新内存值'}],
+            }).encode('utf-8'),
+        }
+
+        self.assertTrue(
+            dashboard.seed_api_cache_from_json_file(cache_key, snapshot, 60)
+        )
+        recovered = json.loads(dashboard.API_RESPONSE_CACHE[cache_key]['payload'])
+        self.assertTrue(recovered['stale_cache'])
+        self.assertEqual(recovered['generated_at'], '2026-08-12 10:00:00')
+        self.assertEqual(recovered['items'][0]['name'], '较新内存值')
+
     def test_market_api_prewarm_loop_runs_without_browser_request(self):
         stop_event = threading.Event()
         calls = []
@@ -5498,6 +5529,92 @@ process.stdout.write(JSON.stringify({
         )
 
         self.assertEqual(calls, ['prewarm'])
+
+    def test_market_api_prewarm_loop_backs_off_after_failures(self):
+        waits = []
+        outcomes = iter([False, False, True])
+
+        class StopAfterThreeWaits:
+            @staticmethod
+            def is_set():
+                return False
+
+            @staticmethod
+            def wait(seconds):
+                waits.append(seconds)
+                return len(waits) >= 3
+
+        dashboard.market_api_prewarm_loop(
+            stop_event=StopAfterThreeWaits(),
+            poll_seconds=30,
+            max_backoff_seconds=300,
+            run_once=lambda: next(outcomes),
+        )
+
+        self.assertEqual(waits, [60, 120, 30])
+
+    def test_market_api_prewarm_only_refreshes_relevant_market_sessions(self):
+        refreshed = []
+        original_cached_json_data = dashboard.cached_json_data
+        original_entry_is_fresh = dashboard._api_cache_entry_is_fresh
+        original_seed = dashboard.seed_api_cache_from_json_file
+        try:
+            dashboard.seed_api_cache_from_json_file = lambda *args, **kwargs: True
+            dashboard._api_cache_entry_is_fresh = lambda *args, **kwargs: True
+            dashboard.cached_json_data = lambda cache_key, *args, **kwargs: (
+                refreshed.append(cache_key) or {'items': [{'name': cache_key}]}
+            )
+
+            self.assertTrue(
+                dashboard.prewarm_market_api_cache(
+                    now=datetime(2026, 8, 9, 12, 0, 0),
+                )
+            )
+            self.assertEqual(refreshed, [])
+
+            self.assertTrue(
+                dashboard.prewarm_market_api_cache(
+                    now=datetime(2026, 8, 12, 20, 0, 0),
+                )
+            )
+            self.assertEqual(refreshed, ['indices'])
+
+            refreshed.clear()
+            self.assertTrue(
+                dashboard.prewarm_market_api_cache(
+                    now=datetime(2026, 8, 12, 10, 0, 0),
+                )
+            )
+            self.assertEqual(
+                refreshed,
+                ['indices', 'sectors', 'hot_stocks:amount'],
+            )
+        finally:
+            dashboard.cached_json_data = original_cached_json_data
+            dashboard._api_cache_entry_is_fresh = original_entry_is_fresh
+            dashboard.seed_api_cache_from_json_file = original_seed
+
+    def test_global_market_prewarm_window_has_bounded_weekend_edges(self):
+        self.assertFalse(
+            dashboard.is_global_market_prewarm_window(
+                datetime(2026, 8, 10, 5, 59, 59),
+            )
+        )
+        self.assertTrue(
+            dashboard.is_global_market_prewarm_window(
+                datetime(2026, 8, 10, 6, 0, 0),
+            )
+        )
+        self.assertTrue(
+            dashboard.is_global_market_prewarm_window(
+                datetime(2026, 8, 15, 5, 59, 59),
+            )
+        )
+        self.assertFalse(
+            dashboard.is_global_market_prewarm_window(
+                datetime(2026, 8, 15, 6, 0, 0),
+            )
+        )
 
     def test_indices_snapshot_only_replaces_cache_with_nonempty_success(self):
         valid = {

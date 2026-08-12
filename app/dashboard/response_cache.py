@@ -17,6 +17,23 @@ KeyLocks = dict[str, threading.Lock]
 Generations = dict[str, int]
 
 
+def _decode_payload_dict(payload: Any) -> dict[str, Any] | None:
+    try:
+        raw = payload.decode("utf-8", "ignore") if isinstance(payload, bytes) else payload
+        data = json.loads(raw)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return dict(data) if isinstance(data, dict) else None
+
+
+def _payload_freshness_marker(payload: dict[str, Any]) -> str:
+    for key in ("generated_at", "updated_at", "source_updated_at"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def store_payload(
     cache_key: str,
     payload: bytes,
@@ -171,8 +188,6 @@ def seed_from_json_file(
             return False
         if cacheable is not None and not cacheable(data):
             return False
-        data["stale_cache"] = True
-        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
     except (OSError, ValueError, TypeError):
         return False
 
@@ -183,6 +198,25 @@ def seed_from_json_file(
             max(0, ttl) + max(0, stale_while_refresh_seconds)
         ):
             return False
+        selected = data
+        if existing:
+            existing_data = _decode_payload_dict(existing.get("payload"))
+            existing_cacheable = existing_data is not None and (
+                cacheable is None or cacheable(existing_data)
+            )
+            existing_marker = (
+                _payload_freshness_marker(existing_data) if existing_data else ""
+            )
+            snapshot_marker = _payload_freshness_marker(data)
+            if (
+                existing_cacheable
+                and existing_marker
+                and snapshot_marker
+                and existing_marker > snapshot_marker
+            ):
+                selected = existing_data
+        selected["stale_cache"] = True
+        payload = json.dumps(selected, ensure_ascii=False).encode("utf-8")
         entries[cache_key] = {
             "ts": current_time - max(0, ttl) - 0.001,
             "payload": payload,
