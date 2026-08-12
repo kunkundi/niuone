@@ -32,6 +32,34 @@ SNAPSHOT_FILE = Path(
 ).expanduser()
 CN_TZ = ZoneInfo("Asia/Shanghai")
 DEFAULT_DRAGON_TIGER_CRON = "0 18 * * 1-5"
+SNAPSHOT_STAGE_RANK = {
+    "core": 1,
+    "details": 2,
+    "news": 3,
+}
+
+
+def _snapshot_stage_rank(payload: Mapping[str, Any] | None) -> int:
+    if not isinstance(payload, Mapping):
+        return 0
+    stage = str(payload.get("snapshot_stage") or "").strip().lower()
+    if stage:
+        return SNAPSHOT_STAGE_RANK.get(stage, 0)
+    # Snapshots written before staged persistence were saved only after the
+    # complete refresh path, so they must not be downgraded by an intermediate
+    # stage during a same-day retry.
+    return SNAPSHOT_STAGE_RANK["news"]
+
+
+def _stage_can_replace(
+    previous_snapshot: Mapping[str, Any] | None,
+    candidate: Mapping[str, Any],
+) -> bool:
+    if not isinstance(previous_snapshot, Mapping):
+        return True
+    if str(previous_snapshot.get("date") or "") != str(candidate.get("date") or ""):
+        return True
+    return _snapshot_stage_rank(candidate) >= _snapshot_stage_rank(previous_snapshot)
 
 
 def _news_precheck_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -187,7 +215,8 @@ def refresh_snapshot(
             previous_trading_day=str(calendar.get("previous_trading_day") or ""),
         )
         staged["snapshot_stage"] = "core"
-        core_saved = write_dragon_tiger_snapshot(path, staged)
+        if _stage_can_replace(previous_snapshot, staged):
+            core_saved = write_dragon_tiger_snapshot(path, staged)
 
     fetch_kwargs = {"on_core_payload": persist_core_snapshot}
     payload = (
@@ -207,7 +236,8 @@ def refresh_snapshot(
             previous_trading_day=str(calendar.get("previous_trading_day") or ""),
         )
         payload["snapshot_stage"] = "details"
-        detail_saved = write_dragon_tiger_snapshot(path, payload)
+        if _stage_can_replace(previous_snapshot, payload):
+            detail_saved = write_dragon_tiger_snapshot(path, payload)
         payload = enrich_consecutive_dragon_tiger_news(
             payload,
             env=env,
@@ -215,6 +245,12 @@ def refresh_snapshot(
         )
         payload["snapshot_stage"] = "news"
     saved = write_dragon_tiger_snapshot(path, payload) or detail_saved or core_saved
+    if not saved and previous_snapshot is not None:
+        # A failed or empty new-date query still leaves the previous snapshot
+        # visible.  Complete its pending news after the current pull attempt so
+        # that this work can never consume the budget needed to publish a new
+        # core list.
+        backfill_snapshot_news(path, env=env)
     if saved:
         try:
             payload["expired_archive_count"] = expire_dragon_tiger_archives(
@@ -237,6 +273,8 @@ def catch_up_snapshot(
     if not target_date or latest_date > target_date:
         return latest, False
     if latest_date == target_date:
+        if _snapshot_stage_rank(latest) < SNAPSHOT_STAGE_RANK["details"]:
+            return refresh_snapshot(path, env=env, trade_date=target_date)
         return backfill_snapshot_news(path, env=env)
     return refresh_snapshot(path, env=env, trade_date=target_date)
 

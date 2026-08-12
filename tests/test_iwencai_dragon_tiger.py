@@ -1007,6 +1007,32 @@ class IwencaiDragonTigerTests(unittest.TestCase):
             )
             self.assertEqual(path.read_bytes(), original)
 
+    def test_core_snapshot_keeps_explicit_seat_incomplete_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "iwencai_dragon_tiger_latest.json"
+            core = {
+                "enabled": True,
+                "available": True,
+                "source": "同花顺问财",
+                "date": "2026-07-16",
+                "seat_query": "2026年7月16日龙虎榜营业部",
+                "seat_data_complete": False,
+                "seat_enrichment_pending": True,
+                "snapshot_stage": "core",
+                "items": [{
+                    "code": "000001.SZ",
+                    "name": "平安银行",
+                    "seats": [],
+                }],
+            }
+
+            self.assertTrue(write_dragon_tiger_snapshot(path, core))
+            loaded = read_dragon_tiger_snapshot(path, trade_date="2026-07-16")
+
+            self.assertIsNotNone(loaded)
+            self.assertFalse(loaded["seat_data_complete"])
+            self.assertTrue(loaded["seat_enrichment_pending"])
+
     def test_daily_archive_uses_exact_date_and_preserves_same_day_seat_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_dir = Path(tmp) / "iwencai_dragon_tiger"

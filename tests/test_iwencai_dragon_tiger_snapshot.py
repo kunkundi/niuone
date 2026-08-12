@@ -350,6 +350,56 @@ class IwencaiDragonTigerSnapshotTests(unittest.TestCase):
             self.assertEqual(latest["items"][0]["code"], "600000.SH")
             self.assertEqual(latest["items"][0]["consecutive_list_days"], 1)
 
+    def test_same_day_core_interruption_does_not_downgrade_complete_snapshot(self):
+        with tempfile.TemporaryDirectory(prefix="niuone-dragon-tiger-") as tmp:
+            path = Path(tmp) / "iwencai_dragon_tiger_latest.json"
+            complete = _payload("2026-07-16", "600000.SH")
+            complete.update({
+                "seat_query": "2026年7月16日龙虎榜营业部",
+                "seat_data_complete": True,
+                "snapshot_stage": "news",
+            })
+            complete["items"][0].update({
+                "limit_up_streak": 2,
+                "seats": [{
+                    "seat_name": "已保存席位",
+                    "seat_category": "brokerage",
+                }],
+                "news_precheck": {
+                    "checked": True,
+                    "available": True,
+                    "summary": "已保存消息",
+                },
+            })
+            self.assertTrue(write_dragon_tiger_snapshot(path, complete))
+            original_fetch = snapshot_job.fetch_dragon_tiger
+            original_calendar = snapshot_job.trading_day_status
+            try:
+                def interrupted_fetch(*, on_core_payload=None):
+                    current = _payload("2026-07-16", "600000.SH")
+                    current["items"][0]["limit_up_streak"] = 2
+                    on_core_payload(current)
+                    raise TimeoutError("seat enrichment exceeded the outer deadline")
+
+                snapshot_job.fetch_dragon_tiger = interrupted_fetch
+                snapshot_job.trading_day_status = lambda *_args, **_kwargs: {
+                    "previous_trading_day": "2026-07-15",
+                }
+                with self.assertRaises(TimeoutError):
+                    snapshot_job.refresh_snapshot(path, env={})
+            finally:
+                snapshot_job.fetch_dragon_tiger = original_fetch
+                snapshot_job.trading_day_status = original_calendar
+
+            latest = read_dragon_tiger_snapshot(path, trade_date="2026-07-16")
+            self.assertIsNotNone(latest)
+            self.assertEqual(latest["snapshot_stage"], "news")
+            self.assertEqual(latest["items"][0]["seats"][0]["seat_name"], "已保存席位")
+            self.assertEqual(
+                latest["items"][0]["news_precheck"]["summary"],
+                "已保存消息",
+            )
+
     def test_refresh_persists_details_before_news_enrichment_is_interrupted(self):
         with tempfile.TemporaryDirectory(prefix="niuone-dragon-tiger-") as tmp:
             path = Path(tmp) / "iwencai_dragon_tiger_latest.json"
@@ -383,6 +433,190 @@ class IwencaiDragonTigerSnapshotTests(unittest.TestCase):
             self.assertIsNotNone(latest)
             self.assertEqual(latest["snapshot_stage"], "details")
             self.assertEqual(latest["items"][0]["code"], "600000.SH")
+
+    def test_same_day_news_interruption_does_not_downgrade_complete_snapshot(self):
+        with tempfile.TemporaryDirectory(prefix="niuone-dragon-tiger-") as tmp:
+            path = Path(tmp) / "iwencai_dragon_tiger_latest.json"
+            complete = _payload("2026-07-16", "600000.SH")
+            complete["snapshot_stage"] = "news"
+            complete["items"][0]["news_precheck"] = {
+                "checked": True,
+                "available": True,
+                "summary": "已保存消息",
+            }
+            self.assertTrue(write_dragon_tiger_snapshot(path, complete))
+            original_fetch = snapshot_job.fetch_dragon_tiger
+            original_enrich = snapshot_job.enrich_consecutive_dragon_tiger_news
+            original_calendar = snapshot_job.trading_day_status
+            try:
+                def fake_fetch(*, on_core_payload=None):
+                    current = _payload("2026-07-16", "600000.SH")
+                    on_core_payload(current)
+                    current["items"][0]["seats"] = [{"seat_name": "新席位"}]
+                    return current
+
+                snapshot_job.fetch_dragon_tiger = fake_fetch
+                snapshot_job.enrich_consecutive_dragon_tiger_news = (
+                    lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                        TimeoutError("news enrichment exceeded the outer deadline")
+                    )
+                )
+                snapshot_job.trading_day_status = lambda *_args, **_kwargs: {
+                    "previous_trading_day": "2026-07-15",
+                }
+                with self.assertRaises(TimeoutError):
+                    snapshot_job.refresh_snapshot(path, env={})
+            finally:
+                snapshot_job.fetch_dragon_tiger = original_fetch
+                snapshot_job.enrich_consecutive_dragon_tiger_news = original_enrich
+                snapshot_job.trading_day_status = original_calendar
+
+            latest = read_dragon_tiger_snapshot(path, trade_date="2026-07-16")
+            self.assertIsNotNone(latest)
+            self.assertEqual(latest["snapshot_stage"], "news")
+            self.assertEqual(
+                latest["items"][0]["news_precheck"]["summary"],
+                "已保存消息",
+            )
+
+    def test_same_day_seat_failure_preserves_complete_snapshot_enrichment(self):
+        with tempfile.TemporaryDirectory(prefix="niuone-dragon-tiger-") as tmp:
+            path = Path(tmp) / "iwencai_dragon_tiger_latest.json"
+            complete = _payload("2026-07-16", "600000.SH")
+            complete.update({
+                "seat_query": "2026年7月16日龙虎榜营业部",
+                "seat_data_complete": True,
+                "snapshot_stage": "news",
+            })
+            complete["items"][0].update({
+                "limit_up_streak": 2,
+                "seats": [{
+                    "seat_name": "已保存席位",
+                    "seat_category": "brokerage",
+                }],
+                "news_precheck": {
+                    "checked": True,
+                    "available": True,
+                    "summary": "已保存消息",
+                },
+            })
+            self.assertTrue(write_dragon_tiger_snapshot(path, complete))
+            original_fetch = snapshot_job.fetch_dragon_tiger
+            original_calendar = snapshot_job.trading_day_status
+            try:
+                def failed_seat_fetch(*, on_core_payload=None):
+                    current = _payload("2026-07-16", "600000.SH")
+                    current.update({
+                        "seat_query": "2026年7月16日龙虎榜营业部",
+                        "seat_data_complete": False,
+                        "seat_enrichment_pending": True,
+                    })
+                    current["items"][0]["limit_up_streak"] = 2
+                    on_core_payload(current)
+                    current["seat_enrichment_pending"] = False
+                    current["seat_error"] = "seat_timeout"
+                    current["institution_error"] = "seat_timeout"
+                    return current
+
+                snapshot_job.fetch_dragon_tiger = failed_seat_fetch
+                snapshot_job.trading_day_status = lambda *_args, **_kwargs: {
+                    "previous_trading_day": "2026-07-15",
+                }
+                _payload_result, saved = snapshot_job.refresh_snapshot(path, env={})
+            finally:
+                snapshot_job.fetch_dragon_tiger = original_fetch
+                snapshot_job.trading_day_status = original_calendar
+
+            self.assertTrue(saved)
+            latest = read_dragon_tiger_snapshot(path, trade_date="2026-07-16")
+            self.assertIsNotNone(latest)
+            self.assertEqual(latest["snapshot_stage"], "news")
+            self.assertTrue(latest["seat_preserved_from_previous"])
+            self.assertEqual(latest["items"][0]["seats"][0]["seat_name"], "已保存席位")
+            self.assertEqual(
+                latest["items"][0]["news_precheck"]["summary"],
+                "已保存消息",
+            )
+
+    def test_catch_up_retries_same_day_core_snapshot(self):
+        with tempfile.TemporaryDirectory(prefix="niuone-dragon-tiger-") as tmp:
+            path = Path(tmp) / "iwencai_dragon_tiger_latest.json"
+            core = _payload("2026-07-16", "600000.SH")
+            core["snapshot_stage"] = "core"
+            self.assertTrue(write_dragon_tiger_snapshot(path, core))
+            calls = []
+            original_target = snapshot_job.catch_up_trade_date
+            original_refresh = snapshot_job.refresh_snapshot
+            try:
+                snapshot_job.catch_up_trade_date = lambda **_kwargs: "2026-07-16"
+
+                def fake_refresh(_path, *, env=None, trade_date=None):
+                    calls.append((env, trade_date))
+                    result = _payload(str(trade_date), "600000.SH")
+                    result["snapshot_stage"] = "details"
+                    return result, True
+
+                snapshot_job.refresh_snapshot = fake_refresh
+                payload, saved = snapshot_job.catch_up_snapshot(path, env={})
+            finally:
+                snapshot_job.catch_up_trade_date = original_target
+                snapshot_job.refresh_snapshot = original_refresh
+
+            self.assertTrue(saved)
+            self.assertEqual(payload["snapshot_stage"], "details")
+            self.assertEqual(calls, [({}, "2026-07-16")])
+
+    def test_failed_new_date_refresh_backfills_retained_snapshot_after_query(self):
+        with tempfile.TemporaryDirectory(prefix="niuone-dragon-tiger-") as tmp:
+            path = Path(tmp) / "iwencai_dragon_tiger_latest.json"
+            pending = _payload("2026-07-15", "000001.SZ")
+            pending["items"][0].update({
+                "limit_up_streak": 2,
+                "news_precheck": {
+                    "checked": False,
+                    "available": False,
+                    "error": "pending_news_precheck",
+                },
+            })
+            self.assertTrue(write_dragon_tiger_snapshot(path, pending))
+            calls = []
+            original_fetch = snapshot_job.fetch_dragon_tiger
+            original_enrich = snapshot_job.enrich_consecutive_dragon_tiger_news
+            try:
+                snapshot_job.fetch_dragon_tiger = lambda **_kwargs: {
+                    "enabled": True,
+                    "available": False,
+                    "date": "2026-07-16",
+                    "items": [],
+                    "error": "upstream_unavailable",
+                }
+
+                def fake_enrich(current, **_kwargs):
+                    calls.append(str(current.get("date") or ""))
+                    result = dict(current)
+                    result["items"] = [dict(item) for item in current["items"]]
+                    result["items"][0]["news_precheck"] = {
+                        "checked": True,
+                        "available": True,
+                        "summary": "旧快照消息已补检",
+                    }
+                    return result
+
+                snapshot_job.enrich_consecutive_dragon_tiger_news = fake_enrich
+                payload, saved = snapshot_job.refresh_snapshot(path, env={})
+            finally:
+                snapshot_job.fetch_dragon_tiger = original_fetch
+                snapshot_job.enrich_consecutive_dragon_tiger_news = original_enrich
+
+            self.assertFalse(saved)
+            self.assertEqual(payload["error"], "upstream_unavailable")
+            self.assertEqual(calls, ["2026-07-15"])
+            retained = read_dragon_tiger_snapshot(path, trade_date="2026-07-15")
+            self.assertIsNotNone(retained)
+            self.assertEqual(
+                retained["items"][0]["news_precheck"]["summary"],
+                "旧快照消息已补检",
+            )
 
     def test_next_success_replaces_latest_and_expires_legacy_archives(self):
         with tempfile.TemporaryDirectory(prefix="niuone-dragon-tiger-") as tmp:

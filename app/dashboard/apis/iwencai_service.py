@@ -107,9 +107,12 @@ def read_dragon_tiger_snapshot(
             for item in raw_items
         },
     )
-    result["seat_data_complete"] = bool(
-        payload.get("seat_data_complete") is True or (has_native_seats and payload.get("seat_query"))
-    )
+    if "seat_data_complete" in payload:
+        result["seat_data_complete"] = payload.get("seat_data_complete") is True
+    else:
+        result["seat_data_complete"] = bool(
+            has_native_seats and payload.get("seat_query")
+        )
     _update_seat_payload_summary(result, payload)
     result["returned_count"] = len(result["items"])
     result["unique_count"] = max(
