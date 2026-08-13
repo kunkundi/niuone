@@ -156,6 +156,66 @@ class HistoricalMarketDataTests(unittest.TestCase):
         self.assertEqual(result.source, "tencent")
         self.assertEqual(len(result.attempts), 1)
 
+    def test_fetched_rows_are_immutable_and_reuse_repeated_metadata(self):
+        def fetcher(symbol, *_args):
+            return [{
+                "date": "2026-01-02",
+                "open": 10,
+                "high": 10.2,
+                "low": 9.9,
+                "close": 10.1,
+                "volume": 100,
+                "custom": symbol,
+            }]
+
+        result = fetch_historical_data(
+            ["600000", "000001"],
+            "2026-01-01",
+            "2026-01-03",
+            config=HistoricalFetchConfig(
+                sources=("eastmoney",),
+                max_attempts_per_source=1,
+                max_workers=2,
+            ),
+            source_fetchers={"eastmoney": fetcher},
+        )
+        first = result.series["sh600000"].bars[0]
+        second = result.series["sz000001"].bars[0]
+
+        self.assertEqual(
+            dict(first),
+            {
+                "date": "2026-01-02",
+                "open": 10.0,
+                "high": 10.2,
+                "low": 9.9,
+                "close": 10.1,
+                "volume": 100.0,
+                "symbol": "sh600000",
+                "data_source": "eastmoney",
+                "adjustment": "qfq",
+            },
+        )
+        self.assertEqual(
+            list(first),
+            [
+                "symbol",
+                "date",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "data_source",
+                "adjustment",
+            ],
+        )
+        self.assertIs(first["date"], second["date"])
+        self.assertIs(first["data_source"], second["data_source"])
+        self.assertIs(first["adjustment"], second["adjustment"])
+        with self.assertRaises(TypeError):
+            first["close"] = 0
+
     def test_automatic_batch_opens_unhealthy_primary_source_circuit(self):
         calls = {"eastmoney": 0, "tencent": 0}
         symbols = [f"6000{index:02d}" for index in range(8)]

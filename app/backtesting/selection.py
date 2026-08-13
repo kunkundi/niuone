@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import statistics
+import sys
 import time
 from bisect import bisect_left
 from collections import Counter
@@ -141,12 +142,12 @@ def _optional_float(value: Any, *, field_name: str) -> float | None:
 
 def _date_text(value: Any) -> str:
     if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d")
+        return sys.intern(value.strftime("%Y-%m-%d"))
     if isinstance(value, date):
-        return value.isoformat()
+        return sys.intern(value.isoformat())
     text = str(value or "").strip()[:10]
     try:
-        return date.fromisoformat(text).isoformat()
+        return sys.intern(date.fromisoformat(text).isoformat())
     except ValueError:
         raise SelectionBacktestError(f"invalid trading date: {value!r}") from None
 
@@ -155,7 +156,7 @@ def _normalize_symbol(value: Any) -> str:
     symbol = str(value or "").strip().lower()
     if not symbol:
         raise SelectionBacktestError("symbol is required")
-    return symbol
+    return sys.intern(symbol)
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,7 +281,7 @@ class HistoricalBar:
             "amount": self.amount,
             "turnover": self.turnover,
             "prev_close": self.previous_close,
-            "symbol_code": self.symbol[-6:],
+            "symbol_code": sys.intern(self.symbol[-6:]),
             "stock_name": self.name,
             "industry": self.industry,
         })
@@ -905,6 +906,72 @@ def _selection_statistics(
     }
 
 
+_STRATEGY_ROW_BASE_FIELDS = (
+    "date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount",
+    "turnover",
+    "prev_close",
+    "symbol_code",
+    "stock_name",
+    "industry",
+)
+_STRATEGY_ROW_ENRICHED_FIELDS = (
+    "bbi",
+    "j",
+    "ema20",
+    "ema50",
+    "z_white",
+    "z_yellow",
+    "change_pct",
+)
+_STRATEGY_ROW_STORAGE_TYPES: dict[
+    tuple[Any, ...], tuple[type, object]
+] = {}
+
+
+def _new_prepared_strategy_row(bar: HistoricalBar) -> dict[str, Any]:
+    """Build a mutable key-sharing row for one exact indicator enrichment pass."""
+
+    keys = tuple(dict.fromkeys((
+        *bar.extras,
+        *_STRATEGY_ROW_BASE_FIELDS,
+        *_STRATEGY_ROW_ENRICHED_FIELDS,
+    )))
+    entry = _STRATEGY_ROW_STORAGE_TYPES.get(keys)
+    if entry is None:
+        if len(_STRATEGY_ROW_STORAGE_TYPES) >= 64:
+            return bar.as_strategy_row()
+        storage_type = type("_PreparedStrategyRowStorage", (), {})
+        seed = storage_type()
+        for key in keys:
+            seed.__dict__[key] = None
+        entry = (storage_type, seed)
+        _STRATEGY_ROW_STORAGE_TYPES[keys] = entry
+    storage = entry[0]()
+    row = storage.__dict__
+    row.update(bar.extras)
+    row.update({
+        "date": bar.date,
+        "open": bar.open,
+        "high": bar.high,
+        "low": bar.low,
+        "close": bar.close,
+        "volume": bar.volume,
+        "amount": bar.amount,
+        "turnover": bar.turnover,
+        "prev_close": bar.previous_close,
+        "symbol_code": sys.intern(bar.symbol[-6:]),
+        "stock_name": bar.name,
+        "industry": bar.industry,
+    })
+    return row
+
+
 def _prepared_strategy_rows(
     bars: Mapping[str, Mapping[str, HistoricalBar]],
     *,
@@ -917,7 +984,10 @@ def _prepared_strategy_rows(
     if progress_callback is not None:
         progress_callback(0, total)
     for completed, (symbol, by_date) in enumerate(bars.items(), start=1):
-        rows = [by_date[trading_date].as_strategy_row() for trading_date in sorted(by_date)]
+        rows = [
+            _new_prepared_strategy_row(by_date[trading_date])
+            for trading_date in sorted(by_date)
+        ]
         enrich_rows(rows)
         prepared[symbol] = tuple(MappingProxyType(row) for row in rows)
         if preparation_callback is not None and (
