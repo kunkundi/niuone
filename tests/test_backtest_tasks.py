@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import tempfile
 import threading
 import time
@@ -46,6 +47,15 @@ class BacktestTaskTests(unittest.TestCase):
             ),
             "ModuleNotFoundError: No module named 'core'",
         )
+
+    def test_worker_error_message_explains_sigkill_memory_pressure(self):
+        message = _worker_error_message(
+            {},
+            -int(getattr(signal, "SIGKILL", 9)),
+        )
+
+        self.assertIn("SIGKILL", message)
+        self.assertIn("内存不足", message)
 
     def test_compatibility_fallback_does_not_hide_internal_import_errors(self):
         missing_app = ModuleNotFoundError("missing app", name="app")
@@ -182,12 +192,18 @@ class BacktestTaskTests(unittest.TestCase):
             "source": "auto",
         })
         run = Mock()
-        run.to_dict.return_value = {"selection": {}, "warnings": []}
+        run.to_dict.side_effect = AssertionError("full run serializer must not be used")
+        run.selection.to_dict.return_value = {}
+        run.warnings = ()
+        run.industry_quality = None
+        run.replay_cache = {}
         series = Mock()
         series.symbol = "sh600000"
         series.source = "eastmoney"
         series.adjustment = "qfq"
-        series.bars = ({"date": "2026-01-01"}, {"date": "2026-02-01"})
+        series.bar_count = 2
+        series.first_date = "2026-01-01"
+        series.last_date = "2026-02-01"
         series.attempts = ()
         run.data.series = {"sh600000": series}
         run.data.failures = {}
@@ -221,6 +237,7 @@ class BacktestTaskTests(unittest.TestCase):
         )
         self.assertEqual(payload["data"]["series"]["sh600000"]["name"], "浦发银行")
         self.assertEqual(payload["data"]["source_counts"], {"eastmoney": 1})
+        run.to_dict.assert_not_called()
 
     def test_niuone_runner_reports_the_actual_classification_fallback(self):
         request = normalize_backtest_request({
@@ -231,13 +248,12 @@ class BacktestTaskTests(unittest.TestCase):
             "source": "auto",
         })
         run = Mock()
-        run.to_dict.return_value = {
-            "selection": {},
-            "warnings": [],
-            "industry_quality": {
-                "source": "iwencai_current_industry_concept",
-            },
+        run.selection.to_dict.return_value = {}
+        run.warnings = ()
+        run.industry_quality.to_dict.return_value = {
+            "source": "iwencai_current_industry_concept",
         }
+        run.replay_cache = {}
         run.data.series = {}
         run.data.failures = {}
         universe = {
@@ -269,12 +285,17 @@ class BacktestTaskTests(unittest.TestCase):
             "risk_profile": "aggressive",
         })
         run = Mock()
-        run.to_dict.return_value = {"selection": {}, "warnings": []}
+        run.selection.to_dict.return_value = {}
+        run.warnings = ()
+        run.industry_quality = None
+        run.replay_cache = {}
         series = Mock()
         series.symbol = "sh600000"
         series.source = "tencent"
         series.adjustment = "qfq"
-        series.bars = ({"date": "2026-01-01"},)
+        series.bar_count = 1
+        series.first_date = "2026-01-01"
+        series.last_date = "2026-01-01"
         series.attempts = ()
         run.data.series = {"sh600000": series}
         run.data.failures = {}

@@ -2680,7 +2680,7 @@ class NiuOneWalkForwardResearchTests(unittest.TestCase):
             path = Path(directory) / "replay.jsonl.gz"
             research._write_replay_cache(
                 path,
-                bars={bar.symbol: (bar,)},
+                bars={bar.symbol: {bar.date: bar}},
                 tape=tape,
                 metadata=metadata,
             )

@@ -22,6 +22,29 @@ from .selection import (
 
 
 REPLAY_CACHE_SCHEMA_VERSION = 1
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
+
+
+BarSeries = Iterable[HistoricalBar] | Mapping[str, HistoricalBar]
+
+
+def _bar_values(rows: BarSeries) -> Iterable[HistoricalBar]:
+    return rows.values() if isinstance(rows, Mapping) else rows
+
+
+def _stable_bar_series(
+    bars_by_symbol: Mapping[str, BarSeries],
+) -> Mapping[str, BarSeries]:
+    """Materialize only one-shot iterables; mappings and tuples stay shared."""
+    return {
+        symbol: (
+            rows
+            if isinstance(rows, (_MAPPING_PROXY_TYPE, tuple))
+            else tuple(rows.values()) if isinstance(rows, Mapping)
+            else tuple(rows)
+        )
+        for symbol, rows in bars_by_symbol.items()
+    }
 
 
 def _hash_value(hasher: Any, value: Any) -> None:
@@ -30,12 +53,11 @@ def _hash_value(hasher: Any, value: Any) -> None:
 
 
 def _classification_snapshot_hash(
-    bars_by_symbol: Mapping[str, Iterable[HistoricalBar]],
+    bars_by_symbol: Mapping[str, BarSeries],
 ) -> str:
     hasher = hashlib.sha256()
     for symbol in sorted(bars_by_symbol):
-        rows = tuple(bars_by_symbol[symbol])
-        first = rows[0] if rows else None
+        first = next(iter(_bar_values(bars_by_symbol[symbol])), None)
         themes = (
             first.extras.get("themes", ())
             if first is not None and isinstance(first.extras, Mapping)
@@ -51,7 +73,7 @@ def _classification_snapshot_hash(
 
 
 def _bar_snapshot_hash(
-    bars_by_symbol: Mapping[str, Iterable[HistoricalBar]],
+    bars_by_symbol: Mapping[str, BarSeries],
     source_by_symbol: Mapping[str, str],
 ) -> str:
     """Fingerprint fetched values so upstream history revisions miss the cache."""
@@ -59,7 +81,7 @@ def _bar_snapshot_hash(
     for symbol in sorted(bars_by_symbol):
         _hash_value(hasher, symbol)
         _hash_value(hasher, source_by_symbol.get(symbol, ""))
-        for bar in bars_by_symbol[symbol]:
+        for bar in _bar_values(bars_by_symbol[symbol]):
             for value in (
                 bar.date,
                 bar.open,
@@ -86,7 +108,7 @@ class ReplayCacheKey:
 
 
 def build_replay_cache_key(
-    bars_by_symbol: Mapping[str, Iterable[HistoricalBar]],
+    bars_by_symbol: Mapping[str, BarSeries],
     *,
     protocol_version: str,
     selector_id: str,
@@ -99,9 +121,7 @@ def build_replay_cache_key(
     source_by_symbol: Mapping[str, str],
 ) -> ReplayCacheKey:
     """Build the stable identity required before selector output can be reused."""
-    materialized = {
-        symbol: tuple(rows) for symbol, rows in bars_by_symbol.items()
-    }
+    stable_bars = _stable_bar_series(bars_by_symbol)
     descriptor = {
         "schema_version": REPLAY_CACHE_SCHEMA_VERSION,
         "protocol_version": str(protocol_version or ""),
@@ -114,8 +134,8 @@ def build_replay_cache_key(
         "sources": list(dict.fromkeys(str(item or "") for item in sources)),
         "adjustment": str(adjustment or ""),
         "stock_pool": sorted(dict.fromkeys(str(item or "") for item in stock_pool)),
-        "classification_snapshot_hash": _classification_snapshot_hash(materialized),
-        "bar_snapshot_hash": _bar_snapshot_hash(materialized, source_by_symbol),
+        "classification_snapshot_hash": _classification_snapshot_hash(stable_bars),
+        "bar_snapshot_hash": _bar_snapshot_hash(stable_bars, source_by_symbol),
     }
     encoded = json.dumps(
         descriptor,

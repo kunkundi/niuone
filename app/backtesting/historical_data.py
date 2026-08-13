@@ -412,7 +412,7 @@ class HistoricalFetchConfig:
         object.__setattr__(self, "adjustment", adjustment)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class HistoricalSeries:
     symbol: str
     source: str
@@ -430,7 +430,64 @@ class HistoricalSeries:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
+class HistoricalSeriesSummary:
+    """Compact metadata retained after raw bars have entered the replay engine."""
+
+    symbol: str
+    source: str
+    adjustment: str
+    bar_count: int
+    first_date: str
+    last_date: str
+    attempts: tuple[Mapping[str, Any], ...] = ()
+
+    @classmethod
+    def from_series(cls, series: HistoricalSeries) -> HistoricalSeriesSummary:
+        bars = series.bars
+        return cls(
+            symbol=series.symbol,
+            source=series.source,
+            adjustment=series.adjustment,
+            bar_count=len(bars),
+            first_date=str(bars[0].get("date") or "") if bars else "",
+            last_date=str(bars[-1].get("date") or "") if bars else "",
+            attempts=series.attempts,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "source": self.source,
+            "adjustment": self.adjustment,
+            "bar_count": self.bar_count,
+            "first_date": self.first_date,
+            "last_date": self.last_date,
+            "attempts": [dict(row) for row in self.attempts],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalDataSummary:
+    """Historical fetch metadata that does not retain raw per-session rows."""
+
+    series: Mapping[str, HistoricalSeriesSummary]
+    failures: Mapping[str, str] = field(default_factory=dict)
+
+    @property
+    def source_by_symbol(self) -> Mapping[str, str]:
+        return MappingProxyType({
+            symbol: value.source for symbol, value in self.series.items()
+        })
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "series": {symbol: value.to_dict() for symbol, value in self.series.items()},
+            "failures": dict(self.failures),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class HistoricalDataResult:
     series: Mapping[str, HistoricalSeries]
     failures: Mapping[str, str] = field(default_factory=dict)
@@ -442,6 +499,16 @@ class HistoricalDataResult:
     @property
     def source_by_symbol(self) -> Mapping[str, str]:
         return MappingProxyType({symbol: value.source for symbol, value in self.series.items()})
+
+    def summary(self) -> HistoricalDataSummary:
+        """Detach compact fetch metadata so callers can release raw bars early."""
+        return HistoricalDataSummary(
+            series=MappingProxyType({
+                symbol: HistoricalSeriesSummary.from_series(value)
+                for symbol, value in self.series.items()
+            }),
+            failures=MappingProxyType(dict(self.failures)),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -708,8 +775,10 @@ def fetch_historical_data(
 __all__ = [
     "HistoricalDataError",
     "HistoricalDataResult",
+    "HistoricalDataSummary",
     "HistoricalFetchConfig",
     "HistoricalSeries",
+    "HistoricalSeriesSummary",
     "FetchProgress",
     "DEFAULT_HISTORICAL_SOURCE_PRIORITY",
     "SUPPORTED_ADJUSTMENTS",

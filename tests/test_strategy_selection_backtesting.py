@@ -5,6 +5,7 @@ import sys
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
+from types import MappingProxyType
 from unittest.mock import patch
 
 
@@ -2124,6 +2125,55 @@ class StrategySelectionBacktestingTests(unittest.TestCase):
             config=config,
         )
         self.assertEqual(object_result.to_dict(), mapping_result.to_dict())
+
+    def test_prevalidated_date_index_and_metadata_are_shared(self):
+        shared_extras = MappingProxyType({
+            "data_source": "eastmoney",
+            "adjustment": "qfq",
+            "themes": ("银行",),
+        })
+        bars = tuple(
+            HistoricalBar(
+                symbol="600000",
+                date=trading_date,
+                open=price,
+                high=price,
+                low=price,
+                close=price,
+                volume=100,
+                extras=shared_extras,
+            )
+            for trading_date, price in (
+                ("2026-01-05", 10.0),
+                ("2026-01-06", 10.1),
+            )
+        )
+        indexed = MappingProxyType({bar.date: bar for bar in bars})
+
+        normalized, dates = selection_module._normalized_bars({
+            "600000": indexed,
+        })
+
+        self.assertFalse(hasattr(bars[0], "__dict__"))
+        self.assertIs(bars[0].extras, shared_extras)
+        self.assertIs(bars[1].extras, shared_extras)
+        self.assertIs(normalized["600000"], indexed)
+        self.assertEqual(dates, ("2026-01-05", "2026-01-06"))
+
+    def test_mutable_date_mapping_is_detached_before_replay(self):
+        bar = HistoricalBar.from_value(
+            "600000",
+            daily_bar("2026-01-05", 10.0),
+        )
+        mutable = {bar.date: bar}
+
+        normalized, _dates = selection_module._normalized_bars({
+            "600000": mutable,
+        })
+        mutable.clear()
+
+        self.assertIsNot(normalized["600000"], mutable)
+        self.assertEqual(normalized["600000"][bar.date], bar)
 
     def test_measures_next_open_forward_returns_and_deduplicates(self):
         bars = {"600000": [

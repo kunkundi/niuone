@@ -6,7 +6,11 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from app.backtesting.historical_data import HistoricalDataError, HistoricalFetchConfig
+from app.backtesting.historical_data import (
+    HistoricalDataError,
+    HistoricalFetchConfig,
+    HistoricalSeries,
+)
 from app.backtesting.replay_cache import ReplayTapeCache
 from app.backtesting.selection import (
     SelectionBacktestConfig,
@@ -15,6 +19,7 @@ from app.backtesting.selection import (
 )
 from app.backtesting.service import (
     CurrentClassificationError,
+    _annotated_bars,
     load_current_classification_snapshot,
     run_historical_selection_backtest,
 )
@@ -23,6 +28,40 @@ from app.market_data.iwencai_boards import IwencaiBoardSnapshot, IwencaiStockBoa
 
 
 class HistoricalSelectionBacktestServiceTests(unittest.TestCase):
+    def test_annotation_consumes_raw_series_as_it_builds_compact_bars(self):
+        raw_series = {
+            "sh600519": HistoricalSeries(
+                symbol="sh600519",
+                source="tencent",
+                adjustment="qfq",
+                bars=(
+                    {
+                        "date": "2026-01-05",
+                        "open": 10,
+                        "high": 11,
+                        "low": 9,
+                        "close": 10.5,
+                        "volume": 100,
+                    },
+                ),
+            )
+        }
+
+        bars, _warnings, quality = _annotated_bars(
+            raw_series,
+            {},
+            ("sh600519",),
+            industry_by_symbol={"600519": "白酒"},
+            industry_loader=None,
+            theme_by_symbol=None,
+            theme_loader=None,
+            name_by_symbol=None,
+        )
+
+        self.assertEqual(raw_series, {})
+        self.assertEqual(bars["sh600519"]["2026-01-05"].close, 10.5)
+        self.assertEqual(quality.total_bar_count, 1)
+
     def test_current_classification_prefers_a_stale_eastmoney_snapshot(self):
         expected = EastmoneyBoardSnapshot(
             captured_at="2026-08-05 15:00:00",
@@ -339,6 +378,11 @@ class HistoricalSelectionBacktestServiceTests(unittest.TestCase):
         )
         self.assertEqual(requested, [("2026-01-01", "2026-01-05")])
         self.assertEqual(run.data.source_by_symbol["sh600519"], "eastmoney")
+        self.assertEqual(run.data.series["sh600519"].bar_count, 5)
+        self.assertFalse(hasattr(run.data.series["sh600519"], "bars"))
+        serialized = run.to_dict()["data"]["series"]["sh600519"]
+        self.assertEqual(serialized["bar_count"], 5)
+        self.assertNotIn("bars", serialized)
         self.assertEqual(run.selection.statistics["evaluated_signal_count"], 1)
         self.assertEqual(run.selection.signals[0]["forward_returns"][2]["net_return_pct"], 20.0)
         self.assertIn(("2026-01-03", "白酒"), observed)

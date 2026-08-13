@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import os
 import re
+import signal
 import shutil
 import sqlite3
 import subprocess
@@ -669,7 +670,16 @@ def run_strategy_backtest_request(
             if replay_cache_dir is not None else None
         ),
     )
-    payload = run.to_dict()
+    # Serialize only the durable result sections. In particular, do not invoke a
+    # generic run serializer that could accidentally retain or copy raw K-lines.
+    payload = {
+        "selection": run.selection.to_dict(),
+        "warnings": list(run.warnings),
+        "industry_quality": (
+            run.industry_quality.to_dict() if run.industry_quality else None
+        ),
+        "replay_cache": dict(run.replay_cache or {}),
+    }
     name_by_symbol = universe.get("name_by_symbol") or {}
     source_counts: dict[str, int] = {}
     for series in run.data.series.values():
@@ -685,9 +695,9 @@ def run_strategy_backtest_request(
                 ),
                 "source": series.source,
                 "adjustment": series.adjustment,
-                "bar_count": len(series.bars),
-                "first_date": str(series.bars[0].get("date") or "") if series.bars else "",
-                "last_date": str(series.bars[-1].get("date") or "") if series.bars else "",
+                "bar_count": series.bar_count,
+                "first_date": series.first_date,
+                "last_date": series.last_date,
                 "attempts": [dict(item) for item in series.attempts],
             }
             for symbol, series in run.data.series.items()
@@ -839,6 +849,11 @@ def _worker_error_message(payload: Mapping[str, Any], returncode: int) -> str:
     error_text = str(payload.get("error") or "").strip()
     error_type = str(payload.get("error_type") or "").strip()
     if not error_text:
+        if returncode == -int(getattr(signal, "SIGKILL", 9)):
+            return (
+                "回测子进程被系统强制终止（SIGKILL），通常是可用内存不足；"
+                "请缩短回测区间或避开全市场扫描后重试"
+            )
         return f"回测子进程异常退出（{returncode}）"
     duplicated_prefix = f"{error_type}: " if error_type else ""
     if error_type == "BacktestTaskError" and error_text.startswith(

@@ -254,7 +254,10 @@ def _bar_payload(bar: HistoricalBar) -> dict[str, Any]:
 def _write_replay_cache(
     path: Path,
     *,
-    bars: Mapping[str, Iterable[HistoricalBar]],
+    bars: Mapping[
+        str,
+        Iterable[HistoricalBar] | Mapping[str, HistoricalBar],
+    ],
     tape: SelectionReplayTape,
     metadata: Mapping[str, Any],
 ) -> None:
@@ -269,10 +272,11 @@ def _write_replay_cache(
             "metadata": _plain(metadata),
         }, ensure_ascii=False) + "\n")
         for symbol, series in bars.items():
+            rows = series.values() if isinstance(series, Mapping) else series
             handle.write(json.dumps({
                 "kind": "bars",
                 "symbol": symbol,
-                "rows": [_bar_payload(bar) for bar in series],
+                "rows": [_bar_payload(bar) for bar in rows],
             }, ensure_ascii=False) + "\n")
         for frame in tape.frames.values():
             handle.write(json.dumps({
@@ -5073,9 +5077,15 @@ def main() -> int:
             reference_count=len(reference),
             source=args.source,
         )
+        successful_count = len(data.series)
+        raw_series = dict(data.series)
+        data_failures = data.failures
+        fetched_symbols = tuple(raw_series)
+        del data
         bars, warnings, industry_quality = _annotated_bars(
-            data,
-            tuple(data.bars_by_symbol),
+            raw_series,
+            data_failures,
+            fetched_symbols,
             industry_by_symbol=None,
             industry_loader=load_current_industry_map,
             theme_by_symbol=None,
@@ -5105,7 +5115,6 @@ def main() -> int:
             cross_section_fields=THEME_CROSS_SECTION_FIELDS,
         )
         reference_count = len(reference)
-        successful_count = len(data.series)
         eligible_count = len(eligible)
         if cache_path is not None:
             print(f"writing replay cache: {cache_path}", flush=True)

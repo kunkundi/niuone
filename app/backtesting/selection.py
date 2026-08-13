@@ -58,6 +58,7 @@ TRADING_DAYS_PER_YEAR = 252
 BUILTIN_STRATEGY_HISTORY_LIMIT = 120
 NIUONE_CONTEXT_WARMUP_SESSIONS = 60
 DIAGNOSTIC_SCORE_THRESHOLD_OFFSETS = (-1.0, -0.5, -0.25, 0.0, 0.25, 0.5, 1.0)
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
 def _diagnostic_blocker_family(reason: str) -> str:
@@ -157,7 +158,7 @@ def _normalize_symbol(value: Any) -> str:
     return symbol
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class HistoricalBar:
     """One completed daily bar plus optional session metadata."""
 
@@ -208,7 +209,14 @@ class HistoricalBar:
                 field_name,
                 _optional_float(getattr(self, field_name), field_name=field_name),
             )
-        object.__setattr__(self, "extras", MappingProxyType(dict(self.extras or {})))
+        extras = self.extras
+        object.__setattr__(
+            self,
+            "extras",
+            extras
+            if isinstance(extras, _MAPPING_PROXY_TYPE)
+            else MappingProxyType(dict(extras or {})),
+        )
 
     @classmethod
     def from_value(
@@ -736,13 +744,17 @@ class ReplaySelectionStrategy:
 
 
 def _normalized_bars(
-    bars_by_symbol: Mapping[str, Iterable[HistoricalBar | Mapping[str, Any]]],
+    bars_by_symbol: Mapping[
+        str,
+        Iterable[HistoricalBar | Mapping[str, Any]]
+        | Mapping[str, HistoricalBar | Mapping[str, Any]],
+    ],
     *,
     progress_callback: SelectionPhaseProgress | None = None,
-) -> tuple[dict[str, dict[str, HistoricalBar]], tuple[str, ...]]:
+) -> tuple[dict[str, Mapping[str, HistoricalBar]], tuple[str, ...]]:
     if not isinstance(bars_by_symbol, Mapping) or not bars_by_symbol:
         raise SelectionBacktestError("bars_by_symbol must contain at least one symbol")
-    result: dict[str, dict[str, HistoricalBar]] = {}
+    result: dict[str, Mapping[str, HistoricalBar]] = {}
     dates: set[str] = set()
     total = len(bars_by_symbol)
     if progress_callback is not None:
@@ -752,20 +764,43 @@ def _normalized_bars(
         start=1,
     ):
         symbol = _normalize_symbol(raw_symbol)
-        by_date: dict[str, HistoricalBar] = {}
-        for raw_bar in raw_bars or []:
-            if isinstance(raw_bar, HistoricalBar):
+        by_date: Mapping[str, HistoricalBar]
+        reuse_date_index = (
+            isinstance(raw_bars, _MAPPING_PROXY_TYPE) and bool(raw_bars)
+        )
+        if reuse_date_index:
+            for raw_date, raw_bar in raw_bars.items():
+                if not isinstance(raw_bar, HistoricalBar):
+                    reuse_date_index = False
+                    break
                 if raw_bar.symbol != symbol:
                     raise SelectionBacktestError(
                         f"bar symbol mismatch: expected {symbol}, got {raw_bar.symbol}"
                     )
-                bar = raw_bar
-            else:
-                bar = HistoricalBar.from_value(symbol, raw_bar)
-            by_date[bar.date] = bar
-            dates.add(bar.date)
+                if raw_date != raw_bar.date:
+                    reuse_date_index = False
+                    break
+        if reuse_date_index:
+            by_date = raw_bars
+        else:
+            normalized_by_date: dict[str, HistoricalBar] = {}
+            raw_values = (
+                raw_bars.values() if isinstance(raw_bars, Mapping) else raw_bars or ()
+            )
+            for raw_bar in raw_values:
+                if isinstance(raw_bar, HistoricalBar):
+                    if raw_bar.symbol != symbol:
+                        raise SelectionBacktestError(
+                            f"bar symbol mismatch: expected {symbol}, got {raw_bar.symbol}"
+                        )
+                    bar = raw_bar
+                else:
+                    bar = HistoricalBar.from_value(symbol, raw_bar)
+                normalized_by_date[bar.date] = bar
+            by_date = normalized_by_date
         if by_date:
             result[symbol] = by_date
+            dates.update(by_date)
         if progress_callback is not None and (
             completed == 1 or completed % 25 == 0 or completed == total
         ):
@@ -922,7 +957,11 @@ def _first_selector_session(
 
 
 def build_selection_replay_tape(
-    bars_by_symbol: Mapping[str, Iterable[HistoricalBar | Mapping[str, Any]]],
+    bars_by_symbol: Mapping[
+        str,
+        Iterable[HistoricalBar | Mapping[str, Any]]
+        | Mapping[str, HistoricalBar | Mapping[str, Any]],
+    ],
     selector: SelectionStrategy | SelectionFunction,
     *,
     config: SelectionBacktestConfig | None = None,
@@ -2370,7 +2409,11 @@ def _run_strategy_portfolio_backtest(
 
 
 def run_selection_backtest(
-    bars_by_symbol: Mapping[str, Iterable[HistoricalBar | Mapping[str, Any]]],
+    bars_by_symbol: Mapping[
+        str,
+        Iterable[HistoricalBar | Mapping[str, Any]]
+        | Mapping[str, HistoricalBar | Mapping[str, Any]],
+    ],
     selector: SelectionStrategy | SelectionFunction,
     *,
     config: SelectionBacktestConfig | None = None,

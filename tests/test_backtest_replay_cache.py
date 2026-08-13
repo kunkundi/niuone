@@ -116,6 +116,23 @@ class BacktestReplayCacheTests(unittest.TestCase):
         )
         self.assertNotEqual(baseline.digest, alternate_source_order.digest)
 
+    def test_key_reuses_preindexed_bar_mapping_without_changing_identity(self):
+        bar = _bar()
+        mapped = build_replay_cache_key(
+            {"sh600519": {bar.date: bar}},
+            protocol_version="niuone-backtest-v33",
+            selector_id="niuone",
+            strategy_ids=("niu_leader",),
+            signal_start_date="2026-01-05",
+            signal_end_date="2026-01-31",
+            sources=("eastmoney", "tencent"),
+            adjustment="qfq",
+            stock_pool=("sh600519",),
+            source_by_symbol={"sh600519": "eastmoney"},
+        )
+
+        self.assertEqual(mapped.digest, self._key(bar).digest)
+
     def test_build_lock_serializes_same_cache_key(self):
         key = self._key(_bar())
         with tempfile.TemporaryDirectory(prefix="niuone-replay-cache-") as tmp:
