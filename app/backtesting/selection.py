@@ -57,6 +57,7 @@ except ImportError:  # pragma: no cover - legacy top-level import path
 TRADING_DAYS_PER_YEAR = 252
 BUILTIN_STRATEGY_HISTORY_LIMIT = 120
 NIUONE_CONTEXT_WARMUP_SESSIONS = 60
+REPLAY_ETA_RECENT_SESSION_COUNT = 10
 DIAGNOSTIC_SCORE_THRESHOLD_OFFSETS = (-1.0, -0.5, -0.25, 0.0, 0.25, 0.5, 1.0)
 
 
@@ -921,6 +922,33 @@ def _first_selector_session(
     return first_session
 
 
+def _estimate_replay_eta(
+    elapsed_sessions: Sequence[float],
+    remaining_sessions: int,
+    *,
+    current_session_elapsed: float = 0.0,
+) -> float | None:
+    """Estimate replay time without letting cheap warmup days dominate."""
+    remaining = max(0, int(remaining_sessions))
+    if remaining == 0:
+        return 0.0
+    samples = [
+        max(0.0, float(value))
+        for value in elapsed_sessions
+        if math.isfinite(float(value))
+    ]
+    current_elapsed = max(0.0, float(current_session_elapsed))
+    if not samples:
+        return current_elapsed * remaining if current_elapsed > 0 else None
+    recent = samples[-REPLAY_ETA_RECENT_SESSION_COUNT:]
+    seconds_per_session = max(
+        statistics.mean(samples),
+        statistics.mean(recent),
+        current_elapsed,
+    )
+    return seconds_per_session * remaining
+
+
 def build_selection_replay_tape(
     bars_by_symbol: Mapping[str, Iterable[HistoricalBar | Mapping[str, Any]]],
     selector: SelectionStrategy | SelectionFunction,
@@ -1027,20 +1055,17 @@ def build_selection_replay_tape(
         def replay_phase(phase: str, _date: str = trading_date) -> None:
             if replay_progress_callback is None:
                 return
-            average_elapsed = (
-                sum(elapsed_sessions) / len(elapsed_sessions)
-                if elapsed_sessions else None
-            )
+            current_elapsed = max(0.0, time.perf_counter() - session_started_at)
             replay_progress_callback(
                 completed_sessions,
                 len(evaluation_dates),
                 trading_date,
                 str(phase or "scoring"),
-                max(0.0, time.perf_counter() - session_started_at),
-                (
-                    average_elapsed
-                    * max(0, len(evaluation_dates) - completed_sessions)
-                    if average_elapsed is not None else None
+                current_elapsed,
+                _estimate_replay_eta(
+                    elapsed_sessions,
+                    len(evaluation_dates) - completed_sessions,
+                    current_session_elapsed=current_elapsed,
                 ),
             )
 
@@ -1100,7 +1125,6 @@ def build_selection_replay_tape(
         completed_sessions += 1
         session_elapsed = max(0.0, time.perf_counter() - session_started_at)
         elapsed_sessions.append(session_elapsed)
-        average_elapsed = sum(elapsed_sessions) / len(elapsed_sessions)
         if replay_progress_callback is not None:
             replay_progress_callback(
                 min(completed_sessions, len(evaluation_dates)),
@@ -1108,8 +1132,10 @@ def build_selection_replay_tape(
                 trading_date,
                 "scoring",
                 session_elapsed,
-                average_elapsed
-                * max(0, len(evaluation_dates) - completed_sessions),
+                _estimate_replay_eta(
+                    elapsed_sessions,
+                    len(evaluation_dates) - completed_sessions,
+                ),
             )
         if progress_callback is not None:
             progress_callback(
@@ -2134,6 +2160,7 @@ def _run_strategy_portfolio_backtest(
             set_exit_tracking_symbols(positions)
         generated_signals = _call_selector(selector, context)
         completed_sessions += 1
+        had_portfolio_activity = within_signal_window or bool(positions)
 
         for symbol, position in tuple(positions.items()):
             current_bar = current_bars.get(symbol)
@@ -2304,7 +2331,7 @@ def _run_strategy_portfolio_backtest(
 
         if (
             (not config.signal_start_date or trading_date >= config.signal_start_date)
-            and (within_signal_window or positions)
+            and (had_portfolio_activity or positions)
         ):
             close_marks = {
                 symbol: (

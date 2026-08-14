@@ -7,7 +7,7 @@ import { useAdminConfig } from '../composables/useAdminConfig.js'
 
 document.title = '牛牛1号 · 策略回测'
 
-const NIUONE_BACKTEST_PROTOCOL_VERSION = 'niuone-backtest-v33'
+const NIUONE_BACKTEST_PROTOCOL_VERSION = 'niuone-backtest-v34'
 
 const route = useRoute()
 const { state, errorMessage, refresh, authenticate } = useAdminConfig()
@@ -18,11 +18,14 @@ const starting = ref(false)
 const cancelling = ref(false)
 const taskError = ref('')
 const job = ref(null)
+const elapsedTick = ref(0)
+const elapsedAnchor = reactive({ key: '', base: 0, startedAt: 0 })
 const form = reactive({
   startDate: '', endDate: '', adjustment: 'qfq', source: 'auto',
   promptVersionId: '',
 })
 let pollTimer = 0
+let elapsedTimer = 0
 
 const strategy = computed(() => (
   (options.value?.strategies || []).find(item => item.id === strategyId.value) || null
@@ -98,7 +101,28 @@ const qualitySummary = computed(() => {
   const biasCount = qualityWarnings.value.length - (coverage ? 1 : 0)
   return biasCount > 0 ? `${coverageText} · ${biasCount} 项偏差提示` : coverageText
 })
+const adjustmentLabels = { qfq: '前复权', hfq: '后复权', none: '不复权' }
+const sourceLabels = { eastmoney: '东方财富', tencent: '腾讯', sina: '新浪' }
 const isActive = computed(() => ['queued', 'running'].includes(job.value?.status))
+const liveDayElapsedSeconds = computed(() => {
+  const raw = Number(job.value?.day_elapsed_seconds)
+  if (!Number.isFinite(raw) || raw < 0) return null
+  const key = elapsedJobKey(job.value)
+  if (!isActive.value || !key || elapsedAnchor.key !== key) return raw
+  const now = elapsedTick.value || monotonicNow()
+  return elapsedAnchor.base + Math.max(0, (now - elapsedAnchor.startedAt) / 1000)
+})
+const activeRequest = computed(() => job.value?.request || {})
+const activeRequestAdjustment = computed(() => (
+  adjustmentLabels[String(activeRequest.value.adjustment || '')]
+  || String(activeRequest.value.adjustment || '')
+))
+const activeRequestSources = computed(() => (
+  (Array.isArray(activeRequest.value.sources) ? activeRequest.value.sources : [])
+    .map(value => sourceLabels[String(value || '')] || String(value || ''))
+    .filter(Boolean)
+    .join(' → ')
+))
 const canStart = computed(() => (
   state.value === 'ready'
   && strategy.value?.supported
@@ -376,6 +400,50 @@ function formatDuration(value) {
   return `${minutes} 分 ${remaining} 秒`
 }
 
+function monotonicNow() {
+  return window.performance?.now?.() ?? Date.now()
+}
+
+function elapsedJobKey(value) {
+  if (!['queued', 'running'].includes(value?.status) || !value?.trading_date) return ''
+  return `${String(value?.id || '')}|${String(value.trading_date)}`
+}
+
+function syncElapsedAnchor(value) {
+  const raw = Number(value?.day_elapsed_seconds)
+  const key = elapsedJobKey(value)
+  if (!key || !Number.isFinite(raw) || raw < 0) {
+    elapsedAnchor.key = ''
+    elapsedAnchor.base = 0
+    elapsedAnchor.startedAt = 0
+    return
+  }
+  const now = monotonicNow()
+  const localElapsed = elapsedAnchor.key === key
+    ? elapsedAnchor.base + Math.max(0, (now - elapsedAnchor.startedAt) / 1000)
+    : -1
+  if (elapsedAnchor.key !== key || raw > localElapsed) {
+    elapsedAnchor.key = key
+    elapsedAnchor.base = raw
+    elapsedAnchor.startedAt = now
+  }
+  elapsedTick.value = now
+}
+
+function startElapsedClock() {
+  if (elapsedTimer) return
+  elapsedTick.value = monotonicNow()
+  elapsedTimer = window.setInterval(() => {
+    elapsedTick.value = monotonicNow()
+  }, 500)
+}
+
+function stopElapsedClock() {
+  if (!elapsedTimer) return
+  window.clearInterval(elapsedTimer)
+  elapsedTimer = 0
+}
+
 function stockCode(value) {
   const matched = String(value || '').match(/\d{6}/)
   return matched ? matched[0] : '—'
@@ -568,8 +636,16 @@ watch(() => form.adjustment, value => {
   if (value !== 'none' && form.source === 'sina') form.source = 'auto'
 })
 
-onMounted(refresh)
-onBeforeUnmount(stopPolling)
+watch(job, syncElapsedAnchor, { immediate: true })
+
+onMounted(() => {
+  startElapsedClock()
+  refresh()
+})
+onBeforeUnmount(() => {
+  stopPolling()
+  stopElapsedClock()
+})
 </script>
 
 <template>
@@ -616,26 +692,26 @@ onBeforeUnmount(stopPolling)
             <div class="backtest-fields">
               <label v-if="strategy.id === 'preset_text'">
                 <span>冻结策略版本</span>
-                <select v-model="form.promptVersionId" required>
+                <select v-model="form.promptVersionId" :disabled="isActive" required>
                   <option v-for="item in promptVersions" :key="item.version_id" :value="item.version_id">
                     v{{ item.revision }} · {{ item.name }}{{ item.active ? '（当前）' : '' }}
                   </option>
                 </select>
                 <small v-if="selectedPromptVersion">SHA-256 {{ selectedPromptVersion.plan_sha256?.slice(0, 16) }}…</small>
               </label>
-              <label><span>开始日期</span><input v-model="form.startDate" type="date" required></label>
-              <label><span>结束日期</span><input v-model="form.endDate" type="date" required></label>
+              <label><span>开始日期</span><input v-model="form.startDate" type="date" :disabled="isActive" required></label>
+              <label><span>结束日期</span><input v-model="form.endDate" type="date" :disabled="isActive" required></label>
               <label>
                 <span>复权方式</span>
-                <select v-model="form.adjustment">
+                <select v-model="form.adjustment" :disabled="isActive">
                   <option value="qfq">前复权</option><option value="hfq">后复权</option><option value="none">不复权</option>
                 </select>
               </label>
               <label>
                 <span>行情来源</span>
-                <select v-model="form.source">
+                <select v-model="form.source" :disabled="isActive">
                   <option value="auto">自动（东方财富 → 腾讯 → 新浪）</option><option value="eastmoney">东方财富</option><option value="tencent">腾讯</option>
-                  <option value="sina" :disabled="form.adjustment !== 'none'">新浪（仅不复权）</option>
+                  <option value="sina" :disabled="isActive || form.adjustment !== 'none'">新浪（仅不复权）</option>
                 </select>
               </label>
             </div>
@@ -665,8 +741,11 @@ onBeforeUnmount(stopPolling)
             </div>
             <div class="backtest-timestamps">
               <span>开始于 {{ compactDateTime(job.started_at || job.created_at) }}</span>
+              <span v-if="activeRequest.start_date && activeRequest.end_date">本次区间 {{ activeRequest.start_date }} 至 {{ activeRequest.end_date }}</span>
+              <span v-if="activeRequestAdjustment">复权 {{ activeRequestAdjustment }}</span>
+              <span v-if="activeRequestSources">行情 {{ activeRequestSources }}</span>
               <span v-if="job.trading_date">交易日 {{ job.trading_date }}</span>
-              <span v-if="job.day_elapsed_seconds !== null && job.day_elapsed_seconds !== undefined">本日耗时 {{ formatDuration(job.day_elapsed_seconds) }}</span>
+              <span v-if="liveDayElapsedSeconds !== null">本交易日已耗时 {{ formatDuration(liveDayElapsedSeconds) }}</span>
               <span v-if="job.eta_seconds !== null && job.eta_seconds !== undefined">预计剩余 {{ formatDuration(job.eta_seconds) }}</span>
             </div>
             <div v-if="job.error" class="errmsg">{{ job.error }}</div>

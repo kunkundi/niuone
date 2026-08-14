@@ -1115,6 +1115,18 @@ class StrategySelectionBacktestingTests(unittest.TestCase):
             trade["exit_legs"][1]["units"],
             trade["entry_legs"][1]["units"],
         )
+        equity_curve = result.portfolio["equity_curve"]
+        self.assertEqual(equity_curve[-1]["date"], trade["exit_date"])
+        self.assertEqual(
+            equity_curve[-1]["equity"],
+            result.portfolio["final_equity"],
+        )
+        self.assertEqual(equity_curve[-1]["market_value"], 0.0)
+        self.assertEqual(equity_curve[-1]["position_count"], 0)
+        self.assertEqual(
+            result.portfolio["trading_session_count"],
+            len(equity_curve),
+        )
 
     def test_trade_lifecycle_allows_reentry_after_a_completed_exit(self):
         rows = [
@@ -2264,6 +2276,33 @@ class StrategySelectionBacktestingTests(unittest.TestCase):
         self.assertIn("rebuilding_context", phase_names)
         self.assertIn("scoring", phase_names)
         self.assertEqual(phases[-1][0:4], (2, 2, "2026-01-06", "scoring"))
+
+    def test_replay_eta_uses_recent_or_current_slow_sessions(self):
+        self.assertIsNone(selection_module._estimate_replay_eta([], 5))
+        self.assertEqual(selection_module._estimate_replay_eta([], 0), 0.0)
+        self.assertEqual(
+            selection_module._estimate_replay_eta(
+                [],
+                5,
+                current_session_elapsed=2.0,
+            ),
+            10.0,
+        )
+        self.assertEqual(
+            selection_module._estimate_replay_eta(
+                [1.0] * 10 + [3.0] * 10,
+                5,
+            ),
+            15.0,
+        )
+        self.assertEqual(
+            selection_module._estimate_replay_eta(
+                [1.0] * 20,
+                5,
+                current_session_elapsed=4.0,
+            ),
+            20.0,
+        )
 
     def test_registered_selector_caps_one_strategy_without_hiding_other_paths(self):
         def reversal(_rows):

@@ -237,6 +237,8 @@ v32 adds a stock capital-activity gate to mature mainline entries: Leading, Resu
 
 v33 localizes internal enums only in user-facing strategy prose. Prompts use Chinese lifecycle, role, and mainline-mode labels; persistence and historical rendering convert standalone lowercase enums only in Chinese strategy context, including nested dropped-buy reasons. Proper names, English technical prose, errors, acronyms, and identifiers remain unchanged, and all strategy gates and risk controls are identical. The display mapping joins the protocol fingerprint, standalone strict-forward advances to `niuone-strict-forward-v33`, and the default new cohort begins on `2026-08-13`; archive the v32 lock and report before deployment.
 
+Administrator backtest v34 includes the terminal liquidation session after the signal window in the equity curve and risk metrics, and improves current-session timing plus ETA during long replays. Older backtest results become stale and must be rerun after a standalone upgrade; strategy rules, fill precision, and capital calculations are unchanged.
+
 ### One-Click Enablement
 
 `--service` first performs the same directory initialization, virtual-environment creation, and dependency installation as a normal startup, then registers and immediately starts the native services for the current platform. Running it again updates the existing registrations, which is useful after code or configuration changes.

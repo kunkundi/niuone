@@ -286,6 +286,8 @@ v32 requires NiuOne Leading, Resumption, and Launch to rank at or above the 60th
 
 v33 localizes internal enums only in user-facing strategy prose. Prompts now use Chinese lifecycle, role, and mainline-mode labels; persistence converts only standalone lowercase enums with explicit Chinese strategy context, including nested dropped-buy reasons. Capitalized proper names, English technical prose, errors, acronyms, and identifiers remain unchanged, while scoring, eligibility, sizing, and risk controls are identical. The display mapping joins the frozen source identity, the strict-forward protocol advances to `niuone-strict-forward-v33`, and the default new cohort begins on `2026-08-13`; archive the v32 lock and report before deployment and never pool the two evidence sets.
 
+Administrator backtest v34 includes the terminal liquidation session after the signal window in the equity curve and risk metrics, and improves current-session timing plus ETA during long replays. Older administrator backtest results become stale and must be rerun after upgrade; strategy rules, fill precision, and capital calculations are unchanged.
+
 When a strategy appears not to trigger, check in this order:
 
 1. Confirm that `DASHBOARD_ACTIVE_STRATEGY` in `.local-data/dashboard.env` names the expected suite.

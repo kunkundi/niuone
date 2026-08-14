@@ -76,7 +76,7 @@ BACKTEST_STATE_SCHEMA_VERSION = 2
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BACKTEST_RISK_PROFILE = "aggressive"
 GENERIC_BACKTEST_RISK_PROFILE = "balanced"
-NIUONE_BACKTEST_PROTOCOL_VERSION = "niuone-backtest-v33"
+NIUONE_BACKTEST_PROTOCOL_VERSION = "niuone-backtest-v34"
 GENERIC_BACKTEST_PROTOCOL_VERSION = "selection-backtest-v2"
 NIUONE_BACKTEST_RISK_PROFILES: dict[str, dict[str, Any]] = {
     "aggressive": {
