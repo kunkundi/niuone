@@ -202,13 +202,13 @@ class MoneyFlowServiceTests(unittest.TestCase):
         self.assertEqual([row["name"] for row in payload["outflow"][:2]], ["负10", "负9"])
         self.assertNotIn("零", {row["name"] for row in payload["inflow"] + payload["outflow"]})
 
-    def test_download_json_retries_once_with_bounded_curl_runner(self):
+    def test_download_json_retries_with_bounded_curl_runner(self):
         calls = []
         sleeps = []
 
         def fake_runner(command, **kwargs):
             calls.append((command, kwargs))
-            if len(calls) == 1:
+            if len(calls) < 3:
                 return SimpleNamespace(returncode=28, stdout=b"", stderr=b"timeout")
             return SimpleNamespace(
                 returncode=0,
@@ -224,8 +224,11 @@ class MoneyFlowServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["data"]["total"], 1)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(sleeps, [0.25])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(
+            sleeps,
+            list(money_flow_service.REQUEST_RETRY_DELAYS_SECONDS),
+        )
         self.assertEqual(calls[0][1]["timeout"], money_flow_service.REQUEST_TIMEOUT_SECONDS + 2)
         self.assertIn("--connect-timeout", calls[0][0])
         self.assertIn("--max-time", calls[0][0])

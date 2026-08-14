@@ -131,6 +131,37 @@ class PracticeMarketSummaryTests(unittest.TestCase):
         self.assertEqual(snapshot["snapshot"]["hot_sectors"][0]["name"], "半导体")
         self.assertEqual(snapshot["snapshot"]["captured_at"], "2026-07-14 12:00:00")
 
+    def test_realtime_snapshot_preserves_stale_refresh_reason(self):
+        snapshot = practice_market_summary.build_realtime_market_snapshot(
+            {
+                "items": [{
+                    "key": "sh",
+                    "name": "上证指数",
+                    "market_type": "a_index",
+                    "price": 3520.1,
+                    "change_pct": 0.42,
+                }],
+            },
+            {
+                "gain_top": [{"name": "半导体", "pct": 2.3}],
+                "loss_top": [{"name": "煤炭", "pct": -1.2}],
+            },
+            {
+                "stale_cache": True,
+                "error": "industry main-flow request failed:\n  curl failed (28): timeout",
+                "inflow": [{"name": "旧行业", "net_flow_yi": 12}],
+                "outflow": [{"name": "旧行业", "net_flow_yi": -8}],
+            },
+            datetime(2026, 7, 14, 12, 0, 0),
+        )
+
+        self.assertFalse(snapshot["complete"])
+        self.assertEqual(snapshot["missing_channels"], ["行业板块资金流"])
+        self.assertEqual(snapshot["errors"], [
+            "行业资金流强制刷新失败，仅返回旧缓存："
+            "industry main-flow request failed: curl failed (28): timeout",
+        ])
+
     def test_realtime_snapshot_does_not_let_concepts_displace_leading_industry(self):
         snapshot = practice_market_summary.build_realtime_market_snapshot(
             {

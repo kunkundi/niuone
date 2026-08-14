@@ -16,6 +16,7 @@ from .apis.industry_flow import is_industry_flow_session_timestamp
 _WRITE_LOCK = threading.Lock()
 SUMMARY_SCHEMA_VERSION = 6
 LIVE_SNAPSHOT_MAX_AGE_SECONDS = 300
+MAX_SOURCE_ERROR_DETAIL_LENGTH = 180
 _TONE_LABELS = {
     "offensive": "进攻",
     "balanced": "平衡",
@@ -176,6 +177,10 @@ def _named_rows(rows: Any, *, limit: int = 5) -> list[dict[str, Any]]:
 
 def _payload_is_fresh(payload: dict[str, Any]) -> bool:
     return bool(payload) and not payload.get("stale_cache") and not payload.get("error")
+
+
+def _source_error_detail(value: Any) -> str:
+    return " ".join(str(value or "").split())[:MAX_SOURCE_ERROR_DETAIL_LENGTH]
 
 
 def _pct_rank_text(rows: list[dict[str, Any]]) -> str:
@@ -374,7 +379,9 @@ def build_realtime_market_snapshot(
         ("行业资金流", money_flow_payload or {}),
     ):
         if payload.get("stale_cache"):
-            errors.append(f"{label}强制刷新失败，仅返回旧缓存")
+            message = f"{label}强制刷新失败，仅返回旧缓存"
+            detail = _source_error_detail(payload.get("error"))
+            errors.append(f"{message}：{detail}" if detail else message)
         elif payload.get("error"):
             errors.append(f"{label}：{payload.get('error')}")
 

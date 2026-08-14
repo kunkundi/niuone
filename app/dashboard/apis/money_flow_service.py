@@ -51,7 +51,8 @@ PAGE_SIZE = 100
 MAX_PAGES = 5
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 REQUEST_TIMEOUT_SECONDS = 8
-MAX_REQUEST_ATTEMPTS = 2
+REQUEST_RETRY_DELAYS_SECONDS = (0.5, 1.0)
+MAX_REQUEST_ATTEMPTS = len(REQUEST_RETRY_DELAYS_SECONDS) + 1
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 FIELDS = (
     "f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,"
@@ -194,8 +195,8 @@ def _download_json(
             return payload
         except Exception as exc:
             last_error = exc
-            if attempt + 1 < MAX_REQUEST_ATTEMPTS:
-                sleep(0.25 * (attempt + 1))
+            if attempt < len(REQUEST_RETRY_DELAYS_SECONDS):
+                sleep(REQUEST_RETRY_DELAYS_SECONDS[attempt])
     assert last_error is not None
     raise RuntimeError(
         f"industry main-flow request failed: {type(last_error).__name__}: {last_error}"
