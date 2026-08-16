@@ -233,6 +233,35 @@ class MoneyFlowServiceTests(unittest.TestCase):
         self.assertIn("--connect-timeout", calls[0][0])
         self.assertIn("--max-time", calls[0][0])
 
+    def test_download_json_retries_semantically_incomplete_payload(self):
+        calls = []
+        sleeps = []
+
+        def fake_runner(command, **kwargs):
+            calls.append((command, kwargs))
+            data = (
+                None
+                if len(calls) == 1
+                else {"total": 1, "diff": [{"f12": "BK0001"}]}
+            )
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"data": data}).encode("utf-8"),
+                stderr=b"",
+            )
+
+        payload = money_flow_service._download_json(
+            "https://example.test/data",
+            runner=fake_runner,
+            sleep=sleeps.append,
+            curl_path="/usr/bin/curl",
+            validate_payload=money_flow_service._validate_page_payload,
+        )
+
+        self.assertEqual(payload["data"]["total"], 1)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(sleeps, [money_flow_service.REQUEST_RETRY_DELAYS_SECONDS[0]])
+
     def test_new_cache_name_does_not_reuse_legacy_total_flow_file(self):
         self.assertEqual(money_flow_service.CACHE_TTL, 60)
         self.assertEqual(money_flow_service.CACHE_PATH.name, "industry_main_money_flow_cache.json")
