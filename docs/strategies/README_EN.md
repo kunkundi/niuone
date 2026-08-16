@@ -290,6 +290,8 @@ The result's rejection-diagnostics section reports stock-session scoring volume,
 
 `historical_data.py` tries Eastmoney, Tencent, and Sina in order with bounded timeouts, retries, concurrency, and source provenance. The default is forward-adjusted data; Sina is eligible only with `adjustment="none"`. With `strict=True`, any missing symbol aborts the run so a cross-sectional selector is not silently tested on an incomplete universe.
 
+`run_historical_selection_backtest` retains complete historical rows in its public result by default, preserving `run.data.bars_by_symbol` and the existing serialized shape. Long-lived workers that only persist statistics may explicitly pass `retain_historical_data=False` to keep compact fetch metadata after the replay engine has consumed the rows and reduce peak memory.
+
 ```python
 from backtesting import (
     HistoricalFetchConfig,

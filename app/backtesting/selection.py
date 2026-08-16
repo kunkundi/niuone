@@ -13,7 +13,7 @@ import sys
 import time
 from bisect import bisect_left
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
@@ -59,7 +59,27 @@ TRADING_DAYS_PER_YEAR = 252
 BUILTIN_STRATEGY_HISTORY_LIMIT = 120
 NIUONE_CONTEXT_WARMUP_SESSIONS = 60
 DIAGNOSTIC_SCORE_THRESHOLD_OFFSETS = (-1.0, -0.5, -0.25, 0.0, 0.25, 0.5, 1.0)
-_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
+
+
+class _OwnedImmutableMapping(Mapping[Any, Any]):
+    """Read-only view over a dict whose ownership was transferred internally."""
+
+    __slots__ = ("_values",)
+
+    def __init__(self, values: dict[Any, Any]) -> None:
+        object.__setattr__(self, "_values", MappingProxyType(values))
+
+    def __getitem__(self, key: Any) -> Any:
+        return self._values[key]
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __setattr__(self, _name: str, _value: Any) -> None:
+        raise AttributeError(f"{type(self).__name__} is immutable")
 
 
 def _diagnostic_blocker_family(reason: str) -> str:
@@ -215,7 +235,7 @@ class HistoricalBar:
             self,
             "extras",
             extras
-            if isinstance(extras, _MAPPING_PROXY_TYPE)
+            if isinstance(extras, _OwnedImmutableMapping)
             else MappingProxyType(dict(extras or {})),
         )
 
@@ -767,7 +787,7 @@ def _normalized_bars(
         symbol = _normalize_symbol(raw_symbol)
         by_date: Mapping[str, HistoricalBar]
         reuse_date_index = (
-            isinstance(raw_bars, _MAPPING_PROXY_TYPE) and bool(raw_bars)
+            isinstance(raw_bars, _OwnedImmutableMapping) and bool(raw_bars)
         )
         if reuse_date_index:
             for raw_date, raw_bar in raw_bars.items():

@@ -16,6 +16,7 @@ from app.backtesting.selection import (
     SelectionBacktestConfig,
     SelectionCostModel,
     SelectionSignal,
+    _normalized_bars,
 )
 from app.backtesting.service import (
     CurrentClassificationError,
@@ -43,6 +44,14 @@ class HistoricalSelectionBacktestServiceTests(unittest.TestCase):
                         "close": 10.5,
                         "volume": 100,
                     },
+                    {
+                        "date": "2026-01-06",
+                        "open": 10.5,
+                        "high": 11.5,
+                        "low": 10,
+                        "close": 11,
+                        "volume": 120,
+                    },
                 ),
             )
         }
@@ -60,7 +69,13 @@ class HistoricalSelectionBacktestServiceTests(unittest.TestCase):
 
         self.assertEqual(raw_series, {})
         self.assertEqual(bars["sh600519"]["2026-01-05"].close, 10.5)
-        self.assertEqual(quality.total_bar_count, 1)
+        self.assertEqual(quality.total_bar_count, 2)
+        self.assertIs(
+            bars["sh600519"]["2026-01-05"].extras,
+            bars["sh600519"]["2026-01-06"].extras,
+        )
+        normalized, _dates = _normalized_bars(bars)
+        self.assertIs(normalized["sh600519"], bars["sh600519"])
 
     def test_current_classification_prefers_a_stale_eastmoney_snapshot(self):
         expected = EastmoneyBoardSnapshot(
@@ -378,11 +393,10 @@ class HistoricalSelectionBacktestServiceTests(unittest.TestCase):
         )
         self.assertEqual(requested, [("2026-01-01", "2026-01-05")])
         self.assertEqual(run.data.source_by_symbol["sh600519"], "eastmoney")
-        self.assertEqual(run.data.series["sh600519"].bar_count, 5)
-        self.assertFalse(hasattr(run.data.series["sh600519"], "bars"))
+        self.assertEqual(len(run.data.series["sh600519"].bars), 5)
+        self.assertEqual(len(run.data.bars_by_symbol["sh600519"]), 5)
         serialized = run.to_dict()["data"]["series"]["sh600519"]
-        self.assertEqual(serialized["bar_count"], 5)
-        self.assertNotIn("bars", serialized)
+        self.assertEqual(len(serialized["bars"]), 5)
         self.assertEqual(run.selection.statistics["evaluated_signal_count"], 1)
         self.assertEqual(run.selection.signals[0]["forward_returns"][2]["net_return_pct"], 20.0)
         self.assertIn(("2026-01-03", "白酒"), observed)
@@ -413,6 +427,50 @@ class HistoricalSelectionBacktestServiceTests(unittest.TestCase):
         )
         self.assertIn("evaluating", [item[1] for item in progress])
         self.assertEqual(progress[-1][:2], (100, "completed"))
+
+    def test_compact_result_is_explicit_opt_in(self):
+        def fetcher(_symbol, _start, _end, _adjustment, _timeout):
+            return [
+                {
+                    "date": "2026-01-05",
+                    "open": 10,
+                    "high": 10,
+                    "low": 10,
+                    "close": 10,
+                    "volume": 100,
+                },
+                {
+                    "date": "2026-01-06",
+                    "open": 10,
+                    "high": 11,
+                    "low": 10,
+                    "close": 11,
+                    "volume": 100,
+                },
+            ]
+
+        run = run_historical_selection_backtest(
+            ["600519"],
+            "2026-01-05",
+            "2026-01-05",
+            lambda _context: [],
+            warmup_calendar_days=0,
+            forward_calendar_days=1,
+            fetch_config=HistoricalFetchConfig(
+                sources=("eastmoney",),
+                max_attempts_per_source=1,
+            ),
+            source_fetchers={"eastmoney": fetcher},
+            retain_historical_data=False,
+        )
+
+        series = run.data.series["sh600519"]
+        self.assertEqual(series.bar_count, 2)
+        self.assertFalse(hasattr(series, "bars"))
+        self.assertNotIn(
+            "bars",
+            run.to_dict()["data"]["series"]["sh600519"],
+        )
 
     def test_current_industry_map_is_applied_to_historical_bars(self):
         def fetcher(_symbol, _start, _end, _adjustment, _timeout):

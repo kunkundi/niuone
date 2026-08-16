@@ -231,6 +231,7 @@ class BacktestTaskTests(unittest.TestCase):
         self.assertIsNone(call.kwargs["position_exit_strategy"])
         self.assertEqual(call.kwargs["fetch_config"].sources, ("eastmoney", "tencent"))
         self.assertEqual(call.kwargs["fetch_config"].max_workers, 16)
+        self.assertFalse(call.kwargs["retain_historical_data"])
         self.assertEqual(
             payload["universe"]["source"],
             "current_a_share_listing_interfaces",

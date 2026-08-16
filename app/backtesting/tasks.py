@@ -669,6 +669,7 @@ def run_strategy_backtest_request(
             }
             if replay_cache_dir is not None else None
         ),
+        retain_historical_data=False,
     )
     # Serialize only the durable result sections. In particular, do not invoke a
     # generic run serializer that could accidentally retain or copy raw K-lines.

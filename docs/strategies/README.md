@@ -294,6 +294,8 @@ Dashboard 的“题材强度”栏目（`/niuone-mainline`）是独立于交易�
 
 `historical_data.py` 默认依次从东方财富、腾讯、新浪获取日 K，带有有界超时、重试、并发和来源记录。默认使用前复权；新浪公开日线只允许在 `adjustment="none"` 时兜底。`strict=True` 会在任一股票缺失时终止，避免不完整横截面带来的偏差。
 
+`run_historical_selection_backtest` 默认在公开结果中保留完整历史行情，以兼容 `run.data.bars_by_symbol` 和既有序列化结构。仅需要持久化统计结果的长生命周期工作进程可显式传入 `retain_historical_data=False`，在回放引擎接管行情后只保留抓取摘要，从而降低峰值内存。
+
 牛牛领涨、转强和启动的选股收益示例：
 
 ```python

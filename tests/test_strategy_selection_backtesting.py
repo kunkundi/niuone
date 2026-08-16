@@ -2126,12 +2126,13 @@ class StrategySelectionBacktestingTests(unittest.TestCase):
         )
         self.assertEqual(object_result.to_dict(), mapping_result.to_dict())
 
-    def test_prevalidated_date_index_and_metadata_are_shared(self):
-        shared_extras = MappingProxyType({
+    def test_external_mapping_proxies_are_detached_before_replay(self):
+        extras_backing = {
             "data_source": "eastmoney",
             "adjustment": "qfq",
             "themes": ("银行",),
-        })
+        }
+        shared_extras = MappingProxyType(extras_backing)
         bars = tuple(
             HistoricalBar(
                 symbol="600000",
@@ -2148,16 +2149,21 @@ class StrategySelectionBacktestingTests(unittest.TestCase):
                 ("2026-01-06", 10.1),
             )
         )
-        indexed = MappingProxyType({bar.date: bar for bar in bars})
+        index_backing = {bar.date: bar for bar in bars}
+        indexed = MappingProxyType(index_backing)
 
         normalized, dates = selection_module._normalized_bars({
             "600000": indexed,
         })
 
+        extras_backing["themes"] = ("证券",)
+        index_backing.clear()
+
         self.assertFalse(hasattr(bars[0], "__dict__"))
-        self.assertIs(bars[0].extras, shared_extras)
-        self.assertIs(bars[1].extras, shared_extras)
-        self.assertIs(normalized["600000"], indexed)
+        self.assertEqual(bars[0].extras["themes"], ("银行",))
+        self.assertEqual(bars[1].extras["themes"], ("银行",))
+        self.assertIsNot(normalized["600000"], indexed)
+        self.assertEqual(tuple(normalized["600000"]), tuple(bar.date for bar in bars))
         self.assertEqual(dates, ("2026-01-05", "2026-01-06"))
 
     def test_compact_prepared_rows_match_regular_strategy_rows_exactly(self):

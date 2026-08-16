@@ -381,6 +381,7 @@ class PromptStrategyBacktestingTests(unittest.TestCase):
             PromptStrategyBacktestPolicy,
         )
         self.assertEqual(call.kwargs["warmup_calendar_days"], 730)
+        self.assertFalse(call.kwargs["retain_historical_data"])
         self.assertEqual(call.kwargs["selection_config"].cooldown_sessions, 0)
         self.assertIn(
             version["version_id"],

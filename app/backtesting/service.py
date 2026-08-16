@@ -13,6 +13,7 @@ from typing import Any
 
 from .historical_data import (
     HistoricalDataError,
+    HistoricalDataResult,
     HistoricalDataSummary,
     HistoricalFetchConfig,
     HistoricalSeries,
@@ -28,6 +29,7 @@ from .selection import (
     SelectionBacktestResult,
     SelectionFunction,
     SelectionStrategy,
+    _OwnedImmutableMapping,
     build_selection_replay_tape,
     run_selection_backtest,
 )
@@ -295,7 +297,7 @@ class IndustryAnnotationQuality:
 
 @dataclass(frozen=True, slots=True)
 class HistoricalSelectionBacktestRun:
-    data: HistoricalDataSummary
+    data: HistoricalDataResult | HistoricalDataSummary
     selection: SelectionBacktestResult
     warnings: tuple[str, ...] = ()
     industry_quality: IndustryAnnotationQuality | None = None
@@ -411,7 +413,7 @@ def _annotated_bars(
         }
         if themes:
             extras["themes"] = themes
-        shared_extras = MappingProxyType(extras)
+        shared_extras = _OwnedImmutableMapping(extras)
         annotated: dict[str, HistoricalBar] = {}
         for raw in rows:
             total_bar_count += 1
@@ -431,7 +433,7 @@ def _annotated_bars(
                 extras=shared_extras,
             )
             annotated[bar.date] = bar
-        bars_by_symbol[symbol] = MappingProxyType(annotated)
+        bars_by_symbol[symbol] = _OwnedImmutableMapping(annotated)
         if progress_callback is not None:
             progress_callback(completed, total, symbol)
     if fallback_symbols:
@@ -501,8 +503,14 @@ def run_historical_selection_backtest(
     progress_callback: BacktestProgress | None = None,
     replay_cache: ReplayTapeCache | None = None,
     replay_cache_identity: Mapping[str, Any] | None = None,
+    retain_historical_data: bool = True,
 ) -> HistoricalSelectionBacktestRun:
-    """Download warmup/forward buffers and evaluate selected stocks."""
+    """Download warmup/forward buffers and evaluate selected stocks.
+
+    Complete historical rows remain available in the returned public result by
+    default. Long-lived worker callers may opt into compact fetch metadata after
+    the rows have entered the replay engine.
+    """
     try:
         start = datetime.strptime(str(signal_start_date)[:10], "%Y-%m-%d").date()
         end = datetime.strptime(str(signal_end_date)[:10], "%Y-%m-%d").date()
@@ -553,13 +561,18 @@ def run_historical_selection_backtest(
             f"({coverage_ratio:.1%} < {float(minimum_coverage_ratio):.1%})"
         )
     data_summary = data.summary()
+    result_data: HistoricalDataResult | HistoricalDataSummary = (
+        data if retain_historical_data else data_summary
+    )
     raw_series = dict(data.series)
     data_failures = data.failures
     fetched_symbols = tuple(raw_series)
     # The mutable series map is consumed one symbol at a time below. Dropping the
     # aggregate result first lets each raw row batch become collectible as soon as
     # its compact HistoricalBar objects have been created.
-    del data
+    if not retain_historical_data:
+        del data
+
     def annotation_progress(completed: int, total: int, _symbol: str) -> None:
         if progress_callback is None:
             return
@@ -774,7 +787,7 @@ def run_historical_selection_backtest(
     if progress_callback is not None:
         progress_callback(100, "completed", "回测完成")
     return HistoricalSelectionBacktestRun(
-        data=data_summary,
+        data=result_data,
         selection=selection,
         warnings=tuple(warnings),
         industry_quality=industry_quality,
