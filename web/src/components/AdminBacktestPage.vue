@@ -758,7 +758,7 @@ onBeforeUnmount(() => {
           </section>
 
           <div v-if="staleResult" class="backtest-notice is-warning">
-            当前结果由旧版牛牛回测协议生成，已停止展示，避免把阶段错配结果误认为当前策略。请重启 Dashboard 后重新运行回测。
+            当前结果由旧版回测协议生成，已停止展示，避免把不完整指标误认为当前结果。请重启 Dashboard 后重新运行回测。
           </div>
 
           <template v-if="result">

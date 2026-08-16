@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import tempfile
 import unittest
 from datetime import date, timedelta
@@ -20,6 +21,8 @@ from app.backtesting.selection import (
 )
 from app.backtesting.tasks import (
     _prompt_backtest_audit_manifest,
+    BACKTEST_STATE_SCHEMA_VERSION,
+    BacktestTaskManager,
     backtest_strategy_options,
     normalize_backtest_request,
     run_strategy_backtest_request,
@@ -62,6 +65,44 @@ def price_bars(values):
 
 
 class PromptStrategyBacktestingTests(unittest.TestCase):
+    def test_manager_ignores_result_from_old_prompt_backtest_protocol(self):
+        with tempfile.TemporaryDirectory(prefix="niuone-prompt-backtest-") as tmp:
+            state_dir = Path(tmp)
+            version = frozen_version()
+            (state_dir / "preset_text.json").write_text(
+                json.dumps({
+                    "schema_version": BACKTEST_STATE_SCHEMA_VERSION,
+                    "job": {
+                        "id": "stale-prompt-result",
+                        "status": "succeeded",
+                        "phase": "completed",
+                        "strategy": {"id": "preset_text"},
+                        "request": {
+                            "start_date": "2026-06-01",
+                            "end_date": "2026-06-30",
+                            "adjustment": "qfq",
+                            "sources": ["tencent"],
+                            "risk_profile": "balanced",
+                            "protocol_version": "prompt-backtest-v1",
+                            "prompt_strategy_version": version,
+                        },
+                        "result": {
+                            "protocol": {"version": "prompt-backtest-v1"},
+                        },
+                    },
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+            manager = BacktestTaskManager(
+                runner=lambda *_args, **_kwargs: {},
+                state_dir=state_dir,
+            )
+            try:
+                self.assertIsNone(manager.latest("preset_text"))
+            finally:
+                manager.shutdown()
+
     def test_existing_v2_frozen_plan_remains_replayable(self):
         current = frozen_version()
 
