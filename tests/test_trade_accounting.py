@@ -5,6 +5,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import types
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -246,6 +247,163 @@ class TradeAccountingTests(unittest.TestCase):
             saved["cash"],
             round(90_000.0 + float(first[0]["net_proceeds"]), 2),
         )
+
+    def test_auto_exit_refresh_does_not_regress_canonical_exit_state(self):
+        baseline = self._base_state(
+            positions={
+                "600000": {
+                    "qty": 1000,
+                    "avg_cost": 10.0,
+                    "buy_date_lots": {"2026-08-14": 1000},
+                    "last_price": 10.0,
+                    "highest_price": 10.0,
+                    "shaofu_soft_exit_count": 0,
+                }
+            },
+        )
+        refreshed = copy.deepcopy(baseline)
+        refreshed["positions"]["600000"].update({
+            "last_price": 11.0,
+            "quote_time": "2026-08-17 10:01:00",
+        })
+        canonical = copy.deepcopy(baseline)
+        canonical["positions"]["600000"].update({
+            "last_price": 12.0,
+            "highest_price": 12.0,
+            "shaofu_soft_exit_count": 1,
+        })
+
+        eligible = trader._merge_refreshed_auto_exit_context(
+            canonical,
+            refreshed,
+            trader._auto_exit_refresh_baseline(baseline),
+        )
+
+        position = canonical["positions"]["600000"]
+        self.assertEqual(eligible, {"600000"})
+        self.assertEqual(position["last_price"], 11.0)
+        self.assertEqual(position["quote_time"], "2026-08-17 10:01:00")
+        self.assertEqual(position["highest_price"], 12.0)
+        self.assertEqual(position["shaofu_soft_exit_count"], 1)
+
+    def test_rejected_oversell_repairs_equity_and_sqlite_position_snapshot(self):
+        buy = {
+            "time": "2026-08-14 10:00:00",
+            "action": "BUY",
+            "code": "600000",
+            "shares": 1000,
+            "price": 10.0,
+            "amount": 10_000.0,
+            "fee": 0.0,
+            "total_cost": 10_000.0,
+            "reason": "测试建仓",
+        }
+        first_sell = {
+            "time": "2026-08-17 09:37:01",
+            "action": "SELL",
+            "code": "600000",
+            "shares": 500,
+            "price": 10.9,
+            "amount": 5_450.0,
+            "fee": 0.0,
+            "net_proceeds": 5_450.0,
+            "reason": "第一笔离场",
+        }
+        stale_oversell = {
+            "time": "2026-08-17 09:38:01",
+            "action": "SELL",
+            "code": "600000",
+            "shares": 1000,
+            "price": 10.8,
+            "amount": 10_800.0,
+            "fee": 0.0,
+            "net_proceeds": 10_800.0,
+            "reason": "旧快照离场",
+        }
+        canonical_position = {
+            "code": "600000",
+            "qty": 500,
+            "avg_cost": 10.0,
+            "last_price": 10.9,
+            "buy_date_lots": {"2026-08-14": 500},
+        }
+        current = self._base_state(
+            cash=95_450.0,
+            positions={"600000": canonical_position},
+            trade_log=[buy, first_sell],
+            equity_history=[{
+                "time": "2026-08-17 09:37:00",
+                "equity": 100_900.0,
+                "cash": 95_450.0,
+                "market_value": 5_450.0,
+                "pnl_pct": 0.9,
+            }],
+        )
+        trader.STATE_FILE.write_text(
+            json.dumps(current, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        pending_time = "2026-08-17 09:38:00"
+        stale_branch = self._base_state(
+            cash=100_800.0,
+            positions={},
+            trade_log=[buy, stale_oversell],
+            equity_history=[{
+                "time": pending_time,
+                "equity": 100_800.0,
+                "cash": 100_800.0,
+                "market_value": 0.0,
+                "pnl_pct": 0.8,
+            }],
+            daily_equity_history=[{
+                "time": pending_time,
+                "equity": 100_800.0,
+                "cash": 100_800.0,
+                "market_value": 0.0,
+                "pnl_pct": 0.8,
+            }],
+        )
+        stale_branch[trader._PENDING_EQUITY_DB_SYNC_TIME] = pending_time
+        position_snapshots = []
+        equity_snapshots = []
+        original_sync_positions = trader._sync_positions_to_db
+        original_db = sys.modules.get("niuniu_db")
+        trader._sync_positions_to_db = lambda state: position_snapshots.append(
+            copy.deepcopy(state.get("positions") or {})
+        )
+        sys.modules["niuniu_db"] = types.SimpleNamespace(
+            record_daily_equity=lambda point: equity_snapshots.append(
+                copy.deepcopy(point)
+            )
+        )
+        try:
+            trader.save_state(stale_branch)
+        finally:
+            trader._sync_positions_to_db = original_sync_positions
+            if original_db is None:
+                sys.modules.pop("niuniu_db", None)
+            else:
+                sys.modules["niuniu_db"] = original_db
+
+        saved = trader.load_state()
+        repaired = next(
+            point
+            for point in saved["equity_history"]
+            if point.get("time") == pending_time
+        )
+        rejected = next(
+            trade
+            for trade in saved["trade_log"]
+            if trade.get("time") == stale_oversell["time"]
+        )
+        self.assertEqual(saved["cash"], 95_450.0)
+        self.assertEqual(saved["positions"]["600000"]["qty"], 500)
+        self.assertFalse(trade_counts_for_account(rejected))
+        self.assertEqual(repaired["cash"], 95_450.0)
+        self.assertEqual(repaired["market_value"], 5_450.0)
+        self.assertEqual(repaired["equity"], 100_900.0)
+        self.assertEqual(position_snapshots[-1]["600000"]["qty"], 500)
+        self.assertEqual(equity_snapshots[-1]["equity"], 100_900.0)
 
     def test_rejected_sell_is_excluded_from_account_summaries(self):
         active_sell = {

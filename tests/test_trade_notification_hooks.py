@@ -53,6 +53,29 @@ def sample_sell() -> dict:
 
 
 class TradeNotificationHookTests(unittest.TestCase):
+    def test_rejected_fill_is_not_returned_to_notification_dispatcher(self):
+        active = sample_sell()
+        rejected = {
+            **sample_sell(),
+            "time": "2026-07-11 10:01:00",
+            "accounting_status": "rejected",
+            "accounting_rejected": True,
+        }
+        dispatched = []
+        original = sys.modules.get("notifications")
+        sys.modules["notifications"] = types.SimpleNamespace(
+            notify_trade_executions=lambda trades: dispatched.append(trades) or []
+        )
+        try:
+            trader._notify_trade_executions_safely([rejected, active])
+        finally:
+            if original is None:
+                sys.modules.pop("notifications", None)
+            else:
+                sys.modules["notifications"] = original
+
+        self.assertEqual(dispatched, [[active]])
+
     def test_auto_exit_notifies_only_after_state_is_saved(self):
         events = []
         executed = [sample_sell()]
