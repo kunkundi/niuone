@@ -2330,7 +2330,10 @@ class SellStrategyRuleTests(unittest.TestCase):
                     "decision_log": [],
                     "equity_history": [],
                 }
-                trader.STATE_FILE.write_text(json.dumps(current, ensure_ascii=False))
+                trader.STATE_FILE.write_text(
+                    json.dumps(current, ensure_ascii=False),
+                    encoding="utf-8",
+                )
 
                 stale = {
                     "initial_cash": 100000.0,
@@ -2374,7 +2377,10 @@ class SellStrategyRuleTests(unittest.TestCase):
                     "decision_log": [],
                     "equity_history": [],
                 }
-                trader.STATE_FILE.write_text(json.dumps(current, ensure_ascii=False))
+                trader.STATE_FILE.write_text(
+                    json.dumps(current, ensure_ascii=False),
+                    encoding="utf-8",
+                )
 
                 later_add = {
                     "time": "2026-08-04 09:59:37", "action": "BUY", "code": "001257",
@@ -2446,7 +2452,10 @@ class SellStrategyRuleTests(unittest.TestCase):
                     "decision_log": [],
                     "equity_history": [],
                 }
-                trader.STATE_FILE.write_text(json.dumps(current, ensure_ascii=False))
+                trader.STATE_FILE.write_text(
+                    json.dumps(current, ensure_ascii=False),
+                    encoding="utf-8",
+                )
 
                 sell = {
                     "time": "2026-07-13 09:30:09", "action": "SELL", "code": "002654",
@@ -2489,16 +2498,19 @@ class SellStrategyRuleTests(unittest.TestCase):
                     },
                     "executed": [],
                 }
-                trader.STATE_FILE.write_text(json.dumps({
-                    "initial_cash": 100000.0,
-                    "cash": 100000.0,
-                    "positions": {},
-                    "trade_log": [],
-                    "decision_log": [failure],
-                    "equity_history": [],
-                    "last_decision_at": failure["time"],
-                    "last_error": failure_error,
-                }, ensure_ascii=False))
+                trader.STATE_FILE.write_text(
+                    json.dumps({
+                        "initial_cash": 100000.0,
+                        "cash": 100000.0,
+                        "positions": {},
+                        "trade_log": [],
+                        "decision_log": [failure],
+                        "equity_history": [],
+                        "last_decision_at": failure["time"],
+                        "last_error": failure_error,
+                    }, ensure_ascii=False),
+                    encoding="utf-8",
+                )
 
                 stale_refresh = {
                     "initial_cash": 100000.0,
@@ -3332,12 +3344,25 @@ class SellStrategyRuleTests(unittest.TestCase):
             "refresh_realtime_prices": trader.refresh_realtime_prices,
             "refresh_position_intraday": trader.refresh_position_intraday,
             "_refresh_position_bbi": trader._refresh_position_bbi,
+            "load_state": trader.load_state,
+            "save_state": trader.save_state,
+            "record_equity": trader.record_equity,
+            "_sync_trades_to_db": trader._sync_trades_to_db,
+            "_sync_positions_to_db": trader._sync_positions_to_db,
+            "_sync_decision_to_db": trader._sync_decision_to_db,
         }
         try:
             os.environ[trader.ACTIVE_STRATEGY_ENV] = "sector_tide"
             trader.refresh_realtime_prices = lambda _state: {}
             trader.refresh_position_intraday = lambda _state: {}
             trader._refresh_position_bbi = lambda _state, _dt=None: None
+            canonical_snapshot = json.loads(json.dumps(state))
+            trader.load_state = lambda: json.loads(json.dumps(canonical_snapshot))
+            trader.save_state = lambda _state: None
+            trader.record_equity = lambda _state: False
+            trader._sync_trades_to_db = lambda _trades: True
+            trader._sync_positions_to_db = lambda _state: True
+            trader._sync_decision_to_db = lambda _decision: True
 
             executed = trader.run_position_exit_checks_before_decision(
                 state,

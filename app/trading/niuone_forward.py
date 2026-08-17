@@ -12,6 +12,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from .accounting import ACCOUNTING_AUDIT_FIELDS, trade_counts_for_account
 from app.strategies.scoring.niuone import NIUONE_STRATEGY_IDS
 from app.strategies.lifecycle import (
     NIUONE_LIFECYCLE_STAGES,
@@ -172,7 +173,7 @@ def merge_forward_trade_rows(
 ) -> tuple[list[dict[str, Any]], int]:
     """Merge persisted trade sources without duplicating simulated fills."""
     merged: list[dict[str, Any]] = []
-    seen: set[tuple[str, ...]] = set()
+    merged_by_identity: dict[tuple[str, ...], dict[str, Any]] = {}
     duplicate_count = 0
     for source in sources:
         for row in source:
@@ -180,11 +181,16 @@ def merge_forward_trade_rows(
                 continue
             materialized = dict(row)
             identity = _trade_identity(materialized)
-            if identity in seen:
+            retained = merged_by_identity.get(identity)
+            if retained is not None:
                 duplicate_count += 1
+                if not trade_counts_for_account(materialized):
+                    for field in ACCOUNTING_AUDIT_FIELDS:
+                        if field in materialized:
+                            retained[field] = materialized[field]
                 continue
-            seen.add(identity)
             merged.append(materialized)
+            merged_by_identity[identity] = materialized
     return merged, duplicate_count
 
 
@@ -239,6 +245,33 @@ def load_niuone_forward_trades_from_db(
         rows = connection.execute(
             f"SELECT {', '.join(selected)} FROM trades ORDER BY time, id"
         ).fetchall()
+        accounting_revision_rows: list[tuple[Any, ...]] = []
+        account_history_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_history'"
+        ).fetchone()
+        if account_history_table is not None:
+            history_columns = {
+                str(item[1])
+                for item in connection.execute(
+                    "PRAGMA table_info(account_history)"
+                ).fetchall()
+            }
+            if {"id", "history_kind", "logical_key", "payload_json"}.issubset(
+                history_columns
+            ):
+                accounting_revision_rows = connection.execute("""
+                    SELECT h.payload_json
+                    FROM account_history AS h
+                    WHERE h.history_kind = 'trade_log'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM account_history AS newer
+                          WHERE newer.history_kind = h.history_kind
+                            AND newer.logical_key = h.logical_key
+                            AND newer.id > h.id
+                      )
+                    ORDER BY h.id
+                """).fetchall()
 
     materialized: list[dict[str, Any]] = []
     rich_payload_count = 0
@@ -262,10 +295,32 @@ def load_niuone_forward_trades_from_db(
         else:
             materialized.append(_legacy_db_trade(selected, values))
             legacy_payload_count += 1
+    materialized_by_identity = {
+        _trade_identity(trade): trade
+        for trade in materialized
+    }
+    accounting_revision_overlay_count = 0
+    for values in accounting_revision_rows:
+        try:
+            revision = json.loads(str(values[0]))
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not isinstance(revision, Mapping) or trade_counts_for_account(revision):
+            continue
+        retained = materialized_by_identity.get(_trade_identity(revision))
+        if retained is None:
+            continue
+        for field in ACCOUNTING_AUDIT_FIELDS:
+            if field in revision:
+                retained[field] = revision[field]
+        accounting_revision_overlay_count += 1
     return materialized, {
         "database_trade_row_count": len(materialized),
         "rich_payload_trade_row_count": rich_payload_count,
         "legacy_payload_trade_row_count": legacy_payload_count,
+        "accounting_revision_overlay_count": (
+            accounting_revision_overlay_count
+        ),
     }
 
 
@@ -2772,9 +2827,14 @@ def evaluate_niuone_forward(
         else _expected_weekday_dates(start, cutoff)
     )
     trade_rows = list(trades)
+    active_execution_rows = [
+        trade
+        for trade in trade_rows
+        if isinstance(trade, Mapping) and trade_counts_for_account(trade)
+    ]
     opportunities = summarize_niuone_forward_opportunities(
         decision_rows,
-        execution_rows=trade_rows,
+        execution_rows=active_execution_rows,
         cohort_start=start,
         as_of=cutoff,
     )
@@ -2801,9 +2861,13 @@ def evaluate_niuone_forward(
     seen_trade_ids: set[tuple[str, ...]] = set()
     duplicate_trade_count = 0
     invalid_timestamp_count = 0
+    inactive_accounting_trade_count = 0
     for index, trade in enumerate(trade_rows):
         if not isinstance(trade, Mapping):
             invalid_timestamp_count += 1
+            continue
+        if not trade_counts_for_account(trade):
+            inactive_accounting_trade_count += 1
             continue
         identity = _trade_identity(trade)
         if identity in seen_trade_ids:
@@ -3133,6 +3197,11 @@ def evaluate_niuone_forward(
         warnings.append(
             "Exact duplicate fill rows were collapsed by the practice-ledger "
             "event identity before lifecycle reconstruction."
+        )
+    if inactive_accounting_trade_count:
+        warnings.append(
+            "Rejected, voided, or reversed audit rows were retained in the raw "
+            "ledger but excluded from lifecycle and performance calculations."
         )
     if not data_quality_gate_met:
         warnings.append(
@@ -3507,6 +3576,7 @@ def evaluate_niuone_forward(
             "unverified_open_count": unverified_open_count,
             "inconsistent_quantity_count": inconsistent_quantity_count,
             "duplicate_trade_count": duplicate_trade_count,
+            "inactive_accounting_trade_count": inactive_accounting_trade_count,
             "rich_payload_trade_count": rich_payload_count,
             "legacy_payload_trade_count": legacy_payload_count,
         },

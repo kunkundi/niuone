@@ -5,6 +5,10 @@ import re
 from typing import Any
 
 from .attribution import classify_buy_strategy, classify_exit_rule
+try:
+    from trading.accounting import trade_counts_for_account
+except ModuleNotFoundError:  # package import when only the repository root is on sys.path
+    from app.trading.accounting import trade_counts_for_account
 
 
 def _normalize_code(code: str) -> str:
@@ -72,6 +76,8 @@ def _finalize_perf(perf: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]
 def latest_buy_strategy_for_code(state: dict[str, Any], code: str) -> str:
     code = _normalize_code(code)
     for trade in reversed(state.get("trade_log", []) or []):
+        if not isinstance(trade, dict) or not trade_counts_for_account(trade):
+            continue
         if str(trade.get("action") or "").upper() != "BUY":
             continue
         if _normalize_code(trade.get("code") or "") != code:
@@ -83,7 +89,11 @@ def latest_buy_strategy_for_code(state: dict[str, Any], code: str) -> str:
 def track_strategy_performance(state: dict[str, Any]) -> dict[str, Any]:
     """Track entry tactics with open P/L, and closed exits by rule."""
     trade_log = sorted(
-        [t for t in (state.get("trade_log", []) or []) if isinstance(t, dict)],
+        [
+            t
+            for t in (state.get("trade_log", []) or [])
+            if isinstance(t, dict) and trade_counts_for_account(t)
+        ],
         key=lambda t: str(t.get("time") or ""),
     )
 
