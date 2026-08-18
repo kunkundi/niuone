@@ -79,21 +79,42 @@ class TradeNotificationHookTests(unittest.TestCase):
     def test_auto_exit_notifies_only_after_state_is_saved(self):
         events = []
         executed = [sample_sell()]
+
+        def check_auto_exits(state, _dt):
+            state.setdefault("trade_log", []).extend(executed)
+            state.setdefault("decision_log", []).append({
+                "time": "2026-07-11 10:00:00",
+                "decision": {"summary": "测试自动离场"},
+                "executed": executed,
+            })
+            return executed
+
         with patched(
-            load_state=lambda: {"positions": {}, "trade_log": [], "cash": 1000.0},
+            load_state=lambda: {
+                "positions": {},
+                "trade_log": [],
+                "decision_log": [],
+                "cash": 1000.0,
+            },
             refresh_realtime_prices=lambda state: None,
             refresh_position_intraday=lambda state: None,
             _refresh_position_bbi=lambda state, dt=None: None,
-            check_auto_exits=lambda state, dt: executed,
+            check_auto_exits=check_auto_exits,
             record_equity=lambda state: None,
             save_state=lambda state: events.append("save"),
+            _sync_decision_to_db=lambda entry: events.append("decision") or True,
+            _sync_trades_to_db=lambda trades: events.append("trades") or True,
+            _sync_positions_to_db=lambda state: events.append("positions"),
             _notify_trade_executions_safely=lambda trades: events.append(("notify", trades)),
             enrich_portfolio=lambda state: {},
         ):
             result = trader.run_auto_exits_once(datetime(2026, 7, 11, 10, 0))
 
         self.assertEqual(result["executed"], executed)
-        self.assertEqual(events, ["save", ("notify", executed)])
+        self.assertEqual(
+            events,
+            ["save", "decision", "trades", "positions", ("notify", executed)],
+        )
 
     def test_auto_exit_with_no_fill_does_not_notify(self):
         events = []
@@ -136,9 +157,9 @@ class TradeNotificationHookTests(unittest.TestCase):
             refine_overlimit_buy_actions=lambda *args, **kwargs: {},
             execute_actions=lambda *args, **kwargs: executed,
             enrich_portfolio=lambda value: {},
-            _sync_decision_to_db=lambda entry: None,
-            _sync_trades_to_db=lambda trades: None,
-            _sync_positions_to_db=lambda value: None,
+            _sync_decision_to_db=lambda entry: events.append("decision") or True,
+            _sync_trades_to_db=lambda trades: events.append("trades") or True,
+            _sync_positions_to_db=lambda value: events.append("positions"),
             record_equity=lambda value: None,
             save_state=lambda value: events.append("save"),
             _notify_trade_executions_safely=lambda trades: events.append(("notify", trades)),
@@ -146,7 +167,10 @@ class TradeNotificationHookTests(unittest.TestCase):
             result = trader.execute_due_pending_decisions(datetime(2026, 7, 11, 13, 0))
 
         self.assertEqual(result["executed"], executed)
-        self.assertEqual(events, ["save", ("notify", executed)])
+        self.assertEqual(
+            events,
+            ["save", "decision", "trades", "positions", ("notify", executed)],
+        )
 
     def test_model_fill_notifies_once_after_state_is_saved(self):
         events = []
@@ -179,9 +203,9 @@ class TradeNotificationHookTests(unittest.TestCase):
             call_model_decision=lambda *args, **kwargs: decision,
             refine_overlimit_buy_actions=lambda *args, **kwargs: {},
             execute_actions=lambda *args, **kwargs: executed,
-            _sync_decision_to_db=lambda entry: None,
-            _sync_trades_to_db=lambda trades: None,
-            _sync_positions_to_db=lambda value: None,
+            _sync_decision_to_db=lambda entry: events.append("decision") or True,
+            _sync_trades_to_db=lambda trades: events.append("trades") or True,
+            _sync_positions_to_db=lambda value: events.append("positions"),
             record_equity=lambda value: None,
             save_state=lambda value: events.append("save"),
             _notify_trade_executions_safely=lambda trades: events.append(("notify", trades)),
@@ -189,7 +213,169 @@ class TradeNotificationHookTests(unittest.TestCase):
             result = trader.run_decision_after_b1({"generated_at": "2026-07-11 10:00:00"}, force=True)
 
         self.assertEqual(result["executed"], executed)
-        self.assertEqual(events, ["save", ("notify", executed)])
+        self.assertEqual(
+            events,
+            ["save", "decision", "trades", "positions", ("notify", executed)],
+        )
+
+    def test_model_fill_state_failure_does_not_project_or_notify(self):
+        events = []
+        executed = [sample_sell()]
+        state = {
+            "cash": 1000.0,
+            "positions": {
+                "600000": {"qty": 100, "avg_cost": 10.0, "last_price": 10.5}
+            },
+            "trade_log": [],
+            "decision_log": [],
+            "equity_history": [],
+        }
+
+        def fail_save(_state):
+            events.append("save")
+            raise PermissionError("state file is not writable")
+
+        with patched(
+            load_state=lambda: state,
+            market_strategy_context_for_b1=lambda payload: {
+                "tone_label": "中性",
+                "max_open_positions": 6,
+                "max_new_buys_per_decision": 2,
+                "allow_new_buys": True,
+            },
+            compact_market_strategy_context=lambda value: value,
+            run_position_exit_checks_before_decision=lambda state, dt=None: [],
+            check_daily_loss_budget=lambda value: (False, 0.0),
+            get_adaptive_params=lambda: {},
+            is_a_share_execution_time=lambda now=None: (True, "连续竞价交易时段"),
+            check_market_environment=lambda: {"bullish": True},
+            check_market_sentiment=lambda: {"sentiment": "neutral", "detail": ""},
+            enrich_portfolio=lambda value: {},
+            call_model_decision=lambda *args, **kwargs: {
+                "summary": "测试决策",
+                "actions": [{"action": "SELL", "code": "600000", "shares": 100}],
+            },
+            refine_overlimit_buy_actions=lambda *args, **kwargs: {},
+            execute_actions=lambda *args, **kwargs: executed,
+            _sync_decision_to_db=lambda entry: events.append("decision") or True,
+            _sync_trades_to_db=lambda trades: events.append("trades") or True,
+            _sync_positions_to_db=lambda value: events.append("positions"),
+            record_equity=lambda value: None,
+            save_state=fail_save,
+            _notify_trade_executions_safely=lambda trades: events.append("notify"),
+        ):
+            with self.assertRaises(PermissionError):
+                trader.run_decision_after_b1(
+                    {"generated_at": "2026-07-11 10:00:00"},
+                    force=True,
+                )
+
+        self.assertEqual(events, ["save"])
+
+    def test_auto_exit_state_failure_does_not_project_or_notify(self):
+        events = []
+        executed = [sample_sell()]
+
+        def check_auto_exits(state, _dt):
+            state.setdefault("trade_log", []).extend(executed)
+            state.setdefault("decision_log", []).append({
+                "time": "2026-07-11 10:00:00",
+                "decision": {"summary": "测试自动离场"},
+                "executed": executed,
+            })
+            return executed
+
+        def fail_save(_state):
+            events.append("save")
+            raise PermissionError("state file is not writable")
+
+        with patched(
+            load_state=lambda: {
+                "positions": {},
+                "trade_log": [],
+                "decision_log": [],
+                "cash": 1000.0,
+            },
+            refresh_realtime_prices=lambda state: None,
+            refresh_position_intraday=lambda state: None,
+            _refresh_position_bbi=lambda state, dt=None: None,
+            check_auto_exits=check_auto_exits,
+            record_equity=lambda state: None,
+            save_state=fail_save,
+            _sync_decision_to_db=lambda entry: events.append("decision") or True,
+            _sync_trades_to_db=lambda trades: events.append("trades") or True,
+            _sync_positions_to_db=lambda state: events.append("positions"),
+            _notify_trade_executions_safely=lambda trades: events.append("notify"),
+            enrich_portfolio=lambda state: {},
+        ):
+            with self.assertRaises(PermissionError):
+                trader.run_auto_exits_once(datetime(2026, 7, 11, 10, 0))
+
+        self.assertEqual(events, ["save"])
+
+    def test_deferred_fill_state_failure_does_not_project_or_notify(self):
+        events = []
+        state = {
+            "cash": 1000.0,
+            "positions": {},
+            "trade_log": [],
+            "decision_log": [],
+            "pending_decisions": [{
+                "id": "pending-1",
+                "status": "pending",
+                "due_at": "",
+                "decision": {"summary": "延迟测试", "actions": []},
+                "candidates": [],
+                "schedule_slot": "2026-07-11 09:25",
+            }],
+        }
+
+        def fail_save(_state):
+            events.append("save")
+            raise PermissionError("state file is not writable")
+
+        with patched(
+            is_a_share_execution_time=lambda now=None: (True, "连续竞价交易时段"),
+            load_state=lambda: state,
+            current_market_strategy_context=lambda: {},
+            refine_overlimit_buy_actions=lambda *args, **kwargs: {},
+            execute_actions=lambda *args, **kwargs: [sample_sell()],
+            enrich_portfolio=lambda value: {},
+            _sync_decision_to_db=lambda entry: events.append("decision") or True,
+            _sync_trades_to_db=lambda trades: events.append("trades") or True,
+            _sync_positions_to_db=lambda value: events.append("positions"),
+            record_equity=lambda value: None,
+            save_state=fail_save,
+            _notify_trade_executions_safely=lambda trades: events.append("notify"),
+        ):
+            with self.assertRaises(PermissionError):
+                trader.execute_due_pending_decisions(
+                    datetime(2026, 7, 11, 13, 0)
+                )
+
+        self.assertEqual(events, ["save"])
+
+    def test_decision_log_state_failure_does_not_project(self):
+        events = []
+
+        def fail_save(_state):
+            events.append("save")
+            raise PermissionError("state file is not writable")
+
+        with patched(
+            load_state=lambda: {"decision_log": []},
+            save_state=fail_save,
+            _sync_decision_to_db=lambda entry: events.append("decision") or True,
+        ):
+            with self.assertRaises(PermissionError):
+                trader.record_decision_log_entry({
+                    "time": "2026-07-11 10:00:00",
+                    "b1_generated_at": "",
+                    "decision": {"summary": "只记录决策"},
+                    "executed": [],
+                })
+
+        self.assertEqual(events, ["save"])
 
     def test_position_exit_check_runs_before_model_even_without_candidates(self):
         events = []

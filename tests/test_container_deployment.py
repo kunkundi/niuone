@@ -157,10 +157,45 @@ print(json.dumps(result))
             self.assertIsNone(values["newsnow_process_base_url"])
             self.assertEqual(values["bundled_newsnow_url"], "http://newsnow:4444/api/s")
             self.assertEqual(values["newsnow_endpoint"], "http://newsnow:4444/api/s")
+            self.assertTrue((data_dir / "runtime" / "cron" / "output").is_dir())
             self.assertIn("DASHBOARD_RATE_LIMIT_ANON=241", values["persisted"])
             self.assertNotIn("NIUONE_ROOT=", values["persisted"])
             self.assertNotIn("DASHBOARD_LOG_DIR=", values["persisted"])
             self.assertNotIn("DASHBOARD_B1_SCANNER=", values["persisted"])
+
+    @unittest.skipIf(
+        os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
+        "POSIX non-root permissions are required",
+    )
+    def test_entrypoint_rejects_unwritable_account_runtime_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            output_dir = data_dir / "runtime" / "cron" / "output"
+            output_dir.mkdir(parents=True)
+            output_dir.chmod(0o500)
+            env = os.environ.copy()
+            env.update({
+                "NIUONE_CONTAINER_DATA_DIR": str(data_dir),
+                "DASHBOARD_ENV_FILE": str(data_dir / "missing.env"),
+                "PYTHON_BIN": sys.executable,
+            })
+            try:
+                result = subprocess.run(
+                    [
+                        "bash",
+                        str(ROOT / "scripts" / "docker-entrypoint.sh"),
+                        "true",
+                    ],
+                    cwd=ROOT,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                )
+            finally:
+                output_dir.chmod(0o700)
+
+            self.assertEqual(result.returncode, 73)
+            self.assertIn("runtime directory is not writable", result.stderr)
 
     def test_release_workflow_uses_tag_trigger_and_repository_credentials(self):
         path = ROOT / ".github" / "workflows" / "docker-publish.yml"

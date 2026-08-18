@@ -911,6 +911,24 @@ def _compact_account_state_json(state: Mapping[str, Any]) -> dict[str, Any]:
     return compacted
 
 
+def _write_state_file_atomically(payload: Mapping[str, Any]) -> None:
+    """Replace the canonical account JSON without exposing a partial file."""
+    tmp = STATE_FILE.with_name(
+        f"{STATE_FILE.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp.replace(STATE_FILE)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 _STATE_FILE_THREAD_LOCK = threading.RLock()
 _STATE_FILE_LOCK_DEPTH = threading.local()
 
@@ -1389,12 +1407,13 @@ def save_state(state: dict[str, Any]) -> None:
             if current_market_time > state_market_time:
                 state["market_decision_context"] = current_market_ctx
 
-        unarchived_history = {
-            kind: list(state.get(kind) or [])
-            for kind in JSON_RECENT_HISTORY_LIMITS
-            if isinstance(state.get(kind), list)
-        }
-        history_archived = _archive_account_history_before_compaction(state)
+        # Commit the complete account state before writing any SQLite projection.
+        # If the replace fails (for example because a bind-mounted state file is
+        # owned by root), no trade, decision, or history row may become visible.
+        full_state = dict(state)
+        _write_state_file_atomically(full_state)
+
+        history_archived = _archive_account_history_before_compaction(full_state)
 
         prune_non_trading_day_equity_points(state)
         prune_future_intraday_equity_points(state)
@@ -1403,11 +1422,16 @@ def save_state(state: dict[str, Any]) -> None:
 
         if history_archived:
             persisted_state = _compact_account_state_json(state)
-        else:
-            # Existing JSON remains the recovery source until a complete archive
-            # transaction succeeds, including rows rejected by active-view cleanup.
-            persisted_state = dict(state)
-            persisted_state.update(unarchived_history)
+            try:
+                _write_state_file_atomically(persisted_state)
+            except OSError as exc:
+                # The full JSON above is already the committed recovery source.
+                # Compaction is optional and can be retried by a later save.
+                print(
+                    "[WARN] 账户状态已保存，但 JSON 压缩失败，保留完整历史: "
+                    f"{type(exc).__name__}",
+                    flush=True,
+                )
 
         equity_point_to_sync = next(
             (
@@ -1418,13 +1442,6 @@ def save_state(state: dict[str, Any]) -> None:
             ),
             None,
         )
-        tmp = STATE_FILE.with_name(f"{STATE_FILE.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        tmp.write_text(
-            json.dumps(persisted_state, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        tmp.replace(STATE_FILE)
-
         if rejected_trade_count:
             # A stale writer may already have replaced today's mutable SQLite
             # position snapshot before its oversell was rejected during merge.
@@ -7207,13 +7224,24 @@ def _commit_refreshed_auto_exits(
         )
         canonical_state.pop(AUTO_EXIT_PERSISTENCE_STATUS_KEY, None)
         canonical_state[AUTO_EXIT_ELIGIBLE_CODES_KEY] = sorted(eligible_codes)
+        decision_log_size = len(canonical_state.get("decision_log") or [])
         try:
             executed = check_auto_exits(canonical_state, dt)
         finally:
             canonical_state.pop(AUTO_EXIT_ELIGIBLE_CODES_KEY, None)
-        persistence_status = _pop_auto_exit_persistence_status(canonical_state)
+        new_decisions = [
+            entry
+            for entry in (canonical_state.get("decision_log") or [])[decision_log_size:]
+            if isinstance(entry, dict)
+        ]
+        canonical_state.pop(AUTO_EXIT_PERSISTENCE_STATUS_KEY, None)
         record_equity(canonical_state)
         save_state(canonical_state)
+        persistence_status = _sync_committed_account_projections(
+            canonical_state,
+            trades=executed,
+            decisions=new_decisions,
+        )
     return canonical_state, executed, persistence_status
 
 
@@ -7481,9 +7509,6 @@ def check_auto_exits(
         state["cash"] = round(cash, 2)
         state.setdefault("trade_log", []).extend(executed)
         del state["trade_log"][:-TRADE_LOG_LIMIT]
-        trades_persisted = _sync_trades_to_db(executed)
-        if trades_persisted:
-            _sync_positions_to_db(state)
         # 记录系统自动退出决策
         log_entry = {
             "time": now_ts(),
@@ -7499,15 +7524,7 @@ def check_auto_exits(
             "executed": executed,
         }
         state.setdefault("decision_log", []).append(log_entry)
-        decision_persisted = _sync_decision_to_db(log_entry)
-        state[AUTO_EXIT_PERSISTENCE_STATUS_KEY] = {
-            "trades_persisted": trades_persisted,
-            "decision_persisted": decision_persisted,
-            "durable_evidence_persisted": (
-                trades_persisted and decision_persisted
-            ),
-        }
-    
+
     return executed
 
 
@@ -11344,6 +11361,29 @@ def _sync_positions_to_db(state: dict[str, Any]):
     except Exception: pass
 
 
+def _sync_committed_account_projections(
+    state: dict[str, Any],
+    *,
+    trades: list[dict[str, Any]] | None = None,
+    decisions: list[dict[str, Any]] | None = None,
+) -> dict[str, bool]:
+    """Project only account events whose canonical state commit has succeeded."""
+    trade_rows = [item for item in (trades or []) if isinstance(item, dict)]
+    decision_rows = [item for item in (decisions or []) if isinstance(item, dict)]
+    decision_results = [_sync_decision_to_db(item) for item in decision_rows]
+    decision_persisted = all(result is True for result in decision_results)
+    trades_persisted = _sync_trades_to_db(trade_rows)
+    if trade_rows and trades_persisted:
+        _sync_positions_to_db(state)
+    return {
+        "trades_persisted": trades_persisted,
+        "decision_persisted": decision_persisted,
+        "durable_evidence_persisted": (
+            trades_persisted and decision_persisted
+        ),
+    }
+
+
 def record_decision_log_entry(log_entry: dict[str, Any], *, mark_b1_done: bool = False) -> None:
     """Append a visible practice decision/event log and sync it to SQLite."""
     state = load_state()
@@ -11355,8 +11395,8 @@ def record_decision_log_entry(log_entry: dict[str, Any], *, mark_b1_done: bool =
         state["last_error"] = log_entry["decision"]["error"]
     if mark_b1_done and generated_at:
         state["last_b1_generated_at"] = generated_at
-    _sync_decision_to_db(log_entry)
     save_state(state)
+    _sync_decision_to_db(log_entry)
 
 
 def _fallback_action_reason(action: dict[str, Any], candidate: dict[str, Any] | None, act: str, name: str) -> str:
@@ -11645,6 +11685,7 @@ def execute_due_pending_decisions(now: datetime | None = None) -> dict[str, Any]
         return {"executed": [], "attempted": 0}
 
     all_executed: list[dict[str, Any]] = []
+    committed_decisions: list[dict[str, Any]] = []
     attempted = 0
     changed = False
     for entry in pending:
@@ -11738,18 +11779,26 @@ def execute_due_pending_decisions(now: datetime | None = None) -> dict[str, Any]
         state.setdefault("decision_log", []).append(log_entry)
         del state["decision_log"][:-50]
         state["last_decision_at"] = log_entry["time"]
-        _sync_decision_to_db(log_entry)
+        committed_decisions.append(log_entry)
 
     if changed:
-        if all_executed:
-            _sync_trades_to_db(all_executed)
-            _sync_positions_to_db(state)
         record_equity(state)
         save_state(state)
+        persistence_status = _sync_committed_account_projections(
+            state,
+            trades=all_executed,
+            decisions=committed_decisions,
+        )
         all_executed = _accounted_trade_executions(all_executed)
         if all_executed:
             _notify_trade_executions_safely(all_executed)
-    return {"executed": all_executed, "attempted": attempted}
+    else:
+        persistence_status = _default_persistence_status()
+    return {
+        "executed": all_executed,
+        "attempted": attempted,
+        **persistence_status,
+    }
 
 
 def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> dict[str, Any]:
@@ -11789,13 +11838,13 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
             str(generated_at),
             str(schedule_slot),
         )
+        record_equity(state)
+        save_state(state)
         decision_persisted = bool(
             prior_decision
             and _decision_has_candidate_evidence(prior_decision)
             and _sync_decision_to_db(prior_decision)
         )
-        record_equity(state)
-        save_state(state)
         if position_exit_executed:
             _notify_trade_executions_safely(position_exit_executed)
         return {
@@ -12090,13 +12139,16 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
         log_entry["schedule_triggered_at"] = schedule_triggered_at
     state.setdefault("decision_log", []).append(log_entry)
     del state["decision_log"][:-50]
-    decision_persisted = _sync_decision_to_db(log_entry)
     candidate_evidence_valid = _decision_has_candidate_evidence(log_entry)
-    model_trades_persisted = _sync_trades_to_db(executed)
-    if executed and model_trades_persisted:
-        _sync_positions_to_db(state)
     record_equity(state)
     save_state(state)
+    model_persistence = _sync_committed_account_projections(
+        state,
+        trades=executed,
+        decisions=[log_entry],
+    )
+    decision_persisted = model_persistence["decision_persisted"]
+    model_trades_persisted = model_persistence["trades_persisted"]
     model_executed = _accounted_trade_executions(executed)
     all_executed = [*position_exit_executed, *model_executed]
     if all_executed:
@@ -12183,8 +12235,8 @@ def snapshot_closing_equity_once() -> dict[str, Any]:
     _refresh_position_bbi(state)
     rebuild_intraday_equity_curve(state, now=now)
     record_equity(state)
-    _sync_positions_to_db(state)
     save_state(state)
+    _sync_positions_to_db(state)
     today = now.strftime("%Y-%m-%d")
     closing_points = [
         point
@@ -12230,11 +12282,11 @@ def get_dashboard_payload() -> dict[str, Any]:
     refresh_today_sold_stocks(state)
     if not rebuild_intraday_equity_curve(state, now=now) and is_a_share_session_clock(now):
         record_equity(state)
-    _sync_positions_to_db(state)
     current_market_ctx = select_current_market_strategy_context(state, now)
     if current_market_ctx:
         state["market_decision_context"] = current_market_ctx
     save_state(state)
+    _sync_positions_to_db(state)
     
     payload = enrich_portfolio(state)
     payload["equity_history"] = load_account_history(

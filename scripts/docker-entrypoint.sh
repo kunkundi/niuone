@@ -79,7 +79,30 @@ export NIUONE_ROOT="$ROOT"
 umask 077
 mkdir -p \
   "$DASHBOARD_HOME/cron/state" \
+  "$DASHBOARD_HOME/cron/output" \
   "$DASHBOARD_HOME/logs"
+
+for runtime_dir in \
+  "$DASHBOARD_HOME" \
+  "$DASHBOARD_HOME/cron" \
+  "$DASHBOARD_HOME/cron/state" \
+  "$DASHBOARD_HOME/cron/output" \
+  "$DASHBOARD_HOME/logs"; do
+  if [[ ! -w "$runtime_dir" ]]; then
+    echo "NiuOne runtime directory is not writable by uid=$(id -u), gid=$(id -g): $runtime_dir" >&2
+    exit 73
+  fi
+done
+
+for runtime_file in \
+  "$DASHBOARD_PORTFOLIO_STATE" \
+  "$DASHBOARD_NIUNIU_DB" \
+  "$DASHBOARD_PROMPT_STRATEGY_DB"; do
+  if [[ -e "$runtime_file" && ( ! -r "$runtime_file" || ! -w "$runtime_file" ) ]]; then
+    echo "NiuOne runtime file is not readable and writable by uid=$(id -u), gid=$(id -g): $runtime_file" >&2
+    exit 73
+  fi
+done
 
 if [[ $# -eq 0 ]]; then
   set -- dashboard
