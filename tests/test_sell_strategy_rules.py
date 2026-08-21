@@ -3378,17 +3378,25 @@ class SellStrategyRuleTests(unittest.TestCase):
             "decision_log": [],
         }
         originals = {
+            "load_state": trader.load_state,
+            "save_state": trader.save_state,
+            "record_equity": trader.record_equity,
             "_sync_trades_to_db": trader._sync_trades_to_db,
             "_sync_decision_to_db": trader._sync_decision_to_db,
         }
         try:
+            trader.load_state = lambda: json.loads(json.dumps(state))
+            trader.save_state = lambda _state: None
+            trader.record_equity = lambda _state: False
             trader._sync_trades_to_db = lambda _rows: False
             trader._sync_decision_to_db = lambda _row: True
-            executed = trader.check_auto_exits(
-                state,
-                datetime(2026, 6, 24, 9, 37),
+            _saved_state, executed, persistence = (
+                trader._commit_refreshed_auto_exits(
+                    state,
+                    trader._auto_exit_refresh_baseline(state),
+                    datetime(2026, 6, 24, 9, 37),
+                )
             )
-            persistence = trader._pop_auto_exit_persistence_status(state)
         finally:
             for name, value in originals.items():
                 setattr(trader, name, value)
