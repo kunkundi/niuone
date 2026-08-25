@@ -11354,10 +11354,16 @@ def _decision_has_candidate_evidence(log_entry: Mapping[str, Any]) -> bool:
 
 
 def _sync_positions_to_db(state: dict[str, Any]):
-    """将当前持仓快照同步写入 SQLite。"""
+    """将最新规范持仓快照同步写入 SQLite。"""
     try:
         from niuniu_db import snapshot_positions as _sp
-        _sp(state.get("positions", {}))
+
+        # A different writer may commit after this caller's save_state() and
+        # before its projection begins. Re-read while holding the same account
+        # lock so a delayed projection cannot replace SQLite with stale holdings.
+        with state_file_write_lock():
+            canonical_state = load_state() if STATE_FILE.exists() else state
+            _sp(canonical_state.get("positions", {}))
     except Exception: pass
 
 

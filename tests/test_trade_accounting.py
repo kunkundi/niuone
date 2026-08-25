@@ -211,6 +211,42 @@ class TradeAccountingTests(unittest.TestCase):
         self.assertEqual(write_count, 2)
         self.assertEqual(len(saved["trade_log"]), trader.TRADE_LOG_LIMIT + 1)
 
+    def test_delayed_position_projection_reads_latest_canonical_state(self):
+        first_position = {
+            "600000": {
+                "code": "600000",
+                "qty": 100,
+                "avg_cost": 10.0,
+            }
+        }
+        latest_positions = {
+            **first_position,
+            "600001": {
+                "code": "600001",
+                "qty": 200,
+                "avg_cost": 8.0,
+            },
+        }
+        stale_state = self._base_state(positions=first_position)
+        trader.save_state(self._base_state(positions=latest_positions))
+
+        captured = []
+        original_db_module = sys.modules.get("niuniu_db")
+        sys.modules["niuniu_db"] = types.SimpleNamespace(
+            snapshot_positions=lambda positions: captured.append(
+                copy.deepcopy(positions)
+            )
+        )
+        try:
+            trader._sync_positions_to_db(stale_state)
+        finally:
+            if original_db_module is None:
+                sys.modules.pop("niuniu_db", None)
+            else:
+                sys.modules["niuniu_db"] = original_db_module
+
+        self.assertEqual(captured, [latest_positions])
+
     def test_rejected_audit_marker_survives_same_trade_merge(self):
         trade = {
             "time": "2026-08-17 09:38:01",
