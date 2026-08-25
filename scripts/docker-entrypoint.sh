@@ -77,10 +77,13 @@ export DASHBOARD_CRON_JOBS="$DASHBOARD_HOME/cron/jobs.json"
 export NIUONE_ROOT="$ROOT"
 
 umask 077
-mkdir -p \
+if ! mkdir -p \
   "$DASHBOARD_HOME/cron/state" \
   "$DASHBOARD_HOME/cron/output" \
-  "$DASHBOARD_HOME/logs"
+  "$DASHBOARD_HOME/logs"; then
+  echo "NiuOne runtime directories cannot be created by uid=$(id -u), gid=$(id -g): $DASHBOARD_HOME" >&2
+  exit 73
+fi
 
 for runtime_dir in \
   "$DASHBOARD_HOME" \

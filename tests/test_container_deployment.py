@@ -197,6 +197,43 @@ print(json.dumps(result))
             self.assertEqual(result.returncode, 73)
             self.assertIn("runtime directory is not writable", result.stderr)
 
+    @unittest.skipIf(
+        os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
+        "POSIX non-root permissions are required",
+    )
+    def test_entrypoint_reports_uncreatable_runtime_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            runtime_dir = data_dir / "runtime"
+            runtime_dir.mkdir(parents=True)
+            runtime_dir.chmod(0o500)
+            env = os.environ.copy()
+            env.update({
+                "NIUONE_CONTAINER_DATA_DIR": str(data_dir),
+                "DASHBOARD_ENV_FILE": str(data_dir / "missing.env"),
+                "PYTHON_BIN": sys.executable,
+            })
+            try:
+                result = subprocess.run(
+                    [
+                        "bash",
+                        str(ROOT / "scripts" / "docker-entrypoint.sh"),
+                        "true",
+                    ],
+                    cwd=ROOT,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                )
+            finally:
+                runtime_dir.chmod(0o700)
+
+            self.assertEqual(result.returncode, 73)
+            self.assertIn(
+                "runtime directories cannot be created",
+                result.stderr,
+            )
+
     def test_release_workflow_uses_tag_trigger_and_repository_credentials(self):
         path = ROOT / ".github" / "workflows" / "docker-publish.yml"
         text = path.read_text(encoding="utf-8")
