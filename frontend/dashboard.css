@@ -115,7 +115,7 @@
     .practice-market-summary-section li + li { margin-top:2px; }
     .practice-market-summary-meta { margin-top:9px; color:#718096; font-size:11px; }
     .practice-market-summary-error { margin-top:7px; color:#f87171; font-size:12px; }
-    .practice-manual-cycle-notice { margin-top:8px; padding:7px 9px; border:1px solid rgba(96,165,250,.24); border-radius:8px; background:rgba(30,64,175,.10); color:#bfdbfe; font-size:12px; }
+    .practice-manual-cycle-notice { margin-top:8px; padding:7px 9px; border:1px solid var(--accent-border); border-radius:8px; background:var(--accent-soft); color:var(--accent-text); font-size:12px; }
     .practice-manual-cycle-error { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-top:8px; color:#f87171; font-size:12px; }
     .practice-manual-cycle-error time { color:#94a3b8; white-space:nowrap; }
     .practice-manual-cycle-error-dismiss { flex:0 0 auto; width:22px; height:22px; display:grid; place-items:center; border:1px solid rgba(248,113,113,.28); border-radius:6px; background:rgba(127,29,29,.18); color:#fca5a5; padding:0; font-size:14px; line-height:1; cursor:pointer; }

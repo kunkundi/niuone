@@ -7476,7 +7476,13 @@ process.stdout.write(JSON.stringify({{
         self.assertIn('props.manualCycle.error_visible !== false', PRACTICE_COMPONENTS)
         self.assertIn('class="practice-manual-cycle-notice"', PRACTICE_COMPONENTS)
         self.assertIn('class="practice-manual-cycle-error-dismiss"', PRACTICE_COMPONENTS)
-        self.assertIn('.practice-manual-cycle-notice {', DASHBOARD_FRONTEND)
+        self.assertRegex(
+            DASHBOARD_FRONTEND,
+            r'\.practice-manual-cycle-notice \{'
+            r'[^}]*border:1px solid var\(--accent-border\);'
+            r'[^}]*background:var\(--accent-soft\);'
+            r'[^}]*color:var\(--accent-text\);',
+        )
 
     def test_practice_data_readiness_hides_only_when_fully_ready(self):
         overview = (
