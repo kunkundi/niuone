@@ -883,6 +883,8 @@ ENV_CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"name": "DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED", "label": "启用 Telegram 通知", "group": "交易通知", "kind": "bool", "default": "0", "effect": "runtime"},
     {"name": "DASHBOARD_TELEGRAM_BOT_TOKEN", "label": "Telegram Bot Token", "group": "交易通知", "kind": "secret", "default": "", "effect": "runtime"},
     {"name": "DASHBOARD_TELEGRAM_CHAT_ID", "label": "Telegram Chat ID", "group": "交易通知", "kind": "text", "default": "", "effect": "runtime"},
+    {"name": "DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED", "label": "启用 Server酱通知", "group": "交易通知", "kind": "bool", "default": "0", "effect": "runtime"},
+    {"name": "DASHBOARD_SERVERCHAN_SENDKEY", "label": "Server酱 SendKey", "group": "交易通知", "kind": "secret", "default": "", "effect": "runtime"},
 
     {"name": "CROSSDESK_BASE_URL", "label": "Crossdesk Base URL", "group": "上游模型覆盖", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "CROSSDESK_API_KEY", "label": "Crossdesk API Key", "group": "上游模型覆盖", "kind": "secret", "default": "", "effect": "next_run"},
@@ -997,6 +999,8 @@ ADMIN_VISIBLE_ENV_NAMES = [
     "DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED",
     "DASHBOARD_TELEGRAM_BOT_TOKEN",
     "DASHBOARD_TELEGRAM_CHAT_ID",
+    "DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED",
+    "DASHBOARD_SERVERCHAN_SENDKEY",
     PRACTICE_SCHEDULE_TIMES_ENV,
     PRACTICE_FAST_CYCLE_ENABLED_ENV,
     PRACTICE_FAST_CYCLE_INTERVAL_ENV,
@@ -7137,6 +7141,13 @@ NOTIFICATION_CHANNEL_SETTINGS: tuple[dict[str, Any], ...] = (
         "description": "Bot Token 与接收消息的 Chat ID。",
         "enabled_name": "DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED",
         "field_names": ("DASHBOARD_TELEGRAM_BOT_TOKEN", "DASHBOARD_TELEGRAM_CHAT_ID"),
+    },
+    {
+        "id": "serverchan",
+        "label": "Server酱",
+        "description": "Server酱 SendKey，推送消息到微信。",
+        "enabled_name": "DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED",
+        "field_names": ("DASHBOARD_SERVERCHAN_SENDKEY",),
     },
 )
 NOTIFICATION_CHANNEL_BY_ID = {

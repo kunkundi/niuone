@@ -13,7 +13,7 @@
 
 NiuOne is a local-first market research and simulated trading system. Its main focus is China's A-share market, with additional coverage of overnight U.S. markets. Market data, news, strategies, and simulated portfolios come together in a single web dashboard, with optional LLM support for research and trading decisions.
 
-Scheduled jobs collect pre-open auction data, intraday and post-market activity, capital flows, sector performance, and overseas market information. When a model service is enabled, NiuOne can retrieve news, analyze the market, and make simulated buy and sell decisions within user-defined strategy rules. Portfolio state, trade records, and decision rationale remain local, while execution alerts can be sent through Feishu, DingTalk, WeCom, or Telegram.
+Scheduled jobs collect pre-open auction data, intraday and post-market activity, capital flows, sector performance, and overseas market information. When a model service is enabled, NiuOne can retrieve news, analyze the market, and make simulated buy and sell decisions within user-defined strategy rules. Portfolio state, trade records, and decision rationale remain local, while execution alerts can be sent through Feishu, DingTalk, WeCom, Telegram, or ServerChan (Server酱).
 
 NiuOne runs on a personal computer or server, and its configuration and research data stay under the user's control. It works only with simulated accounts: there is no brokerage connection and no real-money execution.
 
@@ -113,7 +113,7 @@ Click an animation to open the corresponding live page.
 - **Theme and strategy research**: Compare today's theme strength with cross-session structural rankings, using full-market quotes, theme attribution, and Eastmoney rankings as context. NiuOne includes Base, Z-ge, Li Daxiao, Sector Tide, and NiuOne strategies, and also accepts natural-language rules for candidates, entries, exits, position sizing, and timing.
 - **Information and model-assisted analysis**: Aggregate live CLS and Jin10 flashes through NewsNow, alongside A-share auction, midday, and close reports, overnight U.S. markets, and iWencai Dragon-Tiger data. Compatible model services can support retrieval, summarization, and structured analysis.
 - **Simulated trading**: Track candidates, decisions, positions, P&L, equity curves, and trade logs without connecting to a brokerage or using real funds.
-- **Automation and notifications**: Schedule data collection, report generation, database ingestion, and monitoring. Simulated execution alerts can be sent to Feishu, DingTalk, WeCom, and Telegram.
+- **Automation and notifications**: Schedule data collection, report generation, database ingestion, and monitoring. Simulated execution alerts can be sent to Feishu, DingTalk, WeCom, Telegram, and ServerChan.
 - **Local data management**: Configuration, databases, logs, and task output stay in a separate runtime directory. The settings page supports connection tests and update checks, but never installs updates automatically.
 
 Primary pages and dependencies:
@@ -312,13 +312,13 @@ After startup, use the settings entry in the page to configure NiuOne. First aut
 
 1. Select the data sources and automated tasks to enable;
 2. Configure a compatible model service URL, model name, and API key as needed;
-3. To receive trade alerts, turn on the master switch under “Trade Notifications,” then add the required channels from the drop-down list and enter their configuration. Telegram requires a Bot Token and Chat ID;
+3. To receive trade alerts, turn on the master switch under “Trade Notifications,” then add the required channels from the drop-down list and enter their configuration. Telegram requires a Bot Token and Chat ID, and ServerChan requires a SendKey;
 4. Store or rotate administrator credentials securely;
 5. Restart the service so that all settings requiring a restart take effect.
 
 ### Trade Notification Configuration
 
-NiuOne can send simulated buy and sell execution alerts to Feishu, DingTalk, WeCom, and Telegram. Notifications are sent only after a successful execution has been persisted. Multiple executions from the same cycle are combined into a single message and explicitly labeled “模拟成交，非实盘” (“simulated execution, not live trading”). A failure on one channel does not roll back the execution or affect other channels.
+NiuOne can send simulated buy and sell execution alerts to Feishu, DingTalk, WeCom, Telegram, and ServerChan. Notifications are sent only after a successful execution has been persisted. Multiple executions from the same cycle are combined into a single message and explicitly labeled “模拟成交，非实盘” (“simulated execution, not live trading”). A failure on one channel does not roll back the execution or affect other channels.
 
 #### Adding a Channel on the Settings Page
 
@@ -330,7 +330,7 @@ NiuOne can send simulated buy and sell execution alerts to Feishu, DingTalk, WeC
 
 Disabling a channel stops its execution alerts without deleting its Webhook, Bot Token, Chat ID, or signing secret, so it can be enabled again directly. Clicking “Remove” in the upper-right corner disables and collapses the channel. Only after you click “Save this section’s settings” (`保存本组设置`) does NiuOne delete all saved configuration for that channel; adding it later then shows “Not set.” Adding it again before saving cancels the removal and preserves the original configuration. For a channel that remains added, leaving a sensitive field blank when saving preserves its existing value.
 
-“Send test notification” sends only to the channel represented by the current card. It is unaffected by the master notification switch or the channel switch, and it does not save or modify configuration. The test uses unsaved values currently entered in the card first. If a sensitive field is blank, it falls back to the saved Webhook, Bot Token, or signing secret, while the Telegram Chat ID and timeout are validated using the current input. The test message includes “模拟成交，非实盘,” but it does not create an execution record or change cash or positions.
+“Send test notification” sends only to the channel represented by the current card. It is unaffected by the master notification switch or the channel switch, and it does not save or modify configuration. The test uses unsaved values currently entered in the card first. If a sensitive field is blank, it falls back to the saved Webhook, Bot Token, SendKey, or signing secret, while the Telegram Chat ID and timeout are validated using the current input. The test message includes “模拟成交，非实盘,” but it does not create an execution record or change cash or positions.
 
 | Channel | Required configuration | Optional configuration | Targets accepted by NiuOne | Setup |
 |---|---|---|---|---|
@@ -338,6 +338,7 @@ Disabling a channel stops its execution alerts without deleting its Webhook, Bot
 | DingTalk | Bot Webhook | Signing secret | `https://oapi.dingtalk.com/robot/send?access_token=...` | [View setup](#dingtalk) |
 | WeCom | Bot Webhook | None | `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...` | [View setup](#wecom) |
 | Telegram | Bot Token, Chat ID | None | NiuOne calls the official `api.telegram.org` Bot API using the Token | [View setup](#telegram) |
+| ServerChan | SendKey | None | NiuOne selects the `sctapi.ftqq.com` or `push.ft07.com` push endpoint from the SendKey prefix | [View setup](#serverchan) |
 
 #### Feishu
 
@@ -378,6 +379,15 @@ The WeCom channel does not require a separate signing field; the Webhook itself 
 
 If `getUpdates` returns an empty array, first confirm that the target conversation received a new message after the bot joined. If a Webhook has already been configured for the bot to receive updates, `getUpdates` is unavailable. NiuOne only sends notifications and does not configure Telegram's incoming Webhook. Current notifications do not set `message_thread_id`, so they cannot target a specific Topic in a forum group. The Bot Token is equivalent to control credentials for the bot; revoke or regenerate it through BotFather immediately if it is leaked. See Telegram's official [Bot Creation Guide](https://core.telegram.org/bots), [`getMe` documentation](https://core.telegram.org/bots/api#getme), [`getUpdates` documentation](https://core.telegram.org/bots/api#getupdates), and [`sendMessage` documentation](https://core.telegram.org/bots/api#sendmessage).
 
+#### ServerChan
+
+1. Open [ServerChan](https://sct.ftqq.com), log in by scanning the QR code with WeChat, and copy the key from the “SendKey” page.
+2. Bind the receiving channel (for example WeChat push) on the channel page and confirm it can receive messages.
+3. Enter the key in NiuOne's “ServerChan SendKey.” Turbo keys start with `SCT`; Server酱³ (SC3) keys look like `sctp{uid}t...`. Enter only the key itself, never a full push URL.
+4. Use “Send test notification” at the bottom of the channel card to verify the configuration.
+
+NiuOne picks the push endpoint from the SendKey prefix: `SCT` Turbo keys use `https://sctapi.ftqq.com/{SendKey}.send`, while `sctp` SC3 keys use `https://{uid}.push.ft07.com/send/{SendKey}.send`. The message title is trimmed to ServerChan's 32-character limit and the body is sent as Markdown. A SendKey is a push credential: anyone holding it can post to the bound channel, so never commit it to Git, issues, logs, or screenshots. The free tier allows 5 messages per day and 50 per minute; paid tiers allow more. See ServerChan's official [API documentation](https://sct.ftqq.com/docs/integrations/coze) and [FAQ](https://sct.ftqq.com/docs/getting-started/faq).
+
 #### Settings and Environment Variables
 
 The settings page writes configuration to the private `.local-data/dashboard.env`. For manual configuration, see [dashboard.env.example](dashboard.env.example). Whether a channel is added or removed is represented by its corresponding `*_NOTIFICATION_ENABLED` switch.
@@ -397,6 +407,8 @@ The settings page writes configuration to the private `.local-data/dashboard.env
 | Telegram channel switch | `DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED` | `0` |
 | Telegram Bot Token | `DASHBOARD_TELEGRAM_BOT_TOKEN` | Empty |
 | Telegram Chat ID | `DASHBOARD_TELEGRAM_CHAT_ID` | Empty |
+| ServerChan channel switch | `DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED` | `0` |
+| ServerChan SendKey | `DASHBOARD_SERVERCHAN_SENDKEY` | Empty |
 
 #### Troubleshooting
 
@@ -408,6 +420,8 @@ The settings page writes configuration to the private `.local-data/dashboard.env
 | Feishu returns `19021`, DingTalk returns `310000`, or a signature/timestamp error appears | Copy the original signing secret shown by the platform again and synchronize the system clock on the machine running NiuOne. |
 | Feishu returns `19022`, DingTalk returns `310000`, or an IP-not-allowed error appears | Add the public egress IP of the NiuOne machine to the bot's allowlist. |
 | DingTalk returns `400101`, `400102`, or `400106` | Check that the `access_token` is complete, that the bot is enabled, and that it still belongs to the target group. |
+| ServerChan returns a non-zero `code` | Check the returned `message`: the SendKey may be invalid, the receiving channel unbound, or the free quota (5 per day, 50 per minute) exhausted. |
+| ServerChan returns 429 | The egress IP exceeded its 24-hour call limit; it usually recovers 24 hours after requests stop. |
 | Telegram reports `chat not found` or lacks permission to send | Start a conversation with the bot first, or add it to the target group/channel and grant permission to post messages, then verify the Chat ID again. |
 | The settings page rejects the Webhook | Use the official HTTPS URLs listed above. Do not enter an application-bot API, proxy URL, URL containing a username and password, non-default port, or `#fragment`. |
 | A channel is added again after being removed and saved | All fields should show “Not set” and must be entered again. If the credentials may have leaked, revoke or rotate them on the corresponding platform as well. |
