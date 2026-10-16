@@ -52,7 +52,7 @@ def _post_json(url: str, payload: Mapping[str, Any], timeout: float) -> Mapping[
 
 def _sensitive_values(env: Mapping[str, Any]) -> tuple[str, ...]:
     values: set[str] = set()
-    sensitive_name = re.compile(r"(?:SECRET|TOKEN|WEBHOOK|PASSWORD|API_KEY|CREDENTIAL)")
+    sensitive_name = re.compile(r"(?:SECRET|TOKEN|WEBHOOK|PASSWORD|API_KEY|CREDENTIAL|SENDKEY)")
     try:
         items = tuple(env.items())
     except Exception:

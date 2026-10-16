@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import stat
 import sys
@@ -42,6 +43,8 @@ NOTIFICATION_ENV_NAMES = [
     "DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED",
     "DASHBOARD_TELEGRAM_BOT_TOKEN",
     "DASHBOARD_TELEGRAM_CHAT_ID",
+    "DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED",
+    "DASHBOARD_SERVERCHAN_SENDKEY",
 ]
 
 
@@ -76,6 +79,7 @@ class TradeNotificationSettingsTests(unittest.TestCase):
             "企业微信机器人 Webhook",
             "Telegram Bot Token",
             "Telegram Chat ID",
+            "Server酱 SendKey",
         ):
             self.assertIn(label, {item["label"] for item in items.values()})
 
@@ -84,9 +88,9 @@ class TradeNotificationSettingsTests(unittest.TestCase):
         self.assertIn("data-notification-channel-add", ADMIN_VUE)
         self.assertEqual(
             {channel["id"] for channel in payload["notification_channels"]},
-            {"feishu", "dingtalk", "wecom", "telegram"},
+            {"feishu", "dingtalk", "wecom", "telegram", "serverchan"},
         )
-        for channel in ("feishu", "dingtalk", "wecom", "telegram"):
+        for channel in ("feishu", "dingtalk", "wecom", "telegram", "serverchan"):
             self.assertIn(channel, {entry["id"] for entry in payload["notification_channels"]})
 
     def test_unselected_channels_are_hidden_and_excluded_from_form_config(self):
@@ -303,6 +307,7 @@ class TradeNotificationSettingsTests(unittest.TestCase):
             "DASHBOARD_WECOM_WEBHOOK_URL": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=private-wecom",
             "DASHBOARD_TELEGRAM_BOT_TOKEN": "123456:private-telegram-token-value",
             "DASHBOARD_TELEGRAM_CHAT_ID": "-1001234567890",
+            "DASHBOARD_SERVERCHAN_SENDKEY": "SCT123456privateSendKey",
         }
         enabled_updates = {
             str(channel["enabled_name"]): "1"
@@ -331,6 +336,89 @@ class TradeNotificationSettingsTests(unittest.TestCase):
         for name, value in credentials.items():
             self.assertEqual(values[name], value)
             self.assertEqual(os.environ.get(name), value)
+
+    def test_serverchan_sendkey_is_treated_as_a_secret_presence_field(self):
+        sendkey = "SCT123456privateSendKey"
+        dashboard.write_env_file_values(
+            {
+                "DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED": "1",
+                "DASHBOARD_SERVERCHAN_SENDKEY": sendkey,
+            },
+            self.env_path,
+        )
+
+        payload = dashboard.build_admin_config_payload()
+        items = {item["name"]: item for item in payload["items"]}
+        key_item = items["DASHBOARD_SERVERCHAN_SENDKEY"]
+        self.assertTrue(key_item["secret"])
+        self.assertEqual(key_item["current_state"], "已设置")
+        self.assertEqual(key_item["file_value"], "")
+        self.assertNotIn(sendkey, json.dumps(payload, ensure_ascii=False))
+
+        channel = next(
+            entry for entry in payload["notification_channels"] if entry["id"] == "serverchan"
+        )
+        self.assertEqual(channel["enabled_name"], "DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED")
+        self.assertEqual(channel["field_names"], ["DASHBOARD_SERVERCHAN_SENDKEY"])
+
+    def test_removed_serverchan_clears_only_its_own_config(self):
+        dashboard.write_env_file_values(
+            {
+                "DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED": "1",
+                "DASHBOARD_SERVERCHAN_SENDKEY": "SCT123456privateSendKey",
+                "DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED": "1",
+                "DASHBOARD_TELEGRAM_CHAT_ID": "-1001234567890",
+            },
+            self.env_path,
+        )
+
+        result = dashboard.write_env_file_values(
+            {"DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED": "0"},
+            self.env_path,
+            clear_names=dashboard.removed_notification_config_names({"serverchan"}),
+        )
+        self.assertTrue(result["changed"])
+
+        values = dashboard.parse_env_file(self.env_path, include_container_overrides=False)
+        self.assertNotIn("DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED", values)
+        self.assertNotIn("DASHBOARD_SERVERCHAN_SENDKEY", values)
+        self.assertEqual(values["DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED"], "1")
+        self.assertEqual(values["DASHBOARD_TELEGRAM_CHAT_ID"], "-1001234567890")
+
+    def test_notification_test_sends_a_serverchan_test_with_unsaved_and_saved_values(self):
+        saved_sendkey = "SCT123456savedSendKeyValue"
+        dashboard.write_env_file_values(
+            {"DASHBOARD_SERVERCHAN_SENDKEY": saved_sendkey},
+            self.env_path,
+        )
+        captured = {}
+        original_dispatch = notifications.dispatch_to_channel
+        try:
+            def fake_dispatch(notification, channel_name, env, **_kwargs):
+                captured.update({"channel": channel_name, "env": dict(env)})
+                return notifications.DeliveryResult(channel_name, True, "")
+
+            notifications.dispatch_to_channel = fake_dispatch
+            result = dashboard.send_notification_test(
+                "serverchan",
+                {
+                    "DASHBOARD_NOTIFICATION_TIMEOUT_SECONDS": "6",
+                    "DASHBOARD_SERVERCHAN_SENDKEY": "   ",
+                    "DASHBOARD_FEISHU_WEBHOOK_URL": "must-be-ignored",
+                },
+            )
+        finally:
+            notifications.dispatch_to_channel = original_dispatch
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(captured["channel"], "serverchan")
+        self.assertEqual(
+            set(captured["env"]),
+            {"DASHBOARD_NOTIFICATION_TIMEOUT_SECONDS", "DASHBOARD_SERVERCHAN_SENDKEY"},
+        )
+        self.assertEqual(captured["env"]["DASHBOARD_SERVERCHAN_SENDKEY"], saved_sendkey)
+        self.assertEqual(captured["env"]["DASHBOARD_NOTIFICATION_TIMEOUT_SECONDS"], "6")
+        self.assertNotIn(saved_sendkey, repr(result))
 
     def test_removed_telegram_rerenders_with_unset_state_for_the_next_add(self):
         saved = dashboard.write_env_file_values(
@@ -468,6 +556,7 @@ class TradeNotificationSettingsTests(unittest.TestCase):
             "#### 钉钉",
             "#### 企业微信",
             "#### Telegram",
+            "#### Server酱",
             "#### 配置项与环境变量",
             "#### 常见问题",
         ):
@@ -479,10 +568,11 @@ class TradeNotificationSettingsTests(unittest.TestCase):
             "https://open.dingtalk.com/document/",
             "https://developer.work.weixin.qq.com/document/",
             "https://core.telegram.org/bots",
+            "https://sct.ftqq.com/docs/",
         ):
             self.assertIn(official_url, readme)
         self.assertIn("“关闭”只停止该渠道的成交通知", readme)
-        self.assertIn("不会删除 Webhook、Bot Token、Chat ID 或签名密钥", readme)
+        self.assertIn("不会删除 Webhook、Bot Token、Chat ID、SendKey 或签名密钥", readme)
         self.assertIn("“移除”会关闭并收起该渠道", readme)
         self.assertIn("删除该渠道已经保存的全部配置", readme)
         self.assertIn("再次添加时状态为“未设置”", readme)

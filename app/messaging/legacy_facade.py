@@ -47,6 +47,8 @@ WECOM_WEBHOOK_ENV = _messaging.WECOM_WEBHOOK_ENV
 TELEGRAM_ENABLED_ENV = _messaging.TELEGRAM_ENABLED_ENV
 TELEGRAM_TOKEN_ENV = _messaging.TELEGRAM_TOKEN_ENV
 TELEGRAM_CHAT_ID_ENV = _messaging.TELEGRAM_CHAT_ID_ENV
+SERVERCHAN_ENABLED_ENV = _messaging.SERVERCHAN_ENABLED_ENV
+SERVERCHAN_SENDKEY_ENV = _messaging.SERVERCHAN_SENDKEY_ENV
 DEFAULT_TIMEOUT_SECONDS = _messaging.DEFAULT_TIMEOUT_SECONDS
 MIN_TIMEOUT_SECONDS = _messaging.MIN_TIMEOUT_SECONDS
 MAX_TIMEOUT_SECONDS = _messaging.MAX_TIMEOUT_SECONDS
@@ -66,6 +68,7 @@ FeishuChannel = _messaging.FeishuChannel
 DingTalkChannel = _messaging.DingTalkChannel
 WeComChannel = _messaging.WeComChannel
 TelegramChannel = _messaging.TelegramChannel
+ServerChanChannel = _messaging.ServerChanChannel
 
 
 # Registry functions share the package's single state owner. Dispatch stays a
@@ -152,6 +155,8 @@ _feishu_factory = _messaging._feishu_factory
 _dingtalk_factory = _messaging._dingtalk_factory
 _wecom_factory = _messaging._wecom_factory
 _telegram_factory = _messaging._telegram_factory
+_serverchan_factory = _messaging._serverchan_factory
+_serverchan_endpoint = _messaging._serverchan_endpoint
 _NoRedirectHandler = _messaging._NoRedirectHandler
 _post_json = _messaging._post_json
 _sensitive_values = _messaging._sensitive_values
@@ -186,6 +191,8 @@ __all__ = [
     "TELEGRAM_ENABLED_ENV",
     "TELEGRAM_TOKEN_ENV",
     "TELEGRAM_CHAT_ID_ENV",
+    "SERVERCHAN_ENABLED_ENV",
+    "SERVERCHAN_SENDKEY_ENV",
     "DEFAULT_TIMEOUT_SECONDS",
     "MIN_TIMEOUT_SECONDS",
     "MAX_TIMEOUT_SECONDS",
@@ -204,6 +211,7 @@ __all__ = [
     "DingTalkChannel",
     "WeComChannel",
     "TelegramChannel",
+    "ServerChanChannel",
     "register_channel",
     "registered_channels",
     "dispatch",
