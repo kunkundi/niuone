@@ -13,6 +13,7 @@ from typing import Any, Mapping
 from .channels import (
     _dingtalk_factory,
     _feishu_factory,
+    _serverchan_factory,
     _telegram_factory,
     _wecom_factory,
 )
@@ -23,6 +24,7 @@ from .models import (
     GLOBAL_ENABLED_ENV,
     MAX_TIMEOUT_SECONDS,
     MIN_TIMEOUT_SECONDS,
+    SERVERCHAN_ENABLED_ENV,
     TELEGRAM_ENABLED_ENV,
     TIMEOUT_ENV,
     TRUTHY_VALUES,
@@ -50,6 +52,10 @@ class _ChannelRegistration:
 # or reloads from silently creating an independent channel list.
 _CHANNEL_REGISTRY: dict[str, _ChannelRegistration] = {}
 _REGISTRY_LOCK = threading.RLock()
+
+# Every built-in channel is delivered concurrently so one slow provider cannot
+# delay the others. The cap bounds thread usage if callers register more.
+MAX_DELIVERY_WORKERS = 8
 
 
 def register_channel(
@@ -181,7 +187,7 @@ def dispatch(
     if ready:
         try:
             with concurrent.futures.ThreadPoolExecutor(
-                max_workers=min(4, len(ready))
+                max_workers=min(MAX_DELIVERY_WORKERS, len(ready))
             ) as executor:
                 futures = {
                     executor.submit(
@@ -269,6 +275,7 @@ register_channel("feishu", _feishu_factory, enabled_env=FEISHU_ENABLED_ENV)
 register_channel("dingtalk", _dingtalk_factory, enabled_env=DINGTALK_ENABLED_ENV)
 register_channel("wecom", _wecom_factory, enabled_env=WECOM_ENABLED_ENV)
 register_channel("telegram", _telegram_factory, enabled_env=TELEGRAM_ENABLED_ENV)
+register_channel("serverchan", _serverchan_factory, enabled_env=SERVERCHAN_ENABLED_ENV)
 
 
 __all__ = [

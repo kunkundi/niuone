@@ -15,6 +15,7 @@ from .models import (
     DINGTALK_WEBHOOK_ENV,
     FEISHU_SECRET_ENV,
     FEISHU_WEBHOOK_ENV,
+    SERVERCHAN_SENDKEY_ENV,
     TELEGRAM_CHAT_ID_ENV,
     TELEGRAM_TOKEN_ENV,
     WECOM_WEBHOOK_ENV,
@@ -24,11 +25,21 @@ from .models import (
     NotificationDeliveryError,
     JsonTransport,
     Clock,
+    MAX_MESSAGE_BYTES,
     _escape_markdown,
+    _truncate_utf8,
 )
 
 
 _FEISHU_MAX_PAYLOAD_BYTES = 28 * 1024
+
+# Server酱 rejects titles longer than 32 characters and titles with line
+# breaks, so the channel bounds the title itself instead of failing delivery.
+_SERVERCHAN_MAX_TITLE_CHARS = 32
+_SERVERCHAN_TURBO_HOST = "sctapi.ftqq.com"
+_SERVERCHAN_SC3_HOST_SUFFIX = ".push.ft07.com"
+_SERVERCHAN_TURBO_KEY_RE = re.compile(r"SCT[A-Za-z0-9]{8,64}\Z")
+_SERVERCHAN_SC3_KEY_RE = re.compile(r"sctp(\d{1,10})t[A-Za-z0-9]{4,64}\Z")
 
 
 def _reject_controls(value: str, field_name: str) -> str:
@@ -450,6 +461,62 @@ class TelegramChannel:
             raise NotificationDeliveryError("provider rejected request")
 
 
+def _serverchan_title(notification: Notification) -> str:
+    """Build a Server酱-safe title: one line, never longer than 32 characters."""
+
+    title = re.sub(r"\s+", " ", str(notification.title or "")).strip()
+    if not title:
+        title = "NiuOne 通知"
+    if len(title) <= _SERVERCHAN_MAX_TITLE_CHARS:
+        return title
+    return title[: _SERVERCHAN_MAX_TITLE_CHARS - 1].rstrip() + "…"
+
+
+def _serverchan_endpoint(send_key: str) -> str:
+    """Select the push endpoint from the SendKey generation prefix."""
+
+    sc3 = _SERVERCHAN_SC3_KEY_RE.fullmatch(send_key)
+    if sc3 is not None:
+        return f"https://{sc3.group(1)}{_SERVERCHAN_SC3_HOST_SUFFIX}/send/{send_key}.send"
+    return f"https://{_SERVERCHAN_TURBO_HOST}/{send_key}.send"
+
+
+@dataclass(frozen=True)
+class ServerChanChannel:
+    send_key: str
+    name: str = field(default="serverchan", init=False)
+
+    @property
+    def endpoint(self) -> str:
+        return _serverchan_endpoint(self.send_key)
+
+    def send(
+        self,
+        notification: Notification,
+        *,
+        timeout: float,
+        transport: JsonTransport,
+        clock: Clock,
+    ) -> None:
+        del clock
+        body = notification.markdown_text(include_title=False)
+        if not body:
+            body = _truncate_utf8(
+                str(notification.text or "").strip(),
+                MAX_MESSAGE_BYTES,
+            )
+        payload = {
+            "title": _serverchan_title(notification),
+            "desp": body,
+        }
+        response = _require_mapping_response(transport(self.endpoint, payload, timeout))
+        code = response.get("code")
+        if not _zero_code(code):
+            raise NotificationDeliveryError(
+                f"provider rejected request (code={_safe_provider_code(code)})"
+            )
+
+
 def _feishu_factory(env: Mapping[str, Any]) -> NotificationChannel:
     webhook = _validate_feishu_webhook(_required_credential(env, FEISHU_WEBHOOK_ENV))
     return FeishuChannel(webhook, _optional_credential(env, FEISHU_SECRET_ENV))
@@ -477,4 +544,17 @@ def _telegram_factory(env: Mapping[str, Any]) -> NotificationChannel:
     return TelegramChannel(token, chat_id)
 
 
-__all__ = ["FeishuChannel", "DingTalkChannel", "WeComChannel", "TelegramChannel"]
+def _serverchan_factory(env: Mapping[str, Any]) -> NotificationChannel:
+    send_key = _required_credential(env, SERVERCHAN_SENDKEY_ENV)
+    if not _SERVERCHAN_SC3_KEY_RE.fullmatch(send_key) and not _SERVERCHAN_TURBO_KEY_RE.fullmatch(send_key):
+        raise NotificationConfigError(f"{SERVERCHAN_SENDKEY_ENV} format is invalid")
+    return ServerChanChannel(send_key)
+
+
+__all__ = [
+    "FeishuChannel",
+    "DingTalkChannel",
+    "WeComChannel",
+    "TelegramChannel",
+    "ServerChanChannel",
+]
