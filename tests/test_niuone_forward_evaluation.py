@@ -956,7 +956,7 @@ class NiuOneForwardEvaluationTests(unittest.TestCase):
         self.assertEqual(first_code, 0)
         self.assertEqual(first_report["protocol_integrity"]["status"], "frozen")
         self.assertEqual(first_report["protocol_integrity"]["source_file_count"], 32)
-        self.assertEqual(first_report["protocol_integrity"]["runtime_setting_count"], 57)
+        self.assertEqual(first_report["protocol_integrity"]["runtime_setting_count"], 58)
         self.assertEqual(
             first_report["evidence_gate"]["status"],
             "operations_blocked",

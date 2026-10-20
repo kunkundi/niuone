@@ -96,6 +96,10 @@ def _model_response(req: urllib.request.Request, api_key: str, opener: UrlOpen,
     deadline = time.monotonic() + timeout
     coordinator = shared_model_coordinator()
     scope = request_scope(req.full_url, api_key)
+    # Queue for as long as the result would still be usable, bounded by
+    # MAX_QUEUE_SECONDS for callers that run outside an explicit budget. The
+    # queue window is a floor, not a ceiling: a request that must wait longer
+    # than its own budget is abandoned instead of admitted too late to finish.
     queue_deadline = min(deadline, time.monotonic() + MAX_QUEUE_SECONDS)
     while True:
         try:
@@ -104,7 +108,12 @@ def _model_response(req: urllib.request.Request, api_key: str, opener: UrlOpen,
         except ModelAdmissionError as exc:
             if exc.reason not in {"spacing", "busy"} or time.monotonic() >= queue_deadline:
                 raise
-            time.sleep(min(0.1, max(0.0, queue_deadline - time.monotonic())))
+            now = time.monotonic()
+            # Leave room for the round trip: waiting for a slot that would be
+            # admitted with no budget left only burns the caller's own deadline.
+            if exc.retry_after > 0 and now + exc.retry_after >= deadline:
+                raise ModelAdmissionError(exc.reason, exc.retry_after) from None
+            time.sleep(min(0.1, max(0.0, queue_deadline - now)))
     success = False
     try:
         remaining = deadline - time.monotonic()
