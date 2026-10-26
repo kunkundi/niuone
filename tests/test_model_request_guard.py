@@ -138,12 +138,12 @@ class ModelRequestGuardTests(unittest.TestCase):
                 super().__init__(path, clock=lambda: now[0], max_concurrency=1)
                 self.attempts = 0
 
-            def acquire(self, scope, *, duration):
+            def acquire(self, scope, *, duration, rate_scope=None):
                 self.attempts += 1
                 if self.attempts < 3:
                     # The oldest lease frees well inside this caller's budget.
                     raise guard.ModelAdmissionError("busy", 1.5)
-                return super().acquire(scope, duration=duration)
+                return super().acquire(scope, duration=duration, rate_scope=rate_scope)
 
         coordinator = BusyThenFree(self.path)
         slept: list[float] = []
@@ -167,7 +167,7 @@ class ModelRequestGuardTests(unittest.TestCase):
             def __init__(self, path):  # noqa: D107 - test double
                 super().__init__(path, clock=lambda: now[0], max_concurrency=1)
 
-            def acquire(self, scope, *, duration):
+            def acquire(self, scope, *, duration, rate_scope=None):
                 raise guard.ModelAdmissionError("busy", 40.0)
 
         with patch.object(guard, "max_concurrent_requests", return_value=1):
@@ -204,6 +204,105 @@ class ModelRequestGuardTests(unittest.TestCase):
             self.path, clock=lambda: self.now, interval=5.0
         )
         self.assertEqual(pinned.interval, 5.0)
+
+    def test_model_cooldown_does_not_block_other_models(self):
+        # A per-model quota 429 must not take every model on the credential
+        # offline for the whole Retry-After window.
+        first = guard.rate_limit_scope("scope", "model-a")
+        second = guard.rate_limit_scope("scope", "model-b")
+        self.assertNotEqual(first, second)
+        lease = self.a.acquire("scope", duration=10, rate_scope=first)
+        self.assertEqual(
+            self.a.rate_limited("scope", lease, "1800", rate_scope=first), 1800
+        )
+        self.a.release("scope", lease, rate_scope=first)
+        with self.assertRaisesRegex(guard.ModelAdmissionError, "rate_limited"):
+            self.b.acquire("scope", duration=10, rate_scope=first)
+        self.now += 2  # Clear the spacing gate from the first acquisition.
+        other = self.b.acquire("scope", duration=10, rate_scope=second)
+        self.b.release("scope", other, rate_scope=second)
+        self.now += 1800
+        self.now += 2
+        recovered = self.a.acquire("scope", duration=10, rate_scope=first)
+        self.a.release("scope", recovered, rate_scope=first)
+
+    def test_leases_stay_credential_wide_across_models(self):
+        # The in-flight cap is still one credential budget; only the cooldown
+        # is per model.
+        limited = guard.ModelRequestCoordinator(
+            self.path, clock=lambda: self.now, max_concurrency=1
+        )
+        held = limited.acquire(
+            "scope", duration=10, rate_scope=guard.rate_limit_scope("scope", "model-a")
+        )
+        with self.assertRaisesRegex(guard.ModelAdmissionError, "busy"):
+            limited.acquire(
+                "scope", duration=10, rate_scope=guard.rate_limit_scope("scope", "model-b")
+            )
+        limited.release(
+            "scope", held, rate_scope=guard.rate_limit_scope("scope", "model-a")
+        )
+
+    def test_legacy_credential_cooldown_still_blocks_models(self):
+        # A pre-upgrade process writes its cooldown on the credential row; keep
+        # honouring it so a mixed deployment still backs off.
+        lease = self.a.acquire("scope", duration=10)
+        self.a.rate_limited("scope", lease, None)
+        self.a.release("scope", lease)
+        self.now += 2
+        with self.assertRaisesRegex(guard.ModelAdmissionError, "rate_limited"):
+            self.b.acquire(
+                "scope", duration=10,
+                rate_scope=guard.rate_limit_scope("scope", "model-a"),
+            )
+
+    def test_success_resets_the_model_backoff_streak(self):
+        scoped = guard.rate_limit_scope("scope", "model-a")
+        lease = self.a.acquire("scope", duration=10, rate_scope=scoped)
+        self.assertEqual(
+            self.a.rate_limited("scope", lease, None, rate_scope=scoped), 60
+        )
+        self.a.release("scope", lease, rate_scope=scoped)
+        self.now += 62
+        lease = self.a.acquire("scope", duration=10, rate_scope=scoped)
+        self.a.release("scope", lease, success=True, rate_scope=scoped)
+        self.now += 2
+        lease = self.b.acquire("scope", duration=10, rate_scope=scoped)
+        self.assertEqual(
+            self.b.rate_limited("scope", lease, None, rate_scope=scoped), 60
+        )
+        self.b.release("scope", lease, rate_scope=scoped)
+
+    def test_transport_uses_the_model_scoped_cooldown(self):
+        recorded: list[str | None] = []
+
+        class Recorder:
+            def acquire(self, scope, *, duration, rate_scope=None):
+                recorded.append(rate_scope)
+                return "lease"
+
+            def release(self, scope, lease, *, success=False, rate_scope=None):
+                return None
+
+            def rate_limited(self, scope, lease, retry_after, *, rate_scope=None):
+                return 0.0
+
+        def opener(req, **kwargs):
+            return io.BytesIO(b'{"choices":[{"message":{"content":"ok"}}]}')
+
+        request = api.ModelRequest(
+            "https://api.example/v1/chat/completions",
+            {"model": "model-a", "messages": []},
+            "chat",
+        )
+        with patch.object(api, "_STANDARD_OPENER", opener), patch.object(
+            api, "shared_model_coordinator", return_value=Recorder()
+        ):
+            api._request_once(request, "key", timeout=10, opener=opener)
+        expected = guard.rate_limit_scope(
+            guard.request_scope(request.endpoint, "key"), "model-a"
+        )
+        self.assertEqual(recorded, [expected])
 
     def test_unavailable_store_fails_closed(self):
         bad = guard.ModelRequestCoordinator(self.path / "missing.db")

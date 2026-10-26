@@ -7,6 +7,11 @@ Admission grants up to ``MAX_CONCURRENT_REQUESTS`` in-flight leases per scope
 instead of a single one, so independent consumers (news precheck, buy/sell
 decisions, report summaries) no longer serialise behind each other. The scope
 still caps total in-flight load against the provider credential budget.
+
+A provider 429 is tracked per model on top of the credential scope. Concurrency
+is a credential budget, but quota limits are frequently per model, so letting
+one exhausted model cool down every other model turned a single upstream limit
+into a full credential outage.
 """
 from __future__ import annotations
 
@@ -164,9 +169,16 @@ def retry_after_seconds(value: str | None, now: float) -> float | None:
 
 def request_scope(endpoint: str, api_key: str) -> str:
     url = urlsplit(endpoint)
-    # Chat/Responses, models, and processes share the provider's credential
-    # budget. Neither the credential nor endpoint appears in the database.
+    # Chat/Responses and processes share the provider's credential budget.
+    # Neither the credential nor endpoint appears in the database.
     identity = f"{url.scheme.lower()}://{url.netloc.lower()}\0{api_key}"
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def rate_limit_scope(scope: str, model: str) -> str:
+    """Return the cooldown key for one model on a credential scope."""
+
+    identity = f"{scope}\0{str(model or '').strip().lower()}"
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
@@ -178,6 +190,7 @@ class ModelRequestCoordinator:
         "CREATE TABLE IF NOT EXISTS model_admission (scope TEXT PRIMARY KEY, next_start REAL NOT NULL DEFAULT 0, cooldown REAL NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, lease TEXT NOT NULL DEFAULT '', lease_until REAL NOT NULL DEFAULT 0)",
         "CREATE TABLE IF NOT EXISTS model_admission_lease (scope TEXT NOT NULL, token TEXT PRIMARY KEY, expires_at REAL NOT NULL)",
         "CREATE INDEX IF NOT EXISTS model_admission_lease_scope ON model_admission_lease(scope, expires_at)",
+        "CREATE TABLE IF NOT EXISTS model_rate_limit (scope TEXT PRIMARY KEY, cooldown REAL NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0)",
     )
 
     def __init__(self, path: Path, *, interval: float | None = None,
@@ -239,7 +252,25 @@ class ModelRequestCoordinator:
             (token, expires_at, scope),
         )
 
-    def acquire(self, scope: str, *, duration: float) -> str:
+    @staticmethod
+    def _effective_cooldown(conn: sqlite3.Connection,
+                            rate_scope: str | None, legacy: float) -> float:
+        """Return the latest cooldown for this request.
+
+        Legacy process versions only write ``model_admission.cooldown``. Keep
+        honouring that value while new versions record per-model cooldowns, so a
+        mixed deployment still backs off for a credential-wide 429.
+        """
+
+        if rate_scope is None:
+            return legacy
+        row = conn.execute(
+            "SELECT cooldown FROM model_rate_limit WHERE scope=?", (rate_scope,)
+        ).fetchone()
+        return max(legacy, float(row[0]) if row is not None else 0.0)
+
+    def acquire(self, scope: str, *, duration: float,
+                rate_scope: str | None = None) -> str:
         if not math.isfinite(duration) or duration <= 0:
             raise ModelRequestExpired("model_request_deadline_exceeded")
         now = self.clock()
@@ -248,6 +279,7 @@ class ModelRequestCoordinator:
             next_start, cooldown, failures, lease, lease_until = conn.execute(
                 "SELECT next_start,cooldown,failures,lease,lease_until FROM model_admission WHERE scope=?", (scope,)
             ).fetchone()
+            cooldown = self._effective_cooldown(conn, rate_scope, cooldown)
             if cooldown > now:
                 raise ModelAdmissionError("rate_limited", cooldown - now)
             active = self._expire_leases(conn, scope, now)
@@ -270,7 +302,8 @@ class ModelRequestCoordinator:
             self._sync_legacy_columns(conn, scope, active)
             return token
 
-    def release(self, scope: str, lease: str, *, success: bool = False) -> None:
+    def release(self, scope: str, lease: str, *, success: bool = False,
+                rate_scope: str | None = None) -> None:
         with self._transaction() as conn:
             removed = conn.execute(
                 "DELETE FROM model_admission_lease WHERE scope=? AND token=?", (scope, lease)
@@ -282,13 +315,29 @@ class ModelRequestCoordinator:
             # Only the holder of a live lease may clear the backoff streak.
             if success:
                 conn.execute("UPDATE model_admission SET failures=0 WHERE scope=?", (scope,))
+                if rate_scope is not None:
+                    conn.execute(
+                        "UPDATE model_rate_limit SET failures=0 WHERE scope=?", (rate_scope,)
+                    )
             active = self._expire_leases(conn, scope, self.clock())
             self._sync_legacy_columns(conn, scope, active)
 
-    def rate_limited(self, scope: str, lease: str, retry_after: str | None) -> float:
+    def rate_limited(self, scope: str, lease: str, retry_after: str | None,
+                     *, rate_scope: str | None = None) -> float:
         now = self.clock()
         with self._transaction() as conn:
-            row = conn.execute("SELECT failures FROM model_admission WHERE scope=?", (scope,)).fetchone()
+            if rate_scope is None:
+                table = "model_admission"
+                key = scope
+            else:
+                table = "model_rate_limit"
+                key = rate_scope
+                conn.execute(
+                    "INSERT OR IGNORE INTO model_rate_limit(scope) VALUES (?)", (key,)
+                )
+            row = conn.execute(
+                f"SELECT failures FROM {table} WHERE scope=?", (key,)
+            ).fetchone()
             if row is None:
                 return DEFAULT_RATE_BACKOFF
             failures = min(10, int(row[0]) + 1)
@@ -297,8 +346,10 @@ class ModelRequestCoordinator:
             # A long Retry-After is a durable do-not-send timestamp, never a
             # blocking sleep. Do not retry early by truncating the header.
             delay = max(delay, requested or 0.0)
-            conn.execute("UPDATE model_admission SET cooldown=MAX(cooldown,?),failures=? WHERE scope=?",
-                         (now + delay, failures, scope))
+            conn.execute(
+                f"UPDATE {table} SET cooldown=MAX(cooldown,?),failures=? WHERE scope=?",
+                (now + delay, failures, key),
+            )
             return delay
 
 
