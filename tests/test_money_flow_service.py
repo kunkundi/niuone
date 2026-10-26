@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -317,6 +319,121 @@ class MoneyFlowServiceTests(unittest.TestCase):
         self.assertEqual(money_flow_service.CACHE_TTL, 60)
         self.assertEqual(money_flow_service.CACHE_PATH.name, "industry_main_money_flow_cache.json")
         self.assertNotEqual(money_flow_service.CACHE_PATH.name, "money_flow_dashboard_cache.json")
+
+    def _trading_time(self) -> datetime:
+        return datetime(2026, 7, 23, 10, 0, tzinfo=money_flow_service.BEIJING_TZ)
+
+    def _today_payload(self) -> dict:
+        return {
+            "generated_at": "2026-07-23 10:00:00",
+            "inflow": [{"name": "半导体", "net_flow_yi": 12}],
+            "outflow": [{"name": "银行", "net_flow_yi": -6}],
+        }
+
+    def test_force_refresh_reuses_recent_upstream_snapshot(self):
+        payload = self._today_payload()
+        with tempfile.TemporaryDirectory(prefix="niuone-money-flow-reuse-") as temp_dir:
+            cache_path = Path(temp_dir) / "money_flow.json"
+            cache_path.write_text(json.dumps(payload), encoding="utf-8")
+            cache_path.with_name(f"{cache_path.name}.fetched").touch()
+            with patch.object(money_flow_service, "CACHE_PATH", cache_path), patch.object(
+                money_flow_service,
+                "_beijing_now",
+                return_value=self._trading_time(),
+            ), patch.object(money_flow_service, "_compute") as compute:
+                result = money_flow_service.fetch_money_flow(force_refresh=True)
+
+            compute.assert_not_called()
+            self.assertEqual(result["inflow"], payload["inflow"])
+            self.assertNotIn("stale_cache", result)
+            self.assertNotIn("refresh_warning", result)
+
+    def test_force_refresh_does_not_skip_a_sampling_cycle(self):
+        payload = self._today_payload()
+        with tempfile.TemporaryDirectory(prefix="niuone-money-flow-cadence-") as temp_dir:
+            cache_path = Path(temp_dir) / "money_flow.json"
+            cache_path.write_text(json.dumps(payload), encoding="utf-8")
+            marker = cache_path.with_name(f"{cache_path.name}.fetched")
+            marker.touch()
+            old = time.time() - 60
+            os.utime(cache_path, (old, old))
+            os.utime(marker, (old, old))
+            with patch.object(money_flow_service, "CACHE_PATH", cache_path), patch.object(
+                money_flow_service,
+                "_beijing_now",
+                return_value=self._trading_time(),
+            ), patch.object(
+                money_flow_service,
+                "_compute",
+                return_value=payload,
+            ) as compute:
+                money_flow_service.fetch_money_flow(force_refresh=True)
+
+            compute.assert_called_once_with()
+
+    def test_successful_fetch_marks_snapshot_for_follow_up_force_refresh(self):
+        payload = self._today_payload()
+        with tempfile.TemporaryDirectory(prefix="niuone-money-flow-marker-") as temp_dir:
+            cache_path = Path(temp_dir) / "money_flow.json"
+            with patch.object(money_flow_service, "CACHE_PATH", cache_path), patch.object(
+                money_flow_service,
+                "_beijing_now",
+                return_value=self._trading_time(),
+            ), patch.object(
+                money_flow_service,
+                "_compute",
+                return_value=payload,
+            ) as compute:
+                first = money_flow_service.fetch_money_flow(force_refresh=True)
+                second = money_flow_service.fetch_money_flow(force_refresh=True)
+
+            compute.assert_called_once_with()
+            self.assertEqual(first["inflow"], payload["inflow"])
+            self.assertEqual(second["inflow"], payload["inflow"])
+            self.assertTrue(cache_path.with_name(f"{cache_path.name}.fetched").exists())
+
+    def test_transport_failure_keeps_recent_snapshot_without_stale_flag(self):
+        payload = self._today_payload()
+        with tempfile.TemporaryDirectory(prefix="niuone-money-flow-recent-") as temp_dir:
+            cache_path = Path(temp_dir) / "money_flow.json"
+            cache_path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch.object(money_flow_service, "CACHE_PATH", cache_path), patch.object(
+                money_flow_service,
+                "_beijing_now",
+                return_value=self._trading_time(),
+            ), patch.object(
+                money_flow_service,
+                "_compute",
+                side_effect=RuntimeError("curl failed (52): curl: (52) Empty reply from server"),
+            ):
+                result = money_flow_service.fetch_money_flow(force_refresh=True)
+
+            self.assertEqual(result["inflow"], payload["inflow"])
+            self.assertIn("Empty reply from server", result["refresh_warning"])
+            self.assertNotIn("stale_cache", result)
+            self.assertNotIn("error", result)
+
+    def test_transport_failure_marks_old_snapshot_as_stale(self):
+        payload = self._today_payload()
+        with tempfile.TemporaryDirectory(prefix="niuone-money-flow-stale-") as temp_dir:
+            cache_path = Path(temp_dir) / "money_flow.json"
+            cache_path.write_text(json.dumps(payload), encoding="utf-8")
+            old = time.time() - 600
+            os.utime(cache_path, (old, old))
+            with patch.object(money_flow_service, "CACHE_PATH", cache_path), patch.object(
+                money_flow_service,
+                "_beijing_now",
+                return_value=self._trading_time(),
+            ), patch.object(
+                money_flow_service,
+                "_compute",
+                side_effect=RuntimeError("curl failed (52): curl: (52) Empty reply from server"),
+            ):
+                result = money_flow_service.fetch_money_flow(force_refresh=True)
+
+            self.assertEqual(result["inflow"], payload["inflow"])
+            self.assertTrue(result["stale_cache"])
+            self.assertIn("Empty reply from server", result["error"])
 
 
 if __name__ == "__main__":
