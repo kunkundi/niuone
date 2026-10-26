@@ -445,6 +445,9 @@ PRACTICE_EQUITY_HEARTBEAT_LOCK = threading.Lock()
 PRACTICE_EQUITY_HEARTBEAT_THREAD: threading.Thread | None = None
 PRACTICE_EQUITY_HEARTBEAT_POLL_SECONDS = 5.0
 INDUSTRY_FLOW_HISTORY_LOCK = threading.RLock()
+# Eastmoney drops concurrent connections with an empty reply, so every helper
+# that may hit its board endpoints runs one at a time in this process.
+INDUSTRY_FLOW_UPSTREAM_LOCK = threading.RLock()
 INDUSTRY_FLOW_SAMPLER_THREAD: threading.Thread | None = None
 MARKET_BREADTH_HISTORY_LOCK = threading.RLock()
 MARKET_BREADTH_REFRESH_LOCK = threading.Lock()
@@ -1518,7 +1521,8 @@ def produce_indices_data() -> dict[str, Any]:
         if spec and spec.loader:
             indices_mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(indices_mod)
-            raw_result = indices_mod.fetch_indices_data()
+            with INDUSTRY_FLOW_UPSTREAM_LOCK:
+                raw_result = indices_mod.fetch_indices_data()
             result = raw_result if isinstance(raw_result, dict) else {"items": raw_result}
             persist_indices_snapshot(result)
             return result
@@ -1562,20 +1566,21 @@ def market_hot_stocks_available(payload: dict[str, Any]) -> bool:
 
 
 def produce_sectors_data() -> dict[str, Any]:
-    return run_dashboard_helper(
-        "sectors_dashboard_api.py",
-        {
-            "sectors": [],
-            "items": [],
-            "gain_top": [],
-            "loss_top": [],
-            "industry_gain_top": [],
-            "industry_loss_top": [],
-            "concept_gain_top": [],
-            "concept_loss_top": [],
-        },
-        timeout=120,
-    )
+    with INDUSTRY_FLOW_UPSTREAM_LOCK:
+        return run_dashboard_helper(
+            "sectors_dashboard_api.py",
+            {
+                "sectors": [],
+                "items": [],
+                "gain_top": [],
+                "loss_top": [],
+                "industry_gain_top": [],
+                "industry_loss_top": [],
+                "concept_gain_top": [],
+                "concept_loss_top": [],
+            },
+            timeout=120,
+        )
 
 
 def produce_hot_stocks_data(sort_by: str = "amount") -> dict[str, Any]:
@@ -5618,12 +5623,13 @@ def fetch_and_record_money_flow(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Fetch one money-flow snapshot and immediately preserve valid history."""
 
-    money_flow = run_dashboard_helper(
-        "money_flow_dashboard_api.py",
-        {"inflow": [], "outflow": []},
-        timeout=timeout,
-        args=("--force-refresh",) if force_refresh else (),
-    )
+    with INDUSTRY_FLOW_UPSTREAM_LOCK:
+        money_flow = run_dashboard_helper(
+            "money_flow_dashboard_api.py",
+            {"inflow": [], "outflow": []},
+            timeout=timeout,
+            args=("--force-refresh",) if force_refresh else (),
+        )
     return money_flow, record_industry_flow_sample(money_flow, now=now)
 
 
@@ -5949,6 +5955,18 @@ def fetch_practice_realtime_market_snapshot(now: datetime) -> dict[str, Any]:
         ),
         "money_flow": ("money_flow_dashboard_api.py", {"inflow": [], "outflow": []}),
     }
+
+    def refresh_market_helper(script_name: str, fallback: dict[str, Any]) -> dict[str, Any]:
+        # Board and fund-flow helpers both reach Eastmoney; overlapping them
+        # makes the provider close one connection with an empty reply.
+        with INDUSTRY_FLOW_UPSTREAM_LOCK:
+            return run_dashboard_helper(
+                script_name,
+                fallback,
+                120,
+                ("--force-refresh",),
+            )
+
     payloads: dict[str, dict[str, Any]] = {}
     industry_flow_payload: dict[str, Any] = {}
     with ThreadPoolExecutor(max_workers=len(jobs) + 1) as pool:
@@ -5962,13 +5980,7 @@ def fetch_practice_realtime_market_snapshot(now: datetime) -> dict[str, Any]:
                     now=now,
                 )
                 continue
-            futures[key] = pool.submit(
-                run_dashboard_helper,
-                script_name,
-                fallback,
-                120,
-                ("--force-refresh",),
-            )
+            futures[key] = pool.submit(refresh_market_helper, script_name, fallback)
         futures["market_breadth"] = pool.submit(produce_market_breadth_data)
         for key, future in futures.items():
             try:

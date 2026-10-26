@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 import sys
 import urllib.parse
@@ -7626,6 +7627,40 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(captured["indices"]["script"], "indices_dashboard_api.py")
         self.assertEqual(captured["now"], now)
         self.assertTrue(result["reference_pages"]["market_breadth"])
+
+    def test_market_snapshot_serializes_eastmoney_helpers(self):
+        original_runner = dashboard.run_dashboard_helper
+        original_builder = dashboard.practice_market_summary_impl.build_realtime_market_snapshot
+        original_breadth = dashboard.produce_market_breadth_data
+        active = 0
+        max_active = 0
+        guard = threading.Lock()
+
+        def fake_runner(script_name, fallback, timeout=90, args=()):
+            nonlocal active, max_active
+            with guard:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.05)
+            with guard:
+                active -= 1
+            return {"script": script_name}
+
+        try:
+            dashboard.run_dashboard_helper = fake_runner
+            dashboard.practice_market_summary_impl.build_realtime_market_snapshot = (
+                lambda *_args, **_kwargs: {"complete": True}
+            )
+            dashboard.produce_market_breadth_data = lambda: {"available": True}
+            dashboard.fetch_practice_realtime_market_snapshot(
+                datetime(2026, 7, 14, 12, 0, 0)
+            )
+        finally:
+            dashboard.run_dashboard_helper = original_runner
+            dashboard.practice_market_summary_impl.build_realtime_market_snapshot = original_builder
+            dashboard.produce_market_breadth_data = original_breadth
+
+        self.assertEqual(max_active, 1)
 
     def test_notification_test_api_has_dedicated_rate_limit_and_body_limit(self):
         original_sender = dashboard.send_notification_test
