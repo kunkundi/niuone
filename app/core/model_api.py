@@ -29,6 +29,7 @@ from .model_request_guard import (
     ModelAdmissionError,
     ModelRequestExpired,
     budgeted_model_call,
+    rate_limit_scope,
     remaining_model_seconds,
     request_scope,
     shared_model_coordinator,
@@ -85,7 +86,7 @@ class _DeadlineResponse:
 
 @contextmanager
 def _model_response(req: urllib.request.Request, api_key: str, opener: UrlOpen,
-                    **kwargs: Any) -> Iterator[Any]:
+                    *, model: str | None = None, **kwargs: Any) -> Iterator[Any]:
     # Custom transports retain the historical injection/monkeypatch contract.
     # The production urllib transport shares admission across every consumer.
     if opener is not _STANDARD_OPENER:
@@ -96,6 +97,9 @@ def _model_response(req: urllib.request.Request, api_key: str, opener: UrlOpen,
     deadline = time.monotonic() + timeout
     coordinator = shared_model_coordinator()
     scope = request_scope(req.full_url, api_key)
+    # Admission and spacing stay credential-wide; a provider 429 only cools
+    # down the model that returned it.
+    model_scope = rate_limit_scope(scope, model) if model else None
     # Queue for as long as the result would still be usable, bounded by
     # MAX_QUEUE_SECONDS for callers that run outside an explicit budget. The
     # queue window is a floor, not a ceiling: a request that must wait longer
@@ -103,7 +107,11 @@ def _model_response(req: urllib.request.Request, api_key: str, opener: UrlOpen,
     queue_deadline = min(deadline, time.monotonic() + MAX_QUEUE_SECONDS)
     while True:
         try:
-            lease = coordinator.acquire(scope, duration=max(0.001, deadline - time.monotonic()))
+            lease = coordinator.acquire(
+                scope,
+                duration=max(0.001, deadline - time.monotonic()),
+                rate_scope=model_scope,
+            )
             break
         except ModelAdmissionError as exc:
             if exc.reason not in {"spacing", "busy"} or time.monotonic() >= queue_deadline:
@@ -124,12 +132,17 @@ def _model_response(req: urllib.request.Request, api_key: str, opener: UrlOpen,
             success = True
     except urllib.error.HTTPError as exc:
         if exc.code == 429:
-            delay = coordinator.rate_limited(scope, lease, exc.headers.get("Retry-After") if exc.headers else None)
+            delay = coordinator.rate_limited(
+                scope,
+                lease,
+                exc.headers.get("Retry-After") if exc.headers else None,
+                rate_scope=model_scope,
+            )
             exc.close()
             raise ModelAdmissionError("upstream_http_429", delay) from exc
         raise
     finally:
-        coordinator.release(scope, lease, success=success)
+        coordinator.release(scope, lease, success=success, rate_scope=model_scope)
 
 
 class ModelResponseParseError(ValueError):
@@ -527,7 +540,9 @@ def _request_once(
     kwargs: dict[str, Any] = {"timeout": timeout}
     if ssl_context is not None:
         kwargs["context"] = ssl_context
-    with _model_response(req, api_key, opener, **kwargs) as response:
+    with _model_response(
+        req, api_key, opener, model=str(request.payload.get("model") or ""), **kwargs
+    ) as response:
         content_type = _response_content_type(response)
         raw = response.read().decode("utf-8", "ignore")
     return parse_model_response(raw, content_type)
@@ -614,7 +629,9 @@ def _stream_once(
     kwargs: dict[str, Any] = {"timeout": timeout}
     if ssl_context is not None:
         kwargs["context"] = ssl_context
-    with _model_response(req, api_key, opener, **kwargs) as response:
+    with _model_response(
+        req, api_key, opener, model=str(request.payload.get("model") or ""), **kwargs
+    ) as response:
         yield from _stream_response_text(response)
 
 
