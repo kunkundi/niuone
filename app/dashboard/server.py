@@ -445,6 +445,9 @@ PRACTICE_EQUITY_HEARTBEAT_LOCK = threading.Lock()
 PRACTICE_EQUITY_HEARTBEAT_THREAD: threading.Thread | None = None
 PRACTICE_EQUITY_HEARTBEAT_POLL_SECONDS = 5.0
 INDUSTRY_FLOW_HISTORY_LOCK = threading.RLock()
+# Eastmoney drops concurrent connections with an empty reply, so every helper
+# that may hit its board endpoints runs one at a time in this process.
+INDUSTRY_FLOW_UPSTREAM_LOCK = threading.RLock()
 INDUSTRY_FLOW_SAMPLER_THREAD: threading.Thread | None = None
 MARKET_BREADTH_HISTORY_LOCK = threading.RLock()
 MARKET_BREADTH_REFRESH_LOCK = threading.Lock()
@@ -842,6 +845,24 @@ ENV_CONFIG_SCHEMA: list[dict[str, Any]] = [
 
     {"name": "DASHBOARD_DECISION_MAX_TOKENS", "label": "模型最大输出长度", "group": "模型配置", "kind": "max_tokens", "default": DEFAULT_MODEL_MAX_TOKENS, "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_TIMEOUT", "label": "买卖决策请求超时", "group": "任务调度", "kind": "int", "default": "180", "effect": "next_run"},
+    {
+        "name": "DASHBOARD_MODEL_MAX_CONCURRENCY",
+        "label": "模型请求并发数",
+        "group": "模型配置",
+        "kind": "int",
+        "default": "3",
+        "effect": "next_run",
+        "min": "1",
+        "max": "32",
+        "help_title": "影响范围",
+        "help_summary": "控制同一模型凭证同时进行的请求上限，影响选股、消息面预检和买卖决策的排队等待。",
+        "help_items": [
+            "调高可缩短排队：多个候选或决策不再互相等待前一个请求结束。",
+            "请求间隔会随并发数自动收窄，避免并发提高后总吞吐仍被间隔卡住。",
+            "调得过高会触发上游限流，反而进入 60 秒起的冷却等待。",
+        ],
+        "help_footer": "默认 3 适用于大多数网关额度。若额度明确更高，可逐步上调并观察是否出现限流冷却。",
+    },
     {"name": "DASHBOARD_PROMPT_REFINEMENT_MAX_CONCURRENCY", "label": "文字策略细化并发数", "group": "任务调度", "kind": "int", "default": "1", "effect": "restart", "min": "1", "max": "2"},
     {"name": "DASHBOARD_DECISION_INTELLIGENCE_ENABLED", "label": "启用综合决策参考", "group": "综合决策参考", "kind": "bool", "default": "1", "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS", "label": "决策参考缓存秒数", "group": "综合决策参考", "kind": "int", "default": "75", "effect": "next_run"},
@@ -883,6 +904,8 @@ ENV_CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"name": "DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED", "label": "启用 Telegram 通知", "group": "交易通知", "kind": "bool", "default": "0", "effect": "runtime"},
     {"name": "DASHBOARD_TELEGRAM_BOT_TOKEN", "label": "Telegram Bot Token", "group": "交易通知", "kind": "secret", "default": "", "effect": "runtime"},
     {"name": "DASHBOARD_TELEGRAM_CHAT_ID", "label": "Telegram Chat ID", "group": "交易通知", "kind": "text", "default": "", "effect": "runtime"},
+    {"name": "DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED", "label": "启用 Server酱通知", "group": "交易通知", "kind": "bool", "default": "0", "effect": "runtime"},
+    {"name": "DASHBOARD_SERVERCHAN_SENDKEY", "label": "Server酱 SendKey", "group": "交易通知", "kind": "secret", "default": "", "effect": "runtime"},
 
     {"name": "CROSSDESK_BASE_URL", "label": "Crossdesk Base URL", "group": "上游模型覆盖", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "CROSSDESK_API_KEY", "label": "Crossdesk API Key", "group": "上游模型覆盖", "kind": "secret", "default": "", "effect": "next_run"},
@@ -960,6 +983,7 @@ ADMIN_VISIBLE_ENV_NAMES = [
     "DASHBOARD_DECISION_API_KEY",
     "DASHBOARD_DECISION_MAX_TOKENS",
     "DASHBOARD_DECISION_TIMEOUT",
+    "DASHBOARD_MODEL_MAX_CONCURRENCY",
     "DASHBOARD_DECISION_INTELLIGENCE_ENABLED",
     "DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS",
     "DASHBOARD_DECISION_INTELLIGENCE_MAX_ITEMS",
@@ -997,6 +1021,8 @@ ADMIN_VISIBLE_ENV_NAMES = [
     "DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED",
     "DASHBOARD_TELEGRAM_BOT_TOKEN",
     "DASHBOARD_TELEGRAM_CHAT_ID",
+    "DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED",
+    "DASHBOARD_SERVERCHAN_SENDKEY",
     PRACTICE_SCHEDULE_TIMES_ENV,
     PRACTICE_FAST_CYCLE_ENABLED_ENV,
     PRACTICE_FAST_CYCLE_INTERVAL_ENV,
@@ -1042,6 +1068,7 @@ TRADER_RUNTIME_ENV_NAMES = {
     "DASHBOARD_DECISION_API_KEY",
     "DASHBOARD_DECISION_MAX_TOKENS",
     "DASHBOARD_DECISION_TIMEOUT",
+    "DASHBOARD_MODEL_MAX_CONCURRENCY",
     "DASHBOARD_DECISION_INTELLIGENCE_ENABLED",
     "DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS",
     "DASHBOARD_DECISION_INTELLIGENCE_MAX_ITEMS",
@@ -1494,7 +1521,8 @@ def produce_indices_data() -> dict[str, Any]:
         if spec and spec.loader:
             indices_mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(indices_mod)
-            raw_result = indices_mod.fetch_indices_data()
+            with INDUSTRY_FLOW_UPSTREAM_LOCK:
+                raw_result = indices_mod.fetch_indices_data()
             result = raw_result if isinstance(raw_result, dict) else {"items": raw_result}
             persist_indices_snapshot(result)
             return result
@@ -1538,20 +1566,21 @@ def market_hot_stocks_available(payload: dict[str, Any]) -> bool:
 
 
 def produce_sectors_data() -> dict[str, Any]:
-    return run_dashboard_helper(
-        "sectors_dashboard_api.py",
-        {
-            "sectors": [],
-            "items": [],
-            "gain_top": [],
-            "loss_top": [],
-            "industry_gain_top": [],
-            "industry_loss_top": [],
-            "concept_gain_top": [],
-            "concept_loss_top": [],
-        },
-        timeout=120,
-    )
+    with INDUSTRY_FLOW_UPSTREAM_LOCK:
+        return run_dashboard_helper(
+            "sectors_dashboard_api.py",
+            {
+                "sectors": [],
+                "items": [],
+                "gain_top": [],
+                "loss_top": [],
+                "industry_gain_top": [],
+                "industry_loss_top": [],
+                "concept_gain_top": [],
+                "concept_loss_top": [],
+            },
+            timeout=120,
+        )
 
 
 def produce_hot_stocks_data(sort_by: str = "amount") -> dict[str, Any]:
@@ -5594,12 +5623,13 @@ def fetch_and_record_money_flow(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Fetch one money-flow snapshot and immediately preserve valid history."""
 
-    money_flow = run_dashboard_helper(
-        "money_flow_dashboard_api.py",
-        {"inflow": [], "outflow": []},
-        timeout=timeout,
-        args=("--force-refresh",) if force_refresh else (),
-    )
+    with INDUSTRY_FLOW_UPSTREAM_LOCK:
+        money_flow = run_dashboard_helper(
+            "money_flow_dashboard_api.py",
+            {"inflow": [], "outflow": []},
+            timeout=timeout,
+            args=("--force-refresh",) if force_refresh else (),
+        )
     return money_flow, record_industry_flow_sample(money_flow, now=now)
 
 
@@ -5925,6 +5955,18 @@ def fetch_practice_realtime_market_snapshot(now: datetime) -> dict[str, Any]:
         ),
         "money_flow": ("money_flow_dashboard_api.py", {"inflow": [], "outflow": []}),
     }
+
+    def refresh_market_helper(script_name: str, fallback: dict[str, Any]) -> dict[str, Any]:
+        # Board and fund-flow helpers both reach Eastmoney; overlapping them
+        # makes the provider close one connection with an empty reply.
+        with INDUSTRY_FLOW_UPSTREAM_LOCK:
+            return run_dashboard_helper(
+                script_name,
+                fallback,
+                120,
+                ("--force-refresh",),
+            )
+
     payloads: dict[str, dict[str, Any]] = {}
     industry_flow_payload: dict[str, Any] = {}
     with ThreadPoolExecutor(max_workers=len(jobs) + 1) as pool:
@@ -5938,13 +5980,7 @@ def fetch_practice_realtime_market_snapshot(now: datetime) -> dict[str, Any]:
                     now=now,
                 )
                 continue
-            futures[key] = pool.submit(
-                run_dashboard_helper,
-                script_name,
-                fallback,
-                120,
-                ("--force-refresh",),
-            )
+            futures[key] = pool.submit(refresh_market_helper, script_name, fallback)
         futures["market_breadth"] = pool.submit(produce_market_breadth_data)
         for key, future in futures.items():
             try:
@@ -7137,6 +7173,13 @@ NOTIFICATION_CHANNEL_SETTINGS: tuple[dict[str, Any], ...] = (
         "description": "Bot Token 与接收消息的 Chat ID。",
         "enabled_name": "DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED",
         "field_names": ("DASHBOARD_TELEGRAM_BOT_TOKEN", "DASHBOARD_TELEGRAM_CHAT_ID"),
+    },
+    {
+        "id": "serverchan",
+        "label": "Server酱",
+        "description": "Server酱 SendKey，推送消息到微信。",
+        "enabled_name": "DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED",
+        "field_names": ("DASHBOARD_SERVERCHAN_SENDKEY",),
     },
 )
 NOTIFICATION_CHANNEL_BY_ID = {

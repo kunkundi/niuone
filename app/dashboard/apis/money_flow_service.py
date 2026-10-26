@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
@@ -27,12 +30,6 @@ from dashboard.apis.market_retention import (
     MARKET_RETENTION_ROLLOVER_HOUR,
     market_retention_date_key,
 )
-
-if __package__ == "app":
-    from .dashboard.apis.cache import load_cached_payload
-else:
-    from dashboard.apis.cache import load_cached_payload
-
 
 CACHE_BASE = get_dashboard_home(Path(__file__).resolve().parents[1]) / "cron" / "output"
 # Do not mix the previous total-inflow-minus-total-outflow cache with the new
@@ -55,6 +52,14 @@ REQUEST_RETRY_DELAYS_SECONDS = (0.5, 1.0)
 MAX_REQUEST_ATTEMPTS = len(REQUEST_RETRY_DELAYS_SECONDS) + 1
 SNAPSHOT_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
 MIN_USABLE_ROWS = 20
+# Eastmoney closes concurrent connections with an empty reply. Serialise the
+# upstream request across helper processes and reuse a just-written snapshot
+# instead of stampeding the same endpoint from the sampler and a manual refresh.
+# Keep the dedupe window shorter than the 60s sampling cadence so periodic
+# history sampling still records a new observation every minute.
+RECENT_FETCH_DEDUPE_SECONDS = 15
+RECENT_CACHE_MAX_AGE_SECONDS = 120
+_THREAD_LOCK = threading.Lock()
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 FIELDS = (
     "f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,"
@@ -64,6 +69,10 @@ FIELDS = (
 
 class _IncompleteSnapshotError(RuntimeError):
     """The source responded, but its current money-flow snapshot is not usable."""
+
+
+class _UnusableSnapshotError(RuntimeError):
+    """The source returned data for a market day we must not publish as fresh."""
 
 
 def _beijing_now() -> datetime:
@@ -106,6 +115,83 @@ def _read_current_day_cache(
     return payload
 
 
+def _last_fetch_marker_path() -> Path:
+    return CACHE_PATH.with_name(f"{CACHE_PATH.name}.fetched")
+
+
+def _mark_upstream_fetch() -> None:
+    # A fresh marker lets a forced refresh reuse the snapshot that the sampler
+    # (or another process) just downloaded instead of racing it upstream.
+    try:
+        marker = _last_fetch_marker_path()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except OSError:
+        return
+
+
+def _recent_upstream_fetch(seconds: int | float) -> bool:
+    try:
+        fetched_at = _last_fetch_marker_path().stat().st_mtime
+    except OSError:
+        return False
+    return (time.time() - fetched_at) <= float(seconds)
+
+
+@contextmanager
+def _upstream_file_lock() -> Iterator[None]:
+    """Allow one in-flight snapshot request across every dashboard process."""
+
+    lock_path = CACHE_PATH.with_name(f"{CACHE_PATH.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with _THREAD_LOCK:
+        with lock_path.open("a+b") as handle:
+            if os.name == "nt":  # pragma: no cover - Windows deployment path
+                import msvcrt
+
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _compute_serialized(
+    *,
+    allow_recent_cache_seconds: int | float,
+) -> tuple[dict[str, Any], bool]:
+    """Compute once another process is not already fetching the same snapshot.
+
+    The boolean reports that an existing snapshot was reused. Reused payloads
+    must not be rewritten, otherwise every deduplicated refresh would extend
+    the cache file's mtime and make old data look freshly fetched.
+    """
+
+    with _upstream_file_lock():
+        if _recent_upstream_fetch(allow_recent_cache_seconds):
+            recent = _read_current_day_cache(CACHE_PATH, None)
+            if recent is not None:
+                return recent, True
+        payload = _compute_current_day()
+        write_json_cache(CACHE_PATH, payload)
+        _mark_upstream_fetch()
+        return payload, False
+
+
 def _compute_current_day() -> dict[str, Any]:
     payload = _compute()
     if (
@@ -124,7 +210,7 @@ def _compute_current_day() -> dict[str, Any]:
     ):
         return _empty_payload()
 
-    raise RuntimeError(
+    raise _UnusableSnapshotError(
         "industry main-flow refresh is not usable: "
         f"source date {generated_day or 'missing'} does not match retained market date "
         f"{retained_day}, or the rankings are incomplete"
@@ -355,15 +441,30 @@ def _compute(
 
 def fetch_money_flow(force_refresh: bool = False) -> dict[str, Any]:
     empty = _empty_payload()
-    return load_cached_payload(
-        CACHE_PATH,
-        CACHE_TTL,
-        compute=_compute_current_day,
-        empty=empty,
-        read_cache=_read_current_day_cache,
-        write_cache=write_json_cache,
-        force_refresh=force_refresh,
-    )
+    if not force_refresh:
+        cached = _read_current_day_cache(CACHE_PATH, CACHE_TTL)
+        if cached is not None:
+            return cached
+    recent_window = RECENT_FETCH_DEDUPE_SECONDS if force_refresh else CACHE_TTL
+    try:
+        data, _reused = _compute_serialized(allow_recent_cache_seconds=recent_window)
+    except Exception as exc:
+        # A snapshot rejected for the wrong market day must stay visibly stale;
+        # only transport-level failures may reuse a recently fetched snapshot.
+        if not isinstance(exc, _UnusableSnapshotError):
+            recent = _read_current_day_cache(CACHE_PATH, RECENT_CACHE_MAX_AGE_SECONDS)
+            if recent is not None and (recent.get("inflow") or recent.get("outflow")):
+                recent = dict(recent)
+                recent["refresh_warning"] = str(exc)
+                return recent
+        stale = _read_current_day_cache(CACHE_PATH, None)
+        if stale is not None:
+            stale = dict(stale)
+            stale["stale_cache"] = True
+            stale["error"] = str(exc)
+            return stale
+        return {**empty, "error": str(exc)}
+    return data
 
 
 if __name__ == "__main__":

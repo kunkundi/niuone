@@ -26,6 +26,8 @@ WECOM_WEBHOOK_ENV = _models_module.WECOM_WEBHOOK_ENV
 TELEGRAM_ENABLED_ENV = _models_module.TELEGRAM_ENABLED_ENV
 TELEGRAM_TOKEN_ENV = _models_module.TELEGRAM_TOKEN_ENV
 TELEGRAM_CHAT_ID_ENV = _models_module.TELEGRAM_CHAT_ID_ENV
+SERVERCHAN_ENABLED_ENV = _models_module.SERVERCHAN_ENABLED_ENV
+SERVERCHAN_SENDKEY_ENV = _models_module.SERVERCHAN_SENDKEY_ENV
 DEFAULT_TIMEOUT_SECONDS = _models_module.DEFAULT_TIMEOUT_SECONDS
 MIN_TIMEOUT_SECONDS = _models_module.MIN_TIMEOUT_SECONDS
 MAX_TIMEOUT_SECONDS = _models_module.MAX_TIMEOUT_SECONDS
@@ -47,6 +49,7 @@ FeishuChannel = _channels_module.FeishuChannel
 DingTalkChannel = _channels_module.DingTalkChannel
 WeComChannel = _channels_module.WeComChannel
 TelegramChannel = _channels_module.TelegramChannel
+ServerChanChannel = _channels_module.ServerChanChannel
 
 # Registry and dispatch
 register_channel = _dispatcher_module.register_channel
@@ -76,6 +79,8 @@ _feishu_factory = _channels_module._feishu_factory
 _dingtalk_factory = _channels_module._dingtalk_factory
 _wecom_factory = _channels_module._wecom_factory
 _telegram_factory = _channels_module._telegram_factory
+_serverchan_factory = _channels_module._serverchan_factory
+_serverchan_endpoint = _channels_module._serverchan_endpoint
 _NoRedirectHandler = _transport_module._NoRedirectHandler
 _post_json = _transport_module._post_json
 _sensitive_values = _transport_module._sensitive_values
@@ -110,6 +115,8 @@ __all__ = [
     "TELEGRAM_ENABLED_ENV",
     "TELEGRAM_TOKEN_ENV",
     "TELEGRAM_CHAT_ID_ENV",
+    "SERVERCHAN_ENABLED_ENV",
+    "SERVERCHAN_SENDKEY_ENV",
     "DEFAULT_TIMEOUT_SECONDS",
     "MIN_TIMEOUT_SECONDS",
     "MAX_TIMEOUT_SECONDS",
@@ -128,6 +135,7 @@ __all__ = [
     "DingTalkChannel",
     "WeComChannel",
     "TelegramChannel",
+    "ServerChanChannel",
     "register_channel",
     "registered_channels",
     "dispatch",
