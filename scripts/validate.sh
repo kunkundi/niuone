@@ -42,6 +42,7 @@ node --check web/src/router.js
 node --check web/src/composables/useDashboardTabs.js
 node --check web/src/composables/usePublicProjection.js
 node --check web/src/composables/usePracticeData.js
+node --check scripts/newsnow-network.cjs
 
 echo "== Vue production build =="
 if ! command -v pnpm >/dev/null 2>&1; then

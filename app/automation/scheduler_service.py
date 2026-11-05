@@ -152,6 +152,9 @@ def read_int_setting(env_values: dict[str, str], name: str, default: int, *, min
 
 
 def job_enabled(job: Job, env_values: dict[str, str]) -> bool:
+    if job.env_name == "DASHBOARD_US_MARKET_SUMMARY_CRON":
+        raw = env_values.get("DASHBOARD_US_MARKET_SUMMARY_ENABLED", "1")
+        return str(raw).strip().lower() not in {"0", "false", "no", "off"}
     if job.env_name == "IWENCAI_DRAGON_TIGER_CRON":
         # Callers pass the fully resolved dashboard.env mapping. Do not leak a
         # separately inherited process value into explicit test/runtime snapshots.
@@ -228,6 +231,25 @@ def save_state(state: dict[str, object]) -> None:
             pass
 
 
+def job_timeout_seconds(job: Job, env_values: dict[str, str]) -> int:
+    """Keep report process limits outside the configured model deadline."""
+    if job.env_name not in {
+        "DASHBOARD_MARKET_AUCTION_CRON",
+        "DASHBOARD_MARKET_MIDDAY_CRON",
+        "DASHBOARD_MARKET_CLOSE_CRON",
+    }:
+        return job.timeout_seconds
+    if str(env_values.get("A_SHARE_MODEL_SUMMARY_ENABLED", "1")).strip().lower() in {
+        "0", "false", "no", "off",
+    }:
+        return job.timeout_seconds
+    deadline = read_int_setting(
+        env_values, "A_SHARE_MODEL_SUMMARY_DEADLINE_SECONDS", 60,
+        min_value=15, max_value=1800,
+    )
+    return max(job.timeout_seconds, min(1800, deadline + 120))
+
+
 def run_job_once(job: Job, run_time: datetime, *, attempt: int = 1, max_attempts: int = 1) -> JobRunResult:
     env = os.environ.copy()
     env.update(parse_env_file())
@@ -237,6 +259,7 @@ def run_job_once(job: Job, run_time: datetime, *, attempt: int = 1, max_attempts
     env["NIUONE_CRON_RUN_KEY"] = f"{job.job_id}:{run_time.strftime('%Y%m%d%H%M')}"
     env["NIUONE_CRON_JOB_ENV"] = job.env_name
     env["NIUONE_CRON_SCHEDULED_AT"] = run_time.astimezone(CN_TZ).isoformat()
+    timeout_seconds = job_timeout_seconds(job, env)
     command = [sys.executable, str(SCRIPT_DIR / "entrypoints" / job.command[0]), *job.command[1:]]
     start = time.monotonic()
     log(f"start job={job.job_id} title={job.title} attempt={attempt}/{max_attempts} command={command}")
@@ -248,7 +271,7 @@ def run_job_once(job: Job, run_time: datetime, *, attempt: int = 1, max_attempts
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=job.timeout_seconds,
+            timeout=timeout_seconds,
         )
         elapsed = time.monotonic() - start
         status = "ok" if proc.returncode == 0 else "script failed"
@@ -268,7 +291,7 @@ def run_job_once(job: Job, run_time: datetime, *, attempt: int = 1, max_attempts
             error=error_detail,
         )
     except subprocess.TimeoutExpired as exc:
-        error = f"timeout after {job.timeout_seconds}s"
+        error = f"timeout after {timeout_seconds}s"
         log(f"timeout job={job.job_id} attempt={attempt}/{max_attempts} error={error}")
         return JobRunResult(False, "script failed", None, time.monotonic() - start, error)
     except Exception as exc:
@@ -278,9 +301,13 @@ def run_job_once(job: Job, run_time: datetime, *, attempt: int = 1, max_attempts
 
 
 def run_job(job: Job, run_time: datetime) -> JobRunResult:
+    from app.messaging.runtime import report_operation_safely
     env_values = parse_env_file()
     max_attempts, retry_delay = retry_settings(job, env_values)
     result = run_job_once(job, run_time, attempt=1, max_attempts=max_attempts)
+    if not result.success:
+        report_operation_safely(job.env_name, job.title, ok=False, error=result.error,
+                                env={**env_values, **os.environ}, final_attempt=False)
     attempt = 1
     while not result.success and attempt < max_attempts and not STOP:
         attempt += 1
@@ -294,6 +321,8 @@ def run_job(job: Job, run_time: datetime) -> JobRunResult:
         result = run_job_once(job, run_time, attempt=attempt, max_attempts=max_attempts)
     if not result.success and max_attempts > 1:
         log(f"retry exhausted job={job.job_id} attempts={max_attempts} final_status={result.status}")
+    report_operation_safely(job.env_name, job.title, ok=result.success, error=result.error,
+                            env={**env_values, **os.environ})
     return result
 
 
@@ -361,9 +390,15 @@ def main() -> None:
     save_state(state)
     run_startup_catch_up(datetime.now(CN_TZ).replace(second=0, microsecond=0), startup_values)
     try:
+        last_summary_minute = ""
         while not STOP:
             env_values = parse_env_file()
             now = datetime.now(CN_TZ).replace(second=0, microsecond=0)
+            summary_minute = now.isoformat()
+            if summary_minute != last_summary_minute:
+                from app.messaging.runtime import maybe_notify_daily_summary
+                maybe_notify_daily_summary({**env_values, **os.environ}, now)
+                last_summary_minute = summary_minute
             for job in JOBS:
                 if not job_enabled(job, env_values):
                     continue

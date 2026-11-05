@@ -4,6 +4,8 @@
 
 This guide is for users and developers running NiuOne on a personal computer or server. Native deployments store runtime data in `.local-data/` inside the project directory by default, while Docker Compose uses the named volume `niuone-data`. Both methods keep source code separate from real data, but they do not synchronize with each other automatically.
 
+For A-share reports only, disable the standalone overnight US summary in admin settings (`DASHBOARD_US_MARKET_SUMMARY_ENABLED=0`, default `1`). This takes effect on the next scheduler cycle without disabling A-share reports or trading market analysis.
+
 ## One-Click Startup
 
 ```bash
@@ -204,6 +206,8 @@ The iWencai source is disabled by default. **iWencai Data Source** includes **Te
 Administrator strategy backtests prefer a complete Eastmoney industry/concept snapshot and may reuse a validated stale snapshot. On a cold start with no Eastmoney snapshot, an enabled and keyed iWencai source can page through current A-share Tonghuashun industries and concepts as a fallback. Only a result that passes upstream-count and unique-code completeness checks is stored in the separate private cache and used by a backtest. The result identifies its actual source, and both sources failing never produces a fabricated empty-classification result.
 
 The trading-decision intelligence bundle is enabled by default. It adds market monitoring, overnight U.S. market data, indexes/futures, sector performance, industry fund flows, trending stocks, candidate news, and an account-position summary to every simulated-trading decision prompt and log. If an individual market-data source fails, only its status is recorded; the failure does not block the current decision cycle.
+
+Small accounts can opt into `DASHBOARD_PRACTICE_FEE_PROFILE=retail_025_min5` for newly created accounts and `DASHBOARD_EXECUTION_PREFLIGHT_ENABLED=1` for whole-lot risk-sizing context. Frozen fees never reprice old records, and all execution checks remain active. Opt-in operational/recovery and report-reusing daily notifications use `DASHBOARD_OPERATIONAL_NOTIFICATION_ENABLED` and `DASHBOARD_DAILY_SUMMARY_NOTIFICATION_ENABLED`; both default off. See the [operations manual](OPERATIONS_EN.md#account-restart-fees-and-operational-notifications). Official `gpt-6.1-sol` automatically uses Responses, supports `max`, and defaults to Standard service; its output cap includes reasoning tokens and is never dropped on error retries.
 
 ## Runtime Files
 

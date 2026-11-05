@@ -385,6 +385,8 @@ The settings page writes configuration to the private `.local-data/dashboard.env
 | Purpose | Environment variable | Default |
 |---|---|---|
 | Master notification switch | `DASHBOARD_NOTIFICATION_ENABLED` | `0` |
+| Operational faults and recovery (30-minute dedupe) | `DASHBOARD_OPERATIONAL_NOTIFICATION_ENABLED` | `0` |
+| Daily account summary (reuses the saved report) | `DASHBOARD_DAILY_SUMMARY_NOTIFICATION_ENABLED` | `0` |
 | Per-channel request timeout | `DASHBOARD_NOTIFICATION_TIMEOUT_SECONDS` | `5` |
 | Feishu channel switch | `DASHBOARD_FEISHU_NOTIFICATION_ENABLED` | `0` |
 | Feishu Webhook | `DASHBOARD_FEISHU_WEBHOOK_URL` | Empty |

@@ -11,8 +11,10 @@ from __future__ import annotations
 import io
 import json
 import re
+import ssl
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -86,6 +88,12 @@ class _DeadlineResponse:
 @contextmanager
 def _model_response(req: urllib.request.Request, api_key: str, opener: UrlOpen,
                     **kwargs: Any) -> Iterator[Any]:
+    context = kwargs.get("context")
+    if (urlsplit(req.full_url).hostname == "api.openai.com" and context is not None
+            and (context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname)):
+        # Some legacy report callers supply a gateway-only unverified context.
+        # It must never disable server identity checks for the official API.
+        kwargs["context"] = ssl.create_default_context()
     # Custom transports retain the historical injection/monkeypatch contract.
     # The production urllib transport shares admission across every consumer.
     if opener is not _STANDARD_OPENER:
@@ -197,7 +205,9 @@ def uses_responses_api(
         model_name.startswith(("grok-4.3", "grok-4.5"))
         or model_name == "grok-latest"
         or model_name in {"mimo-v2.5", "mimo-v2.5-pro"}
-        or (capability is not None and capability.key in {"qwen-3.8-max", "qwen-responses"})
+        or (capability is not None and capability.key in {
+            "qwen-3.8-max", "qwen-responses", "gpt-6.1-sol",
+        })
     ):
         return True
     # OpenAI-compatible GPT-5 search tools are exposed through Responses.  Do
@@ -223,6 +233,7 @@ def _uses_chat_completion_output_limit(model: str) -> bool:
     model_name = str(model or "").strip().lower()
     return (
         model_name in {"mimo-v2.5", "mimo-v2.5-pro"}
+        or model_name == "gpt-6.1-sol"
         or re.fullmatch(r"minimax-m(?:3|2(?:\.(?:1|5|7)(?:-highspeed)?)?)", model_name)
         is not None
     )
@@ -255,6 +266,14 @@ def build_model_request(
     )
     payload = dict(extra_payload or {})
     payload["model"] = model
+    if str(model).strip().lower() == "gpt-6.1-sol":
+        # Sol always reasons, including when effort is omitted. Sampling knobs
+        # are not supported; never let a project-level Fast default change the
+        # price of this newly supported model without an explicit override.
+        for key in ("temperature", "top_p", "logprobs", "top_logprobs"):
+            payload.pop(key, None)
+        payload.setdefault("service_tier", "default")
+        payload.setdefault("store", False)
 
     if use_responses:
         for legacy_key in ("messages", "max_tokens", "max_completion_tokens"):
@@ -646,6 +665,10 @@ def request_model(
             ssl_context=ssl_context,
         )
     except urllib.error.HTTPError as exc:
+        if str(request.payload.get("model") or "").strip().lower() == "gpt-6.1-sol":
+            # The official model supports a reasoning-inclusive output limit.
+            # A failed request must not silently retry with an unbounded bill.
+            raise
         if exc.code != 400 or "max_output_tokens" not in request.payload:
             raise
         try:
@@ -695,6 +718,8 @@ def stream_model_response(
             ssl_context=ssl_context,
         )
     except urllib.error.HTTPError as exc:
+        if str(request.payload.get("model") or "").strip().lower() == "gpt-6.1-sol":
+            raise
         if exc.code != 400 or "max_output_tokens" not in request.payload:
             raise
         try:

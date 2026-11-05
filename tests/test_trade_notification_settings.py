@@ -30,6 +30,8 @@ ADMIN_VUE = "\n".join(
 
 NOTIFICATION_ENV_NAMES = [
     "DASHBOARD_NOTIFICATION_ENABLED",
+    "DASHBOARD_OPERATIONAL_NOTIFICATION_ENABLED",
+    "DASHBOARD_DAILY_SUMMARY_NOTIFICATION_ENABLED",
     "DASHBOARD_NOTIFICATION_TIMEOUT_SECONDS",
     "DASHBOARD_FEISHU_NOTIFICATION_ENABLED",
     "DASHBOARD_FEISHU_WEBHOOK_URL",
@@ -70,7 +72,9 @@ class TradeNotificationSettingsTests(unittest.TestCase):
         payload = dashboard.build_admin_config_payload()
         items = {item["name"]: item for item in payload["items"]}
         for label in (
-            "启用模拟成交通知",
+            "启用消息通知总开关",
+            "运行故障与恢复通知",
+            "模拟账户盘后总结通知",
             "飞书机器人 Webhook",
             "钉钉机器人 Webhook",
             "企业微信机器人 Webhook",

@@ -8908,6 +8908,7 @@ process.stdout.write(JSON.stringify({{
         original_context = dashboard.practice_fast_cycle_context_payload
         original_run = dashboard.run_practice_decision_logged
         original_invalidate = dashboard.invalidate_api_cache
+        original_summary = dashboard.refresh_practice_market_summary_for_decision
         calls = {'builder': None, 'decision': None}
 
         def payload_builder(holdings, context, *, now):
@@ -8929,16 +8930,19 @@ process.stdout.write(JSON.stringify({{
             }
             dashboard.run_practice_decision_logged = run_logged
             dashboard.invalidate_api_cache = lambda *_keys: None
+            dashboard.refresh_practice_market_summary_for_decision = lambda _trigger: {}
             result = dashboard.run_practice_fast_cycle_once(
                 datetime(2026, 8, 27, 10, 5, 0),
                 trader=FakeTrader(),
                 payload_builder=payload_builder,
+                clock=lambda: datetime(2026, 8, 27, 10, 5, 0),
             )
         finally:
             dashboard.PRACTICE_FAST_CYCLE_ENABLED = original_enabled
             dashboard.practice_fast_cycle_context_payload = original_context
             dashboard.run_practice_decision_logged = original_run
             dashboard.invalidate_api_cache = original_invalidate
+            dashboard.refresh_practice_market_summary_for_decision = original_summary
 
         holdings, context, current = calls['builder']
         self.assertEqual([item['code'] for item in holdings], ['600001'])
@@ -8950,6 +8954,7 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(payload['decision_cycle_kind'], 'holding_fast')
         self.assertEqual(payload['schedule_run_kind'], 'holding_fast')
         self.assertFalse(kwargs['decision_blocking'])
+        self.assertFalse(kwargs['refresh_market_summary'])
         self.assertEqual(result['decision_cycle_kind'], 'holding_fast')
 
     def test_holding_fast_cycle_context_restores_complete_stock_profiles(self):

@@ -52,6 +52,7 @@ from app.trading.decision_freshness import decision_expiry, decision_is_expired
 from core.shared_model_config import (
     LEGACY_SUMMARY_MODEL_ENV_NAMES,
     SHARED_MODEL_ENV_NAMES,
+    model_provider_display_name,
     resolve_shared_model_config,
 )
 from market_data.news_precheck import (
@@ -159,6 +160,8 @@ from trading.fees import (
     A_SHARE_SELL_STAMP_DUTY_RATE,
     A_SHARE_TRANSFER_FEE_RATE,
     calculate_a_share_trade_fees,
+    FeeSchedule, FEE_PROFILE_ENV, LEGACY_FEE_SCHEDULE,
+    account_fee_schedule, fee_schedule_for_profile,
 )
 from trading.niuone_forward import (
     FORWARD_EXECUTION_EVIDENCE_SCHEMA_VERSION,
@@ -593,7 +596,7 @@ DECISION_RETRY_MAX_TOKENS = 65_536
 DECISION_JSON_SAME_LIMIT_RETRIES = 1
 DECISION_JSON_MAX_PARSE_ATTEMPTS = 6
 DECISION_REQUEST_TIMEOUT = env_int("DASHBOARD_DECISION_TIMEOUT", 180)
-PROVIDER_DISPLAY_NAME = "Crossdesk.ccwu.cc"
+PROVIDER_DISPLAY_NAME = model_provider_display_name(_SHARED_MODEL.base_url)
 CROSSDESK_PROVIDER_NAME = "Crossdesk.ccwu.cc"
 TRADE_LOG_LIMIT = 200
 EQUITY_HISTORY_LIMIT = 500
@@ -888,6 +891,7 @@ def default_state() -> dict[str, Any]:
         "updated_at": now_ts(),
         "initial_cash": INITIAL_CASH,
         "cash": INITIAL_CASH,
+        "fee_schedule": fee_schedule_for_profile(os.environ.get(FEE_PROFILE_ENV, "legacy")).to_dict(),
         "positions": {},
         "trade_log": [],
         "decision_log": [],
@@ -1295,7 +1299,10 @@ def load_state() -> dict[str, Any]:
     except Exception:
         state = default_state()
     base = default_state()
+    # A changed new-account default must not reprice an existing account.
+    base["fee_schedule"] = LEGACY_FEE_SCHEDULE.to_dict()
     base.update(state)
+    account_fee_schedule(base)  # Invalid persisted assumptions fail closed.
     base.setdefault("positions", {})
     base.setdefault("trade_log", [])
     base.setdefault("decision_log", [])
@@ -1807,6 +1814,8 @@ def save_state(state: dict[str, Any]) -> None:
         # writer that loaded stale state from replacing a newer decision record.
         if STATE_FILE.exists():
             current = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            if account_fee_schedule(current) != account_fee_schedule(state):
+                raise ValueError("account fee schedule is frozen; archive and create a new account to change it")
             current.pop(_PENDING_EQUITY_DB_SYNC_TIME, None)
             reconcile_current_day_cash_from_ledger(current)
             reconcile_current_day_equity_history_from_ledger(current)
@@ -2789,6 +2798,7 @@ def enrich_portfolio(state: dict[str, Any]) -> dict[str, Any]:
         "source_updated_at": str(state.get("updated_at") or ""),
         "source_last_equity_time": source_last_equity_time,
         "initial_cash": float(state.get("initial_cash") or INITIAL_CASH),
+        "fee_schedule": account_fee_schedule(state).to_dict(),
         "cash": round(cash, 2),
         "market_value": round(total_mv, 2),
         "total_equity": round(total_equity, 2),
@@ -3019,9 +3029,11 @@ def account_today_pnl(
     return daily_pnl, pnl_pct
 
 
-def calc_trade_fees(amount: float, side: str) -> dict[str, float]:
-    """Calculate A-share paper-trading fees for 万一免五 account."""
-    return calculate_a_share_trade_fees(amount, side)
+def calc_trade_fees(
+    amount: float, side: str, state: Mapping[str, Any] | None = None,
+) -> dict[str, float]:
+    """Use the account's frozen fees, retaining legacy defaults for old callers."""
+    return calculate_a_share_trade_fees(amount, side, account_fee_schedule(state))
 
 
 def dynamic_risk_order_ceiling(
@@ -3042,6 +3054,7 @@ def dynamic_risk_order_ceiling(
     existing_sector_risk_pct: float,
     required_cash_pct: float,
     board_lot: int = 100,
+    fee_schedule: FeeSchedule = LEGACY_FEE_SCHEDULE,
 ) -> dict[str, Any]:
     """Return the largest whole-lot order allowed by every sizing ceiling.
 
@@ -3120,7 +3133,7 @@ def dynamic_risk_order_ceiling(
     reduced_for_reserve = False
     while maximum_shares > 0:
         gross = maximum_shares * resolved_price
-        fees = calc_trade_fees(gross, "BUY")
+        fees = calculate_a_share_trade_fees(gross, "BUY", fee_schedule)
         total_cost = gross + float(fees["total_fee"])
         if total_cost > float(cash) + 1e-9:
             reduced_for_cash = True
@@ -3151,6 +3164,94 @@ def dynamic_risk_order_ceiling(
         ),
         "binding_constraints": sorted(set(binding)),
     }
+
+
+def preview_niuone_buy_capacity(
+    state: Mapping[str, Any],
+    candidates: list[dict[str, Any]],
+    market_strategy_ctx: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Read-only, independent-order risk ceilings at the scan price.
+
+    These are sizing bounds, not execution approvals. Lifecycle/add/replacement
+    eligibility and fresh-quote checks remain exclusively in execute_actions.
+    No hypothetical sale proceeds or previous preview orders alter the snapshot.
+    """
+    positions = state.get("positions") or {}
+    cash = float(state.get("cash") or 0)
+    equity = portfolio_total_equity_for_limits(cash, positions)
+    schedule = account_fee_schedule(state)
+    results: list[dict[str, Any]] = []
+    for candidate in candidates:
+        strategy = str(candidate.get("best_strategy") or "")
+        if not is_niuone_strategy(strategy):
+            continue
+        code = normalize_code(candidate.get("code") or "")
+        price = _safe_float(candidate.get("price"), 0.0)
+        position = positions.get(code) or {}
+        regime = str(candidate.get("market_regime") or "")
+        subroute = str(candidate.get("niuone_entry_subroute") or "")
+        theme = niuone_position_theme(position) if position_qty(position) else niuone_candidate_theme(candidate)
+        row: dict[str, Any] = {"code": code, "reference_price": price,
+                               "scope": "independent_snapshot_risk_ceiling",
+                               "execution_recheck_required": True}
+        if price <= 0 or not theme or regime not in NIUONE_ENTRY_REGIMES:
+            row.update(maximum_permitted_shares=0, binding_constraints=["invalid_risk_inputs"])
+            results.append(row)
+            continue
+        budget = niuone_risk_budget(regime, strategy)
+        cap = float(NIUONE_ABSOLUTE_POSITION_CAP_PCT[strategy])
+        if position_qty(position) <= 0 and subroute == NIUONE_MARKUP_MOMENTUM_PROBE_SUBROUTE:
+            cap = min(cap, NIUONE_MARKUP_MOMENTUM_PROBE_POSITION_CAP_PCT)
+        stop = max(_safe_float(candidate.get("stop_price"), 0.0),
+                   _safe_float(position.get("entry_stop_price"), 0.0))
+        stop_distance = structural_stop_distance_pct(price, stop)
+        atr = _safe_float(candidate.get("atr") or candidate.get("atr14") or candidate.get("atr20"), 0.0)
+        stop_atr = (price - stop) / atr if atr > 0 and stop > 0 else 0.0
+        loss = effective_loss_distance_pct(
+            price, stop,
+            gap_buffer_pct=max(_safe_float(candidate.get("gap_buffer_pct"), 0.0),
+                               _safe_float(position.get("gap_buffer_pct"), 0.0)),
+            execution_buffer_pct=max(SECTOR_TIDE_EXECUTION_BUFFER_PCT,
+                                     _safe_float(candidate.get("execution_buffer_pct"), 0.0),
+                                     _safe_float(position.get("execution_buffer_pct"), 0.0)),
+        )
+        total_cap = min(budget["max_total_position_pct"],
+                        float(market_strategy_ctx.get("max_total_position_pct", MAX_TOTAL_POSITION_PCT)),
+                        100.0 - max(MIN_CASH_RESERVE_PCT, float(market_strategy_ctx.get("min_cash_reserve_pct", MIN_CASH_RESERVE_PCT))))
+        current_value = position_market_value(position, price)
+        market_value = max(0.0, portfolio_market_value(positions) - position_market_value(position) + current_value)
+        row.update(dynamic_risk_order_ceiling(
+            price=price, total_equity=equity, cash=cash,
+            current_position_value=current_value, current_market_value=market_value,
+            other_industry_value=sum(position_market_value(pos) for key, pos in positions.items()
+                                     if key != code and isinstance(pos, dict) and position_qty(pos) > 0
+                                     and dynamic_strategy_exposure_key(pos, position_entry_strategy(pos)) == theme),
+            dynamic_position_cap_pct=risk_sized_position_cap_pct(
+                per_trade_risk_pct=budget["per_trade_risk_pct"],
+                effective_loss_distance_pct_value=loss, absolute_cap_pct=cap),
+            total_position_cap_pct=total_cap, sector_position_cap_pct=budget["max_sector_position_pct"],
+            effective_loss_distance_pct_value=loss,
+            max_open_risk_pct=budget["max_open_risk_pct"],
+            existing_open_risk_pct=dynamic_strategy_existing_open_risk_pct(positions, equity, persona="niuone", excluding_code=code),
+            max_sector_risk_pct=budget["max_sector_risk_pct"],
+            existing_sector_risk_pct=dynamic_strategy_existing_open_risk_pct(positions, equity, persona="niuone", excluding_code=code, industry=theme),
+            required_cash_pct=100.0 - total_cap, fee_schedule=schedule,
+        ))
+        blockers = []
+        if (candidate.get("market_hard_stop")
+                or not candidate.get("market_allows_buys", False)
+                or market_strategy_ctx.get("allow_new_buys") is False):
+            blockers.append("market_guidance")
+        if not niuone_structure_risk_ok(stop_distance, stop_atr, regime, strategy, subroute):
+            blockers.append("structural_stop")
+        if blockers:
+            row.update(maximum_permitted_shares=0, maximum_permitted_gross=0.0, binding_constraints=blockers)
+        gross = float(row.get("maximum_permitted_gross") or 0)
+        row["estimated_buy_fee"] = calculate_a_share_trade_fees(gross, "BUY", schedule)["total_fee"]
+        row["one_lot_cash_required"] = round(price * 100 + calculate_a_share_trade_fees(price * 100, "BUY", schedule)["total_fee"], 2)
+        results.append(row)
+    return results
 
 
 def position_qty(pos: dict[str, Any]) -> int:
@@ -8963,7 +9064,7 @@ def check_auto_exits(
         entry_mark = compact_position_strategy_mark(pos, entry_strategy)
         exit_mark = apply_exit_strategy_mark(pos, entry_strategy, exit_rule, exit_reason, source="AUTO_EXIT")
         
-        fees = calc_trade_fees(gross, "SELL")
+        fees = calc_trade_fees(gross, "SELL", state)
         net_proceeds = gross - fees["total_fee"]
         cost_basis = qty * avg_cost
         realized_pnl = net_proceeds - cost_basis
@@ -9610,6 +9711,8 @@ def compact_portfolio_for_decision(portfolio: dict[str, Any]) -> dict[str, Any]:
     return {
         "generated_at": portfolio.get("generated_at"),
         "initial_cash": portfolio.get("initial_cash"),
+        "fee_schedule": account_fee_schedule(portfolio).to_dict(),
+        "execution_preflight": portfolio.get("_execution_preflight") or [],
         "cash": portfolio.get("cash"),
         "market_value": portfolio.get("market_value"),
         "total_equity": portfolio.get("total_equity"),
@@ -10335,7 +10438,7 @@ def call_model_decision(
         if preset_output_lines
         else ""
     )
-    prompt = f"""你是A股模拟账户交易决策器。账户初始资金100万，只做A股模拟交易，不是真实下单。
+    prompt = f"""你是A股模拟账户交易决策器。账户初始资金{float(portfolio.get('initial_cash') or INITIAL_CASH):g}元，只做A股模拟交易，不是真实下单。
 必须遵守：
 {trade_discipline_text}
 
@@ -10365,6 +10468,8 @@ def call_model_decision(
 
 当前账户JSON：
 {json.dumps(decision_portfolio, ensure_ascii=False)}
+手续费按账户 fee_schedule 计算：买卖双向佣金每笔取成交额×commission_rate与commission_min的较大者，双向过户费，卖出另计印花税；报价金额不等于含费支出，预留费用后才可买入100股整手。
+execution_preflight 是按扫描价、当前账户独立计算的风险数量上限，不是成交许可；未计入假设卖出所得，也不能将各股票上限同时用满。数量为0时说明当前快照连100股整手都不能容纳；持仓阶段升级、加仓资格、T+1、换仓、实时价格和其余硬风控仍以执行时复核为准，不能据此绕过。不存在预检数据时不得自行编造。
 
 {news_context}
 
@@ -12077,6 +12182,7 @@ def execute_actions(
                     ),
                     existing_sector_risk_pct=existing_sector_risk_pct,
                     required_cash_pct=100.0 - tide_total_limit_pct,
+                    fee_schedule=account_fee_schedule(state),
                 )
                 maximum_permitted_shares = int(
                     risk_order_ceiling["maximum_permitted_shares"]
@@ -12215,7 +12321,7 @@ def execute_actions(
                     continue
             qty = shares
             gross = qty * float(price)
-            fees = calc_trade_fees(gross, "BUY")
+            fees = calc_trade_fees(gross, "BUY", state)
             total_cost = gross + fees["total_fee"]
             if total_cost > cash:
                 add_execution_block(
@@ -13169,7 +13275,7 @@ def execute_actions(
             position_after_trade_value = max(0.0, current_position_value - gross)
             position_after_trade_pct = position_pct_of_equity(position_after_trade_value, total_equity)
             total_position_after_trade_pct = position_pct_of_equity(max(0.0, current_market_value - gross), total_equity)
-            fees = calc_trade_fees(gross, "SELL")
+            fees = calc_trade_fees(gross, "SELL", state)
             net_proceeds = gross - fees["total_fee"]
             cost_basis = qty * avg_cost
             realized_pnl = net_proceeds - cost_basis
@@ -14015,6 +14121,8 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
         sentiment_note = f"⚠️市场情绪偏冷({market_sent['detail']})，建议仓位减半或不建仓"
     portfolio = enrich_portfolio(state)
     portfolio["_preset_position_policy_context"] = preset_position_policy_context(state)
+    if env_bool("DASHBOARD_EXECUTION_PREFLIGHT_ENABLED", False):
+        portfolio["_execution_preflight"] = preview_niuone_buy_capacity(state, candidates, market_strategy_ctx)
     has_open_positions = any(
         isinstance(pos, dict) and position_qty(pos) > 0
         for pos in (state.get("positions") or {}).values()
@@ -14301,7 +14409,7 @@ def build_trade_rule_note() -> str:
         f"卤煮半仓、S1/S2/S3逃顶、出货五式、BBI/白线两日破位、白线死叉黄线。"
         f"板块潮汐按行业连续两日退潮、市场硬停止、时间窗、2R减半和2ATR跟踪退出。"
         f"牛牛试仓所属题材首次进入退幕即退出，3个交易日未延续右侧趋势也退出；成熟路径按龙头梯队、主线退幕、市场硬停止和时间窗退出；进攻/修复/防守试仓盘中达到0.75R先减仓50%，轮动试仓及成熟路径达到1R先减仓45%，余仓成本保护并按2ATR跟踪。"
-        f"买入按万一免五计费。"
+        f"交易费用按账户创建时冻结的手续费方案计算。"
     )
 
 
@@ -14430,11 +14538,12 @@ def get_dashboard_payload() -> dict[str, Any]:
     payload["strategy_performance"] = build_strategy_performance(state)
     payload["trade_rule_note"] = build_trade_rule_note()
     payload["fee_rule"] = {
-        "commission_rate": COMMISSION_RATE,
-        "commission_min": COMMISSION_MIN,
-        "stamp_duty_sell_rate": STAMP_DUTY_SELL_RATE,
-        "transfer_fee_rate": TRANSFER_FEE_RATE,
-        "label": "万一免五；买入=佣金+过户费，卖出=佣金+过户费+印花税",
+        **account_fee_schedule(state).to_dict(),
+        "label": (
+            f"佣金万{account_fee_schedule(state).commission_rate * 10000:g}，"
+            f"每笔最低{account_fee_schedule(state).commission_min:g}元；"
+            "买入=佣金+过户费，卖出=佣金+过户费+印花税"
+        ),
     }
     payload["decision_model"] = MODEL
     payload["decision_provider"] = PROVIDER_DISPLAY_NAME

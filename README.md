@@ -389,6 +389,8 @@ NiuOne 支持将模拟买入和卖出成交推送到飞书、钉钉、企业微�
 | 作用 | 环境变量 | 默认值 |
 |---|---|---|
 | 通知总开关 | `DASHBOARD_NOTIFICATION_ENABLED` | `0` |
+| 运行故障及恢复（30分钟去重） | `DASHBOARD_OPERATIONAL_NOTIFICATION_ENABLED` | `0` |
+| 盘后账户汇总（复用现有报告） | `DASHBOARD_DAILY_SUMMARY_NOTIFICATION_ENABLED` | `0` |
 | 单渠道请求超时 | `DASHBOARD_NOTIFICATION_TIMEOUT_SECONDS` | `5` |
 | 飞书渠道开关 | `DASHBOARD_FEISHU_NOTIFICATION_ENABLED` | `0` |
 | 飞书 Webhook | `DASHBOARD_FEISHU_WEBHOOK_URL` | 空 |
