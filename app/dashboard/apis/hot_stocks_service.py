@@ -9,6 +9,7 @@ from pathlib import Path
 
 from dashboard_json_cache import read_json_cache, write_json_cache
 from niuone_paths import get_dashboard_home
+from dashboard.apis.bounded_fetch import run_bounded_market_fetch
 
 if __package__ == "app":
     from .dashboard.apis.cache import load_cached_payload
@@ -100,9 +101,15 @@ def _fetch_quotes(codes, chunk=120):
 
 
 def _compute():
+    return run_bounded_market_fetch("hot_stocks", cache_path=CACHE_PATH)
+
+
+def _compute_in_process():
     codes = _load_universe()
     quotes = _fetch_quotes(codes)
     tradable = [q for q in quotes if q.get('amount_wan', 0) > 0]
+    if not tradable:
+        raise RuntimeError("hot-stock providers returned no usable rows")
     by_amount = sorted(tradable, key=lambda x: x.get('amount_wan', 0), reverse=True)[:10]
     by_turnover = sorted([q for q in tradable if q.get('turnover', 0) > 0], key=lambda x: x.get('turnover', 0), reverse=True)[:10]
     by_volume = sorted(tradable, key=lambda x: x.get('volume_lot', 0), reverse=True)[:10]
