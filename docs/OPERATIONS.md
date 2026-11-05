@@ -142,9 +142,9 @@ NiuOne 需要大模型驱动完整交易决策工作流。设置页的“模型�
 | OpenAI `gpt-5` | `minimal`、`low`、`medium`、`high` | 同填写值 | 官方模型页未注明 |
 
 来源：[Qwen Responses](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses)、[Qwen Chat](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)、[Qwen 深度思考](https://help.aliyun.com/zh/model-studio/deep-thinking)、[MiniMax Responses](https://platform.minimax.io/docs/api-reference/responses-create)、[MiniMax Chat](https://platform.minimax.io/docs/api-reference/text-chat-openai)、[DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)、[智谱深度思考](https://docs.bigmodel.cn/cn/guide/capabilities/thinking)、[小米 MiMo Responses](https://mimo.mi.com/docs/zh-CN/api/chat/responses)、[xAI Grok 4.3](https://docs.x.ai/developers/models/grok-4.3)、[xAI Reasoning](https://docs.x.ai/developers/model-capabilities/text/reasoning)、[OpenAI GPT-5.6](https://developers.openai.com/api/docs/models/gpt-5.6-sol) 及各型号官方模型页。Claude、Gemini 等原生 API 使用不同的思考控制字段，不在这个 OpenAI 兼容表中；如果兼容网关提供同名字段，作为表外自定义值处理。
-官方 [GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol) 精确模型名自动使用 Responses，保留所选思考强度；默认明确发送 `service_tier=default`（Standard）及 `store=false`，不发送不支持的采样参数。强制 Chat 时使用 `max_completion_tokens`。输出上限包含推理tokens；参数错误明确失败，不通过删除输出上限或降低强度重试。`max` 思考强度不是 Pro 模式或 Fast 服务档位。
+官方 [GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol) 精确模型名自动使用 Responses，保留所选思考强度；默认发送 `service_tier=default`（Standard）及 `store=false`，采样参数按模型能力过滤。强制 Chat 时使用 `max_completion_tokens`。输出上限包含推理 tokens；遇到参数错误时保留配置的输出额度和思考强度，并返回具体错误。
 
-访问 `api.openai.com` 时校验 TLS 证书和主机名；历史网关调用方传入的免校验证书上下文不会用于官方接口。已启用证书及主机名校验的自定义 CA 上下文保持不变。
+访问 `api.openai.com` 时始终校验 TLS 证书和主机名：沿用已启用这两项验证的自定义 CA 上下文，其余情况使用系统信任配置。
 
 `*_CONTEXT_LENGTH` 仅表示上下文窗口，默认 `128000`；`*_MAX_TOKENS` 表示期望最大输出长度，调用层按接口映射兼容参数。旧 GPT-5.6 网关别名的输出上限兼容行为保持不变；其他旧网关可在明确不支持时去参重试，但上述 Sol 官方模型不允许该退路。JSON 与 SSE 返回均受支持。
 买卖决策模型因输出长度耗尽而返回空正文或截断 JSON 时，会从当前输出长度开始逐级翻倍重试，自动上限为 `65536`；显式配置高于该值时，重试不会反向降低用户配置。到达上限后不再增加额度，JSON 仍不可解析时只允许一次同额度补救。已知支持原生 JSON 输出的 DeepSeek V4 决策型号会同时发送 `response_format=json_object`，其他自定义网关不强制携带该参数。
