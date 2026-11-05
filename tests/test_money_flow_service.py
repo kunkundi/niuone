@@ -318,6 +318,45 @@ class MoneyFlowServiceTests(unittest.TestCase):
         self.assertEqual(money_flow_service.CACHE_PATH.name, "industry_main_money_flow_cache.json")
         self.assertNotEqual(money_flow_service.CACHE_PATH.name, "money_flow_dashboard_cache.json")
 
+    def test_download_switches_to_same_source_fallback_after_failure(self):
+        urls = []
+        def runner(command, **kwargs):
+            urls.append(command[-1])
+            if len(urls) == 1:
+                return SimpleNamespace(returncode=22, stdout=b"", stderr=b"HTTP 502")
+            return SimpleNamespace(returncode=0, stdout=b'{"data":{"total":20}}', stderr=b"")
+        result = money_flow_service._download_json(
+            "https://primary.test/data", fallback_urls=("https://fallback.test/data",),
+            runner=runner, curl_path="curl", sleep=lambda _: None,
+        )
+        self.assertEqual(urls, ["https://primary.test/data", "https://fallback.test/data"])
+        self.assertEqual(result["data"]["total"], 20)
+
+    def test_snapshot_budget_is_shared_across_page_retries(self):
+        clock = [0.0]
+        calls = []
+        def runner(command, **kwargs):
+            calls.append(kwargs["timeout"])
+            clock[0] += 8
+            return SimpleNamespace(returncode=28, stdout=b"", stderr=b"timeout")
+        token = money_flow_service._SNAPSHOT_DEADLINE.set(10.0)
+        try:
+            with patch.object(money_flow_service.time, "monotonic", side_effect=lambda: clock[0]):
+                with self.assertRaisesRegex(TimeoutError, "snapshot deadline"):
+                    money_flow_service._download_json(
+                        "https://example.test/data", runner=runner, curl_path="curl",
+                        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                    )
+            self.assertEqual(calls, [10, 3.5])
+        finally:
+            money_flow_service._SNAPSHOT_DEADLINE.reset(token)
+
+    def test_compute_resets_budget_after_failure(self):
+        with patch.object(money_flow_service, "_compute_once", side_effect=RuntimeError("source down")):
+            with self.assertRaises(RuntimeError):
+                money_flow_service._compute()
+        self.assertIsNone(money_flow_service._SNAPSHOT_DEADLINE.get())
+
 
 if __name__ == "__main__":
     unittest.main()

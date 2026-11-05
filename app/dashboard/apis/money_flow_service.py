@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -43,6 +44,7 @@ CACHE_TTL = 60
 # The public delay host serves the same closing/main-net fields and is more
 # reliable for server-side clients than the browser-oriented push2 hostname.
 EASTMONEY_URL = "https://push2delay.eastmoney.com/api/qt/clist/get"
+EASTMONEY_FALLBACK_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 SOURCE_NAME = "东方财富行业板块主力净额"
 SOURCE_URL = "https://data.eastmoney.com/bkzj/hy.html"
 METRIC_NAME = "industry_main_net_flow"
@@ -51,6 +53,8 @@ PAGE_SIZE = 100
 MAX_PAGES = 5
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 REQUEST_TIMEOUT_SECONDS = 8
+SNAPSHOT_TIMEOUT_SECONDS = 30.0
+_SNAPSHOT_DEADLINE: ContextVar[float | None] = ContextVar("money_flow_deadline", default=None)
 REQUEST_RETRY_DELAYS_SECONDS = (0.5, 1.0)
 MAX_REQUEST_ATTEMPTS = len(REQUEST_RETRY_DELAYS_SECONDS) + 1
 SNAPSHOT_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
@@ -154,6 +158,7 @@ def _download_json(
     sleep: Callable[[float], None] = time.sleep,
     curl_path: str | None = None,
     validate_payload: Callable[[dict[str, Any]], None] | None = None,
+    fallback_urls: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Download one bounded JSON response with a short retry budget.
 
@@ -164,7 +169,15 @@ def _download_json(
 
     curl = curl_path if curl_path is not None else shutil.which("curl")
     last_error: Exception | None = None
+    urls = (url, *fallback_urls)
     for attempt in range(MAX_REQUEST_ATTEMPTS):
+        deadline = _SNAPSHOT_DEADLINE.get()
+        remaining = REQUEST_TIMEOUT_SECONDS if deadline is None else min(
+            REQUEST_TIMEOUT_SECONDS, deadline - time.monotonic()
+        )
+        if remaining <= 0:
+            raise TimeoutError("industry main-flow snapshot deadline exceeded") from last_error
+        request_url = urls[attempt % len(urls)]
         try:
             if curl:
                 completed = runner(
@@ -175,15 +188,19 @@ def _download_json(
                         "--show-error",
                         "--location",
                         "--connect-timeout",
-                        "4",
+                        f"{min(4, remaining):g}",
                         "--max-time",
-                        str(REQUEST_TIMEOUT_SECONDS),
+                        f"{remaining:g}",
+                        "--max-filesize",
+                        str(MAX_RESPONSE_BYTES),
+                        "--referer",
+                        SOURCE_URL,
                         "--user-agent",
                         "Mozilla/5.0 NiuOne/1.0",
-                        url,
+                        request_url,
                     ],
                     capture_output=True,
-                    timeout=REQUEST_TIMEOUT_SECONDS + 2,
+                    timeout=remaining + 2,
                     check=False,
                 )
                 if completed.returncode != 0:
@@ -191,8 +208,10 @@ def _download_json(
                     raise RuntimeError(f"curl failed ({completed.returncode}): {detail[:160]}")
                 raw = bytes(completed.stdout)
             else:
-                request = Request(url, headers={"User-Agent": "Mozilla/5.0 NiuOne/1.0"})
-                with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                request = Request(request_url, headers={
+                    "User-Agent": "Mozilla/5.0 NiuOne/1.0", "Referer": SOURCE_URL,
+                })
+                with urlopen(request, timeout=remaining) as response:
                     raw = response.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
                 raise RuntimeError("industry main-flow response is too large")
@@ -205,7 +224,10 @@ def _download_json(
         except Exception as exc:
             last_error = exc
             if attempt < len(REQUEST_RETRY_DELAYS_SECONDS):
-                sleep(REQUEST_RETRY_DELAYS_SECONDS[attempt])
+                delay = REQUEST_RETRY_DELAYS_SECONDS[attempt]
+                if deadline is not None and time.monotonic() + delay >= deadline:
+                    raise TimeoutError("industry main-flow snapshot deadline exceeded") from exc
+                sleep(delay)
     assert last_error is not None
     raise RuntimeError(
         f"industry main-flow request failed: {type(last_error).__name__}: {last_error}"
@@ -241,6 +263,7 @@ def _fetch_page(page: int) -> tuple[list[dict[str, Any]], int]:
     payload = _download_json(
         f"{EASTMONEY_URL}?{query}",
         validate_payload=_validate_page_payload,
+        fallback_urls=(f"{EASTMONEY_FALLBACK_URL}?{query}",),
     )
     data = payload.get("data")
     if not isinstance(data, dict):
@@ -343,13 +366,21 @@ def _compute(
 ) -> dict[str, Any]:
     """Build one complete snapshot, retrying transient all-zero source responses."""
 
-    for attempt in range(len(SNAPSHOT_RETRY_DELAYS_SECONDS) + 1):
-        try:
-            return _compute_once()
-        except _IncompleteSnapshotError:
-            if attempt >= len(SNAPSHOT_RETRY_DELAYS_SECONDS):
-                raise
-            sleep(SNAPSHOT_RETRY_DELAYS_SECONDS[attempt])
+    deadline = time.monotonic() + SNAPSHOT_TIMEOUT_SECONDS
+    token = _SNAPSHOT_DEADLINE.set(deadline)
+    try:
+        for attempt in range(len(SNAPSHOT_RETRY_DELAYS_SECONDS) + 1):
+            try:
+                return _compute_once()
+            except _IncompleteSnapshotError:
+                if attempt >= len(SNAPSHOT_RETRY_DELAYS_SECONDS):
+                    raise
+                delay = SNAPSHOT_RETRY_DELAYS_SECONDS[attempt]
+                if time.monotonic() + delay >= deadline:
+                    raise TimeoutError("industry main-flow snapshot deadline exceeded")
+                sleep(delay)
+    finally:
+        _SNAPSHOT_DEADLINE.reset(token)
     raise AssertionError("unreachable")
 
 
