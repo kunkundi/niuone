@@ -14,6 +14,7 @@ import sqlite3
 import time
 import subprocess
 import sys
+import tempfile
 import threading
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -1954,14 +1955,44 @@ def _tencent_key_for_code(code: str) -> str:
     return ("sh" if code.startswith(("6", "9")) else "sz") + code
 
 
+_B1_GENERATION_CACHE_LOCK = threading.Lock()
+_B1_GENERATION_CACHE: dict[str, Any] = {}
+
+
+def _b1_cache_generation() -> str:
+    """Read only a generation string once per atomic full-scan file version."""
+    if not callable(getattr(B1_CACHE_FILE, "stat", None)):
+        # Historical integrations inject a lightweight read_text-only path.
+        return str(json.loads(B1_CACHE_FILE.read_text(encoding="utf-8")).get("generated_at") or "")
+
+    def version() -> tuple[Any, ...]:
+        stat = B1_CACHE_FILE.stat()
+        return (str(B1_CACHE_FILE.resolve()), stat.st_dev, stat.st_ino,
+                stat.st_size, stat.st_mtime_ns)
+
+    with _B1_GENERATION_CACHE_LOCK:
+        before = version()
+        if _B1_GENERATION_CACHE.get("version") == before:
+            return str(_B1_GENERATION_CACHE.get("generated_at") or "")
+        compact_path = _derived_read_model_path(PRACTICE_CANDIDATES_CACHE_FILE, B1_CACHE_FILE)
+        compact = read_versioned_json_cache(compact_path) or {}
+        expected = dict(zip(("device", "inode", "size", "mtime_ns"), before[1:]))
+        if compact.get("source_cache") == B1_CACHE_FILE.name and compact.get("source_version") == expected:
+            generated_at = str(compact.get("generated_at") or "")
+        else:
+            full = read_json_cache(B1_CACHE_FILE, None) or {}
+            generated_at = str(full.get("generated_at") or "")
+        if version() == before:
+            _B1_GENERATION_CACHE.clear()
+            _B1_GENERATION_CACHE.update(version=before, generated_at=generated_at)
+        return generated_at
+
+
 def b1_cache_has_newer_generation(base_payload: dict[str, Any]) -> bool:
     try:
-        if not B1_CACHE_FILE.exists():
-            return False
-        latest = json.loads(B1_CACHE_FILE.read_text(encoding="utf-8"))
+        latest_generated = _b1_cache_generation()[:19]
     except Exception:
         return False
-    latest_generated = str(latest.get("generated_at") or "")[:19]
     base_generated = str(base_payload.get("generated_at") or "")[:19]
     return bool(latest_generated and (not base_generated or latest_generated > base_generated))
 
@@ -3393,18 +3424,31 @@ def _trigger_b1_scan_unlocked(
         child_env = os.environ.copy()
         child_env["DASHBOARD_B1_PROGRESS_FILE"] = str(progress_file)
         child_env["DASHBOARD_B1_JOB_ID"] = resolved_job_id
+        child_env["PYTHONIOENCODING"] = "utf-8"
         child_env["DASHBOARD_B1_REQUIRE_READY_CACHE"] = (
             "1" if require_ready_cache else "0"
         )
-        result = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            timeout=B1_SCAN_TIMEOUT_SECONDS,
-            env=child_env,
-        )
+        # Full scan context can exceed 100 MiB. A pipe collected by run() keeps
+        # bytes, decoded stdout, parsed context and serialization alive at once.
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as scan_output:
+            result = subprocess.run(
+                args,
+                stdout=scan_output,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                timeout=B1_SCAN_TIMEOUT_SECONDS,
+                env=child_env,
+            )
+            if result.returncode == 0:
+                scan_output.seek(0)
+                # Retain the historical injected-runner contract in tests and
+                # integrations; the production subprocess writes to the file.
+                data = json.loads(result.stdout) if result.stdout else json.load(scan_output)
+            elif not result.stdout:
+                scan_output.seek(0)
+                result.stdout = scan_output.read(4096)
         if result.returncode == 0:
-            data = json.loads(result.stdout)
             items = _candidate_rows(data, "items", "candidates")
             candidates = _candidate_rows(data, "candidates", "items")
             trade_items = _candidate_rows(data, "trade_items", "items", "candidates")
@@ -3647,11 +3691,26 @@ def _finish_b1_full_scan(
     }
     terminal.setdefault("job_id", job_id)
     terminal["running"] = False
+    try:
+        write_json_cache(B1_CACHE_FILE.with_name("b1_scan_join_result.json"), terminal)
+        retained_result = None
+        result_on_disk = True
+    except (OSError, TypeError, ValueError) as exc:
+        # The original caller still receives its result; joiners fail closed
+        # instead of retaining a full-market context for the process lifetime.
+        retained_result = {
+            "job_id": job_id,
+            "error": f"选股结果暂存失败：{type(exc).__name__}",
+            "error_code": "joined_scan_result_unavailable",
+            "running": False,
+        }
+        result_on_disk = False
     with B1_FULL_SCAN_CONDITION:
         B1_FULL_SCAN_LAST_RESULT.clear()
         B1_FULL_SCAN_LAST_RESULT.update({
             "job_id": job_id,
-            "result": terminal,
+            "result": retained_result,
+            "result_on_disk": result_on_disk,
             "finished_at": _b1_schedule_now_text(),
         })
         if str(B1_FULL_SCAN_ACTIVE.get("job_id") or "") == job_id:
@@ -3683,6 +3742,15 @@ def wait_for_b1_scan_result(
         with B1_FULL_SCAN_CONDITION:
             last_job_id = str(B1_FULL_SCAN_LAST_RESULT.get("job_id") or "")
             last_result = B1_FULL_SCAN_LAST_RESULT.get("result")
+            if target_job_id and last_job_id == target_job_id and B1_FULL_SCAN_LAST_RESULT.get("result_on_disk"):
+                stored = read_json_cache(B1_CACHE_FILE.with_name("b1_scan_join_result.json"), None)
+                if isinstance(stored, dict) and str(stored.get("job_id") or "") == target_job_id:
+                    return stored
+                raise PracticeCycleError(
+                    "已完成选股扫描的暂存结果不可读或任务不匹配",
+                    code="joined_scan_result_unavailable",
+                    stage="waiting_for_scan",
+                )
             if (
                 target_job_id
                 and last_job_id == target_job_id
@@ -4188,11 +4256,7 @@ def start_practice_manual_cycle() -> dict[str, Any]:
 
 def b1_cache_generated_for_slot(slot_key: str) -> bool:
     try:
-        if not B1_CACHE_FILE.exists():
-            return False
-        generated_at = (
-            json.loads(B1_CACHE_FILE.read_text(encoding="utf-8")).get("generated_at") or ""
-        )[:16]
+        generated_at = _b1_cache_generation()[:16]
         return generated_at == slot_key
     except Exception:
         return False

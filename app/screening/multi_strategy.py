@@ -39,8 +39,10 @@ import json
 import os
 import re
 import shlex
+import shutil
 import statistics
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -1676,18 +1678,6 @@ def write_outputs(
 ) -> None:
     """Write latest caches and one bounded multi-strategy history."""
     B1_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    serialized = json_str or json.dumps(payload, ensure_ascii=False, indent=2)
-
-    # Multi-strategy cache (primary)
-    tmp_ms = MULTI_STRATEGY_CACHE.with_suffix(MULTI_STRATEGY_CACHE.suffix + ".new")
-    tmp_ms.write_text(serialized + "\n", encoding="utf-8")
-    tmp_ms.replace(MULTI_STRATEGY_CACHE)
-
-    # B1 cache (backward compat for dashboard/现有pipeline)
-    tmp_b1 = B1_CACHE_FILE.with_suffix(B1_CACHE_FILE.suffix + ".new")
-    tmp_b1.write_text(serialized + "\n", encoding="utf-8")
-    tmp_b1.replace(B1_CACHE_FILE)
-
     # Primary archive. The former B1 history was an identical compatibility
     # copy and is removed by the bounded cleanup below.
     safe_ts = str(generated_at).replace(":", "-").replace(" ", "_")
@@ -1695,9 +1685,25 @@ def write_outputs(
     d = MULTI_STRATEGY_HISTORY / date_part
     d.mkdir(parents=True, exist_ok=True)
     f = d / f"{safe_ts}.json"
-    ft = f.with_suffix(f.suffix + ".new")
-    ft.write_text(serialized + "\n", encoding="utf-8")
-    ft.replace(f)
+    # Serialize once to disk, then copy in bounded chunks. Keep all three
+    # snapshots identical even if another producer replaces a latest cache.
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as serialized:
+        if json_str is not None:
+            serialized.write(json_str)
+        else:
+            json.dump(payload, serialized, ensure_ascii=False, indent=2)
+        serialized.write("\n")
+        for target in (MULTI_STRATEGY_CACHE, B1_CACHE_FILE, f):
+            temporary = target.with_name(
+                f".{target.name}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+            )
+            try:
+                serialized.seek(0)
+                with temporary.open("w", encoding="utf-8") as stream:
+                    shutil.copyfileobj(serialized, stream, length=1024 * 1024)
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
 
     # The Dashboard polls this bounded read model instead of the full scan.
     write_practice_candidates_cache(
@@ -2341,7 +2347,8 @@ def main():
             NIUONE_MAINLINE_SUMMARY_CACHE,
             output,
         )
-        print(json.dumps(output, ensure_ascii=False, indent=2))
+        json.dump(output, sys.stdout, ensure_ascii=False, indent=2)
+        sys.stdout.write("\n")
         print(
             "  Independent theme-strength cache updated: "
             f"generated_at={generated_at} themes={niuone_context.get('theme_count')} "
@@ -2849,16 +2856,16 @@ def main():
         output["zettaranc_context"] = {
             "industry_money_flow": sector_tide_flow_rows,
         }
-    json_str = json.dumps(output, ensure_ascii=False, indent=2)
     report_scan_progress("persisting", stage_label="正在保存本轮候选结果")
-    print(json_str)
     if niuone_context is not None:
         write_niuone_mainline_cache(NIUONE_MAINLINE_CACHE, output)
         write_niuone_mainline_summary_cache(
             NIUONE_MAINLINE_SUMMARY_CACHE,
             output,
         )
-    write_outputs(output, generated_at, json_str=json_str)
+    write_outputs(output, generated_at)
+    json.dump(output, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
     report_scan_progress(
         "completed",
         stage_label="选股扫描已完成",
