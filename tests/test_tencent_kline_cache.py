@@ -115,6 +115,7 @@ class TencentKlineCacheTests(unittest.TestCase):
         verify=lambda b:cache._unit_factor_dates(b,"sh600001")
         self.assertEqual(verify(body(records)),("2025-01-02","1900-01-01"))
         for blob in (body(records,symbol="sz000001"),body(records,3),body(records[:1]),body(records[::-1]),
+                     body([{**records[0],"offset":"2"},records[1]]),
                      body([records[0],records[0]]),body([records[0],{"d":"1900-01-01","f":"1.00000000000000000001"}]),
                      body(records,tail="/* x */ invalid()"),b'var sh600001qfq={',b'x'*262145):
             with self.subTest(raw=blob[:35]):

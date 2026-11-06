@@ -205,6 +205,8 @@ def _unit_factor_dates(raw: bytes, symbol: str) -> tuple[str, ...]:
             return ()
         dates = []
         for row in rows:
+            if not isinstance(row,dict) or set(row) != {"d","f"}:
+                return ()
             factor, stamp = row["f"], row["d"]
             if not isinstance(factor,str) or not re.fullmatch(r"\d{1,20}(?:\.\d{1,40})?",factor) or Decimal(factor) != 1:
                 return ()
