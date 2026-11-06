@@ -272,6 +272,8 @@ When the holding fast cycle is enabled, the Dashboard loads only current positio
 
 A-share auction, midday, and close report process limits are the larger of their original timeout and the configured model-summary deadline plus 120 seconds of data-preparation headroom, capped at 1800 seconds. Disabling model summaries retains the original limit. A 300-second model deadline therefore permits a 420-second report process rather than being cut off after 180 seconds. Trade-signal freshness and automatic-exit task limits are unchanged.
 
+Market reports and account tasks run on separate serial workers. While a report waits or retries, automatic exits and closing equity snapshots remain eligible at their scheduled times. Evaluation starts after the preceding account result is persisted. Each job is claimed once per scheduled minute; an automatic exit that misses its execution window is recorded as failed.
+
 `DASHBOARD_US_MARKET_SUMMARY_ENABLED` defaults to `1`. Disable the standalone overnight US summary in the market-monitoring settings group (`0`) to skip that report on subsequent scheduler cycles. A-share reports and trading market analysis remain enabled.
 
 Local automatic exits are also invoked by the separate Cron Scheduler process at dedicated times. Structural stops, Sector Tide deterioration, strategy time boxes, 2R, and 2 ATR remain discrete checks rather than tick-by-tick monitoring. Both the Dashboard and Cron Scheduler processes must be running for the full lifecycle.
