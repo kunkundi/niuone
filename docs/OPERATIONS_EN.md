@@ -14,6 +14,8 @@ Sell notification headings emphasize the fraction of the stock's entire pre-sale
 
 Legacy providers without HTTP timeout parameters run in isolated workers: sector rows have a 20-second hard deadline and the full hot-stock fetch has 45 seconds. Cross-process leases prevent duplicate fetches for the same cache. Timeouts terminate workers and release leases instead of leaving background threads. Sector data retains its existing Tencent industry-index fallback with a source warning. If every provider is unusable, retain explicitly stale snapshots instead of overwriting valid data with empty rankings.
 
+Industry flows first use Eastmoney's official board-chart snapshot (`dataapi/bkzj/getbkzj`), checking board identities, total coverage, main net amounts (`f62`) and source times (`f124`). The paginated quote routes provide fallback within the same 30-second budget. Lunch-hour freshness is measured against the morning close; failed refreshes retain the last valid ranking with its source status. If prior-close daily index data is unavailable, the turnover comparison can use the actual sum of complete five-minute bars for both indexes on the exact previous exchange session.
+
 ## 1. Directory Conventions
 
 ```text

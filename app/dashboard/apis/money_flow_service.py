@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, time as clock_time, timedelta
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlencode
@@ -45,6 +45,9 @@ CACHE_TTL = 60
 # reliable for server-side clients than the browser-oriented push2 hostname.
 EASTMONEY_URL = "https://push2delay.eastmoney.com/api/qt/clist/get"
 EASTMONEY_FALLBACK_URL = "https://push2.eastmoney.com/api/qt/clist/get"
+# The official industry ranking page renders its chart from this same-origin
+# endpoint. It can return the entire board universe, including source clocks.
+EASTMONEY_CHART_URL = "https://data.eastmoney.com/dataapi/bkzj/getbkzj"
 SOURCE_NAME = "东方财富行业板块主力净额"
 SOURCE_URL = "https://data.eastmoney.com/bkzj/hy.html"
 METRIC_NAME = "industry_main_net_flow"
@@ -112,21 +115,26 @@ def _read_current_day_cache(
 
 def _compute_current_day() -> dict[str, Any]:
     payload = _compute()
+    now = _beijing_now()
     if (
         _is_current_day_payload(payload)
         and payload.get("inflow")
         and payload.get("outflow")
     ):
+        observed = datetime.strptime(payload['generated_at'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=BEIJING_TZ)
+        if not _source_clock_usable(observed, now):
+            raise RuntimeError('industry main-flow snapshot is older than the active session')
         return payload
 
-    now = _beijing_now()
     retained_day = market_retention_date_key(now)
     generated_day = str(payload.get("generated_at") or "")[:10]
     if (
         now.hour >= MARKET_RETENTION_ROLLOVER_HOUR
         and generated_day != retained_day
     ):
-        return _empty_payload()
+        retained = _read_current_day_cache(CACHE_PATH, None)
+        if not retained or not (retained.get('inflow') and retained.get('outflow')):
+            return _empty_payload()
 
     raise RuntimeError(
         "industry main-flow refresh is not usable: "
@@ -159,6 +167,7 @@ def _download_json(
     curl_path: str | None = None,
     validate_payload: Callable[[dict[str, Any]], None] | None = None,
     fallback_urls: tuple[str, ...] = (),
+    attempts: int = MAX_REQUEST_ATTEMPTS,
 ) -> dict[str, Any]:
     """Download one bounded JSON response with a short retry budget.
 
@@ -170,7 +179,7 @@ def _download_json(
     curl = curl_path if curl_path is not None else shutil.which("curl")
     last_error: Exception | None = None
     urls = (url, *fallback_urls)
-    for attempt in range(MAX_REQUEST_ATTEMPTS):
+    for attempt in range(min(MAX_REQUEST_ATTEMPTS, attempts)):
         deadline = _SNAPSHOT_DEADLINE.get()
         remaining = REQUEST_TIMEOUT_SECONDS if deadline is None else min(
             REQUEST_TIMEOUT_SECONDS, deadline - time.monotonic()
@@ -223,7 +232,7 @@ def _download_json(
             return payload
         except Exception as exc:
             last_error = exc
-            if attempt < len(REQUEST_RETRY_DELAYS_SECONDS):
+            if attempt + 1 < min(MAX_REQUEST_ATTEMPTS, attempts):
                 delay = REQUEST_RETRY_DELAYS_SECONDS[attempt]
                 if deadline is not None and time.monotonic() + delay >= deadline:
                     raise TimeoutError("industry main-flow snapshot deadline exceeded") from exc
@@ -245,7 +254,55 @@ def _validate_page_payload(payload: dict[str, Any]) -> None:
         raise RuntimeError("industry main-flow response has no usable rows")
 
 
+def _source_clock_usable(observed: datetime, now: datetime) -> bool:
+    if observed.date().isoformat() != market_retention_date_key(now) or observed > now + timedelta(minutes=1):
+        return False
+    if observed.date() != now.date() or now.time() < clock_time(9, 30):
+        return True
+    comparison = min(now, now.replace(hour=15, minute=0, second=0, microsecond=0))
+    if clock_time(11, 30) < now.time() < clock_time(13):
+        comparison = now.replace(hour=11, minute=30, second=0, microsecond=0)
+    return observed >= comparison - timedelta(minutes=5)
+
+
+def _validate_chart_payload(payload: dict[str, Any]) -> None:
+    _validate_page_payload(payload)
+    data = payload['data']
+    rows = data['diff']
+    total = _finite_number(data.get('total'))
+    if total != len(rows) or not MIN_USABLE_ROWS <= len(rows) <= PAGE_SIZE * MAX_PAGES:
+        raise ValueError('industry chart has incomplete coverage')
+    keys = set()
+    now = _beijing_now()
+    if payload.get('rc', 0) != 0:
+        raise ValueError('industry chart returned an upstream error')
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError('industry chart row is invalid')
+        code = str(row.get('f12') or '').strip()
+        stamp = _finite_number(row.get('f124'))
+        if (not code.startswith('BK') or not code[2:].isdigit() or code in keys
+                or not str(row.get('f14') or '').strip() or _finite_number(row.get('f62')) is None):
+            raise ValueError('industry chart identity or main net amount is invalid')
+        if stamp is None or not 0 < stamp <= now.timestamp() + 60:
+            raise ValueError('industry chart source time is invalid')
+        if not _source_clock_usable(datetime.fromtimestamp(stamp, tz=BEIJING_TZ), now):
+            raise ValueError('industry chart source time is stale')
+        keys.add(code)
+
+
 def _fetch_page(page: int) -> tuple[list[dict[str, Any]], int]:
+    if page == 1:
+        # Request exactly the same f62 amounts and accompanying fields as the
+        # paginated quote route. Only a complete, dated response wins.
+        chart_fields = ','.join(['f62', *(f for f in FIELDS.split(',') if f not in {'f62', 'f12', 'f14'})])
+        url = EASTMONEY_CHART_URL + '?' + urlencode({'code': 'm:90+s:4', 'key': chart_fields})
+        try:
+            payload = _download_json(url, validate_payload=_validate_chart_payload, attempts=1)
+            rows = payload['data']['diff']
+            return rows, len(rows)
+        except (RuntimeError, ValueError, TimeoutError):
+            pass  # The paginated routes share the remaining snapshot deadline.
     query = urlencode({
         "pn": page,
         "pz": PAGE_SIZE,
@@ -282,11 +339,9 @@ def _source_time(rows: list[dict[str, Any]]) -> str:
         for row in rows
         if (value := _finite_number(row.get("f124"))) is not None and value > 0
     ]
-    moment = (
-        datetime.fromtimestamp(max(timestamps), tz=BEIJING_TZ)
-        if timestamps
-        else datetime.now(BEIJING_TZ)
-    )
+    if not timestamps:
+        raise _IncompleteSnapshotError('industry main-flow source time is missing')
+    moment = datetime.fromtimestamp(max(timestamps), tz=BEIJING_TZ)
     return moment.replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -321,7 +376,7 @@ def _normalize_row(raw: dict[str, Any]) -> dict[str, Any] | None:
 def _compute_once() -> dict[str, Any]:
     first_rows, total = _fetch_page(1)
     raw_rows = list(first_rows)
-    page_count = min(MAX_PAGES, max(1, math.ceil(total / PAGE_SIZE)))
+    page_count = 1 if len(first_rows) >= total else min(MAX_PAGES, max(1, math.ceil(total / PAGE_SIZE)))
     for page in range(2, page_count + 1):
         page_rows, _ = _fetch_page(page)
         raw_rows.extend(page_rows)

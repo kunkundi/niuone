@@ -17,6 +17,7 @@ from .eastmoney_turnover import (
     FALLBACK_SOURCE_NAME as TURNOVER_FALLBACK_SOURCE_NAME,
     FALLBACK_SOURCE_URL as TURNOVER_FALLBACK_SOURCE_URL,
     fetch_market_turnover_estimate,
+    previous_close_from_cached_profile,
 )
 
 
@@ -145,7 +146,7 @@ def fetch_previous_market_turnover(
             or now < float(cached.get("retry_after") or 0)
         ):
             value = cached.get("value")
-            return dict(value) if isinstance(value, dict) else None
+            return dict(value) if isinstance(value, dict) else previous_close_from_cached_profile(before_date)
         try:
             daily_rows: list[dict[str, float]] = []
             with ThreadPoolExecutor(max_workers=len(PREVIOUS_TURNOVER_SECIDS)) as pool:
@@ -170,6 +171,10 @@ def fetch_previous_market_turnover(
             _PREVIOUS_TURNOVER_CACHE[cache_key] = {"value": value, "retry_after": 0.0}
             return dict(value)
         except Exception as exc:
+            recovered = previous_close_from_cached_profile(before_date)
+            if recovered is not None:
+                _PREVIOUS_TURNOVER_CACHE[cache_key] = {"value": recovered, "retry_after": 0.0}
+                return dict(recovered)
             _PREVIOUS_TURNOVER_CACHE[cache_key] = {
                 "value": None,
                 "retry_after": now + PREVIOUS_TURNOVER_RETRY_SECONDS,
