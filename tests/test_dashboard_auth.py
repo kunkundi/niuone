@@ -5880,21 +5880,28 @@ process.stdout.write(JSON.stringify({
             dashboard.API_STALE_WHILE_REFRESH_SECONDS = original_window
 
     def test_cold_api_cache_is_seeded_from_durable_snapshot_as_stale(self):
+        from functools import partial
+        from unittest.mock import patch
+
         snapshot = self.tmp_path / 'sectors.json'
         snapshot.write_text(
             json.dumps({'generated_at': '2026-07-11 09:30:00', 'items': [{'name': '银行'}]}),
             encoding='utf-8',
         )
-        before = dashboard.time.time()
-        seeded = dashboard.seed_api_cache_from_json_file('sectors', snapshot, 60)
+        clock = iter((1000.0, 1002.0, 1002.0))  # read, publish, repeat immediately
+        seed = partial(dashboard.response_cache_impl.seed_from_json_file, now=lambda: next(clock))
+        with patch.object(dashboard.response_cache_impl, "seed_from_json_file", seed):
+            seeded = dashboard.seed_api_cache_from_json_file('sectors', snapshot, 60)
+            repeated = dashboard.seed_api_cache_from_json_file('sectors', snapshot, 60)
 
         self.assertTrue(seeded)
         cached = dashboard.API_RESPONSE_CACHE['sectors']
         payload = json.loads(cached['payload'])
         self.assertTrue(payload['stale_cache'])
         self.assertEqual(payload['items'], [{'name': '银行'}])
-        self.assertLessEqual(cached['ts'], before - 60)
-        self.assertFalse(dashboard.seed_api_cache_from_json_file('sectors', snapshot, 60))
+        self.assertGreater(cached['ts'], 1000.0 - 60)
+        self.assertLess(cached['ts'], 1002.0 - 60)
+        self.assertFalse(repeated)
 
     def test_durable_snapshot_revives_cache_older_than_stale_window(self):
         snapshot = self.tmp_path / 'sectors-recovery.json'
