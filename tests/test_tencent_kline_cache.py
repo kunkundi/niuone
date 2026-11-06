@@ -9,6 +9,10 @@ from unittest import mock
 from app.market_data import tencent_kline_cache as cache
 
 
+def patch_factor(value):
+    return mock.patch.object(cache, "_fetch_unit_factor_dates", return_value=value)
+
+
 def sample_rows(last_day: str = "2026-07-28", count: int = 60) -> list[dict]:
     year, month, day = [int(value) for value in last_day.split("-")]
     rows = []
@@ -103,6 +107,40 @@ class TencentKlineCacheTests(unittest.TestCase):
         self.assertEqual(rows[-1]["close"], 10.3)
         self.assertIn("secid=1.600519", urlopen.call_args.args[0].full_url)
         self.assertIn("fqt=1", urlopen.call_args.args[0].full_url)
+
+    def test_unit_factor_certificate_requires_identity_complete_counts_and_exact_ones(self):
+        records=[{"d":"2025-01-02","f":"1.0000000000000000"},{"d":"1900-01-01","f":"1"}]
+        def body(rows, total=None, symbol="sh600001", tail="/* provider */"):
+            return ("var "+symbol+"qfq="+json.dumps({"total":len(rows) if total is None else total,"data":rows})+"; "+tail).encode()
+        verify=lambda b:cache._unit_factor_dates(b,"sh600001")
+        self.assertEqual(verify(body(records)),("2025-01-02","1900-01-01"))
+        for blob in (body(records,symbol="sz000001"),body(records,3),body(records[:1]),body(records[::-1]),
+                     body([records[0],records[0]]),body([records[0],{"d":"1900-01-01","f":"1.00000000000000000001"}]),
+                     body(records,tail="/* x */ invalid()"),b'var sh600001qfq={',b'x'*262145):
+            with self.subTest(raw=blob[:35]):
+                self.assertEqual(verify(blob),())
+
+    def test_generic_tencent_prices_require_an_independent_matching_factor_window(self):
+        import io
+        row=["2025-02-04","10","10.12","10.25","9.75","2345"]
+        payload=json.dumps({"code":0,"data":{"sh600001":{"day":[row]}}}).encode()
+        for factors,valid in [(("2025-01-02","1900-01-01"),True),((),False),
+                              (("2025-03-01","1900-01-01"),False)]:
+            with self.subTest(factors=factors), patch_factor(factors) as check_factor, (
+                mock.patch.object(cache.urllib.request,"urlopen",side_effect=lambda *_a,**_k:io.BytesIO(payload))
+            ):
+                bars=cache.fetch_tencent_daily_klines("sh600001")
+                self.assertEqual(bool(bars),valid)
+                if valid:self.assertEqual((bars[0]["close"],bars[0]["volume"]),(10.12,2345))
+                check_factor.assert_called_once()
+
+    def test_later_named_qfq_series_has_priority_when_generic_cannot_be_verified(self):
+        import io
+        def reply(key,close):
+            return io.BytesIO(json.dumps({"data":{"sh600001":{key:[["2025-02-04","10",close,"11","9","100"]]}}}).encode())
+        with mock.patch.object(cache.urllib.request,"urlopen",side_effect=[reply("day","10.25"),reply("qfqday","10.10")]),patch_factor(()) as proof:
+            self.assertEqual(cache.fetch_tencent_daily_klines("sh600001")[0]["close"],10.10)
+            proof.assert_called_once()
 
     def test_multi_source_fetch_falls_back_from_tencent_to_eastmoney(self):
         expected = sample_rows()

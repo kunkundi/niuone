@@ -17,7 +17,8 @@ import time
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -186,6 +187,49 @@ def normalize_kline_rows(rows: Iterable[Mapping[str, Any]], *, limit: int = DEFA
     return ordered[-max(1, int(limit or DEFAULT_KLINE_COUNT)):]
 
 
+def _unit_factor_dates(raw: bytes, symbol: str) -> tuple[str, ...]:
+    """Accept only a complete, security-bound forward-factor history of exact ones."""
+    if not raw or len(raw) > 256 * 1024 or not re.fullmatch(r"(sh|sz)\d{6}", symbol):
+        return ()
+    try:
+        text = raw.decode("utf-8")
+        prefix = re.match(r"\s*var\s+" + re.escape(symbol) + r"qfq\s*=\s*", text)
+        if not prefix:
+            return ()
+        data, end = json.JSONDecoder().raw_decode(text, prefix.end())
+        tail = text[end:].strip().removeprefix(";").strip()
+        if tail and not (tail.startswith("/*") and tail.find("*/") == len(tail) - 2):
+            return ()
+        rows = data["data"]
+        if not isinstance(rows,list) or type(data["total"]) is not int or not 2 <= len(rows) == data["total"] <= 4096:
+            return ()
+        dates = []
+        for row in rows:
+            factor, stamp = row["f"], row["d"]
+            if not isinstance(factor,str) or not re.fullmatch(r"\d{1,20}(?:\.\d{1,40})?",factor) or Decimal(factor) != 1:
+                return ()
+            if not isinstance(stamp,str) or date.fromisoformat(stamp).isoformat()!=stamp:
+                return ()
+            dates.append(stamp)
+        if dates != sorted(set(dates), reverse=True) or dates[-1] != "1900-01-01":
+            return ()
+        return tuple(dates)
+    except (UnicodeError, ValueError, TypeError, KeyError):
+        return ()
+
+
+def _fetch_unit_factor_dates(symbol: str, timeout_seconds: float) -> tuple[str, ...]:
+    req = urllib.request.Request(
+        f"https://finance.sina.com.cn/realstock/company/{symbol}/qfq.js",
+        headers={"Referer": "https://finance.sina.com.cn/", "User-Agent": USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=min(6.0,max(1.0,timeout_seconds))) as response:
+            return _unit_factor_dates(response.read(256*1024+1), symbol)
+    except (OSError, ValueError):
+        return ()
+
+
 def fetch_tencent_daily_klines(
     symbol: str,
     count: int = DEFAULT_KLINE_COUNT,
@@ -203,6 +247,7 @@ def fetch_tencent_daily_klines(
     query = urllib.parse.urlencode({
         "param": f"{normalized_symbol},day,,,{bounded_count},qfq",
     })
+    unit_dates: tuple[str, ...] | None = None
     for base_url in TENCENT_KLINE_URLS:
         request = urllib.request.Request(
             f"{base_url}?{query}",
@@ -225,7 +270,14 @@ def fetch_tencent_daily_klines(
             continue
         data = payload.get("data")
         symbol_payload = data.get(normalized_symbol) if isinstance(data, Mapping) else None
-        raw_rows = symbol_payload.get("qfqday") if isinstance(symbol_payload, Mapping) else None
+        if not isinstance(symbol_payload, Mapping):
+            continue
+        raw_rows = symbol_payload.get("qfqday")
+        generic = not raw_rows
+        if generic:
+            raw_rows = symbol_payload.get("day")
+            if not raw_rows or payload.get("code",0) != 0 or symbol_payload.get("hfqday"):
+                continue
         parsed = []
         for item in raw_rows or []:
             if not isinstance(item, list) or len(item) < 6:
@@ -239,8 +291,16 @@ def fetch_tencent_daily_klines(
                 "volume": item[5],
             })
         normalized = normalize_kline_rows(parsed, limit=bounded_count)
-        if normalized:
-            return normalized
+        if not normalized:
+            continue
+        if generic:
+            # Tencent can label unchanged prices "day" even on a qfq request.
+            # Use the original numbers only with an independent identity proof.
+            if unit_dates is None:
+                unit_dates = _fetch_unit_factor_dates(normalized_symbol,timeout_seconds)
+            if not unit_dates or unit_dates[-2] > normalized[0]["date"] or unit_dates[0] > normalized[-1]["date"]:
+                continue
+        return normalized
     return []
 
 

@@ -202,6 +202,8 @@ Industry flows first use Eastmoney's official board-chart snapshot (`dataapi/bkz
 
 ### 3.3 Practice-Strategy Scheduling and Process Ownership
 
+A Tencent forward-adjusted request can return only `day`. For this case, the warmer checks Sina's public forward-factor table for the same security: its count, baseline and date coverage must be valid, and every factor must be exactly one. Only then does it retain the original OHLCV. Otherwise it continues to explicitly adjusted feeds. Existing history-length and freshness checks still apply.
+
 Prewarming measures valid daily bars against the exact Shanghai and Shenzhen target list. An intraday bar from the previous session needs a fresh fetch. The Shanghai main and STAR board listings and the Shenzhen A-share listing are fetched concurrently, checked against the exchange row counts, and shared for the day. Each scheduled scan keeps its own slot and signal timestamp. Managed scans publish their caches from one verified archive. Minute theme refreshes read historical bars in batches and rank all eligible securities together.
 
 Scheduler polling reuses generation timestamps by file version. Joinable results live in `cron/output/b1_scan_join_result.json`. For strict-forward evaluation, archive the previous protocol and establish a new cohort boundary when switching to these changes; retain the original account and fill history.
