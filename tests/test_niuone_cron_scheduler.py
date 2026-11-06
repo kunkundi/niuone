@@ -168,6 +168,21 @@ class NiuoneCronSchedulerTests(unittest.TestCase):
         self.assertNotIn("DASHBOARD_US_RATING_CRON", {job.env_name for job in scheduler.JOBS})
         self.assertFalse(hasattr(scheduler, "us_features_enabled"))
 
+    def test_classification_recovery_is_a_bounded_after_close_job(self):
+        scheduler = load_scheduler_module()
+        job = next(job for job in scheduler.JOBS if job.env_name=="DASHBOARD_MARKET_CLASSIFICATION_CRON")
+        self.assertEqual(job.command, ("refresh_market_classifications.py",))
+        self.assertEqual(job.default_expr, "40 16 * * 1-5")
+        self.assertEqual(job.timeout_seconds, 210)
+        self.assertEqual(scheduler.normalize_job_expr(job,"17:10"), "10 17 * * 1-5")
+        from app.dashboard import server as dashboard
+        self.assertIn(job.env_name, dashboard.ADMIN_VISIBLE_ENV_NAMES)
+        self.assertEqual(dashboard.ENV_CONFIG_BY_NAME[job.env_name]["effect"], "next_run")
+        self.assertEqual(dashboard.normalize_business_updates({job.env_name:"17:10"})[job.env_name], "10 17 * * 1-5")
+        for early in ("13:30", "5 9 * * 1-5"):
+            with self.subTest(time=early), self.assertRaisesRegex(ValueError, "15:00"):
+                dashboard.normalize_business_updates({job.env_name:early})
+
     def test_us_market_summary_runs_at_8_on_weekdays(self):
         scheduler = load_scheduler_module()
         job = next(job for job in scheduler.JOBS if job.env_name == "DASHBOARD_US_MARKET_SUMMARY_CRON")

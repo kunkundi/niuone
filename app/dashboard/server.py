@@ -897,6 +897,7 @@ ENV_CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"name": "DASHBOARD_MARKET_AUCTION_CRON", "label": "盘前竞价监控时间", "group": "盘面监控生产时间点", "kind": "cron_time", "default": "25 9 * * 1-5", "effect": "next_run"},
     {"name": "DASHBOARD_MARKET_MIDDAY_CRON", "label": "午盘监控时间", "group": "盘面监控生产时间点", "kind": "cron_time", "default": "40 11 * * 1-5", "effect": "next_run"},
     {"name": "DASHBOARD_MARKET_CLOSE_CRON", "label": "盘后监控时间", "group": "盘面监控生产时间点", "kind": "cron_time", "default": "10 15 * * 1-5", "effect": "next_run"},
+    {"name": "DASHBOARD_MARKET_CLASSIFICATION_CRON", "label": "盘后行业与概念分类刷新时间", "group": "盘面监控生产时间点", "kind": "cron_time", "default": "40 16 * * 1-5", "effect": "next_run"},
     {"name": "A_SHARE_MODEL_SUMMARY_ENABLED", "label": "A股盘面模型总结", "group": "盘面监控生产时间点", "kind": "bool", "default": "1", "effect": "next_run", "bool_no_default": "1"},
     {"name": "A_SHARE_MODEL_SUMMARY_MODEL", "label": "盘面总结模型（A股与隔夜美股）", "group": "盘面监控生产时间点", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "A_SHARE_MODEL_SUMMARY_STREAM_MODE", "label": "盘面总结流式模式", "group": "盘面监控生产时间点", "kind": "stream_mode", "default": "auto", "effect": "next_run"},
@@ -1016,6 +1017,7 @@ ADMIN_VISIBLE_ENV_NAMES = [
     "DASHBOARD_MARKET_AUCTION_CRON",
     "DASHBOARD_MARKET_MIDDAY_CRON",
     "DASHBOARD_MARKET_CLOSE_CRON",
+    "DASHBOARD_MARKET_CLASSIFICATION_CRON",
     "A_SHARE_MODEL_SUMMARY_ENABLED",
     "A_SHARE_MODEL_SUMMARY_DEADLINE_SECONDS",
     "A_SHARE_MODEL_SUMMARY_REQUEST_TIMEOUT_SECONDS",
@@ -6992,6 +6994,7 @@ CRON_CONFIG_NAMES = {
     "DASHBOARD_MARKET_AUCTION_CRON",
     "DASHBOARD_MARKET_MIDDAY_CRON",
     "DASHBOARD_MARKET_CLOSE_CRON",
+    "DASHBOARD_MARKET_CLASSIFICATION_CRON",
     "DASHBOARD_NIUONE_FORWARD_PREFLIGHT_CRON",
     "DASHBOARD_NIUONE_EQUITY_SNAPSHOT_CRON",
     "DASHBOARD_NIUONE_FORWARD_CRON",
@@ -7002,6 +7005,7 @@ CRON_TIME_CONFIGS = {
     "DASHBOARD_MARKET_AUCTION_CRON": {"day_label": "周一至周五"},
     "DASHBOARD_MARKET_MIDDAY_CRON": {"day_label": "周一至周五"},
     "DASHBOARD_MARKET_CLOSE_CRON": {"day_label": "周一至周五"},
+    "DASHBOARD_MARKET_CLASSIFICATION_CRON": {"day_label": "A股交易日收盘后"},
     "DASHBOARD_NIUONE_FORWARD_PREFLIGHT_CRON": {"day_label": "A股交易日"},
     "DASHBOARD_NIUONE_EQUITY_SNAPSHOT_CRON": {"day_label": "A股交易日"},
     "DASHBOARD_NIUONE_FORWARD_CRON": {"day_label": "A股交易日"},
@@ -7264,11 +7268,18 @@ def normalize_cron_update(name: str, value: str) -> str:
         return ""
     if len(raw.split()) == 5:
         validate_cron_expr(raw)
+        if name == "DASHBOARD_MARKET_CLASSIFICATION_CRON":
+            from app.automation.cron import expand_field
+            hours = expand_field(raw.split()[1], 0, 23)
+            if not hours or min(hours) < 15:
+                raise ValueError("行业与概念分类刷新时间应在北京时间 15:00 或之后")
         return raw
     hhmm = normalize_hhmm(raw)
     if not hhmm:
         raise ValueError(f"{ENV_CONFIG_BY_NAME.get(name, {}).get('label', name)} 请使用北京时间 HH:MM，例如 09:25")
     hour, minute = [int(x) for x in hhmm.split(":", 1)]
+    if name == "DASHBOARD_MARKET_CLASSIFICATION_CRON" and hour < 15:
+        raise ValueError("行业与概念分类刷新时间应在北京时间 15:00 或之后")
     default_expr = str(ENV_CONFIG_BY_NAME.get(name, {}).get("default") or "* * * * *")
     default_parts = default_expr.split()
     day, month, dow = default_parts[2:5] if len(default_parts) == 5 else ("*", "*", "*")

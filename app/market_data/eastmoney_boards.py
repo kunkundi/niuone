@@ -12,14 +12,17 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 try:
     from app.core.json_cache import read_json_cache, write_json_cache
+    from app.core.process_lease import FileLease
 except ImportError:  # pragma: no cover - standalone entrypoints add app/ to sys.path
     from core.json_cache import read_json_cache, write_json_cache
+    from core.process_lease import FileLease
 
 
 EASTMONEY_BOARD_URLS = (
@@ -303,11 +306,46 @@ def fetch_eastmoney_board_snapshot(
             code = _stock_code(row.get("f12")) if isinstance(row, Mapping) else ""
             if code:
                 rows_by_code[code] = row
-    captured_at = (now or datetime.now()).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    beijing = ZoneInfo("Asia/Shanghai")
+    stamp = now or datetime.now(beijing)
+    stamp = stamp.replace(tzinfo=beijing) if stamp.tzinfo is None else stamp.astimezone(beijing)
+    captured_at = stamp.strftime("%Y-%m-%d %H:%M:%S")
     return parse_eastmoney_board_payload(
         {"data": {"total": total, "diff": list(rows_by_code.values())}},
         captured_at=captured_at,
     )
+
+
+def publish_board_snapshot(path: Path, snapshot: EastmoneyBoardSnapshot) -> EastmoneyBoardSnapshot:
+    """Serialize publication by both producers; an older observation must not replace a newer one."""
+    try:
+        day = date.fromisoformat(snapshot.as_of_date).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise EastmoneyBoardError("invalid classification observation date") from exc
+    if day != snapshot.as_of_date or not snapshot.captured_at.startswith(day + " "):
+        raise EastmoneyBoardError("invalid classification observation date")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lease = FileLease(path.with_name(path.name + ".publish.lock"), stale_after_seconds=120)
+    deadline = time.monotonic() + 3
+    while not lease.acquire():
+        if time.monotonic() >= deadline:
+            raise EastmoneyBoardError("classification publication is busy")
+        time.sleep(0.05)
+    try:
+        current = read_eastmoney_board_snapshot(path)
+        if current is not None and current.captured_at >= snapshot.captured_at:
+            return current
+        archive = path.parent / "eastmoney_board_snapshots" / (snapshot.as_of_date + ".json")
+        archived = read_eastmoney_board_snapshot(archive)
+        if archived is not None and archived.captured_at >= snapshot.captured_at:
+            snapshot = archived
+        payload = snapshot.to_dict()
+        if snapshot is not archived:
+            write_json_cache(archive, payload)
+        write_json_cache(path, payload)
+        return snapshot
+    finally:
+        lease.release()
 
 
 def load_eastmoney_board_snapshot(
@@ -328,11 +366,7 @@ def load_eastmoney_board_snapshot(
                 pass
         stale = read_eastmoney_board_snapshot(path) if allow_stale else None
         try:
-            snapshot = fetcher()
-            write_json_cache(path, snapshot.to_dict())
-            archive_path = path.parent / "eastmoney_board_snapshots" / f"{snapshot.as_of_date}.json"
-            write_json_cache(archive_path, snapshot.to_dict())
-            return snapshot
+            return publish_board_snapshot(path, fetcher())
         except (
             EastmoneyBoardError,
             urllib.error.HTTPError,
