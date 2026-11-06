@@ -167,6 +167,10 @@ Sources are fetched independently under bounded concurrency and timeouts. Succes
 
 ### 3.2 Market Data and Fund-Flow Settings
 
+**Closing classification refresh.** The scheduler checks an existing Eastmoney industry/concept snapshot at 16:40 Beijing time on A-share trading days. Change `DASHBOARD_MARKET_CLASSIFICATION_CRON` under the market report schedule settings; the new time applies to the next run. For a manual run use `python3 app/entrypoints/refresh_market_classifications.py`.
+
+An existing closing snapshot for the session is reused. Recovery verifies the Shanghai and Shenzhen listings and Eastmoney's overall and per-segment totals, then requests the original `f100` industry and `f103` concepts in security-ID batches. Publication uses the observation date after identity, exchange, timestamp and coverage checks. A partial or stale response leaves the last valid snapshot and its date intact. Without a previous complete snapshot, the normal first-load path still applies.
+
 The **Market Data and Fund-Flow Settings** page groups index refresh and industry fund-flow controls:
 
 | Setting | Default | Allowed range | Application |

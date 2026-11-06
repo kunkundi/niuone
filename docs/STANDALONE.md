@@ -180,6 +180,8 @@ docker volume ls --filter label=com.docker.compose.volume=niuone-data
 
 ## 模型与数据源配置
 
+盘后行业与概念分类刷新由 Cron Scheduler 运行，默认交易日北京时间 16:40。设置页的 `DASHBOARD_MARKET_CLASSIFICATION_CRON` 可调整为其他收盘后时间，下次运行生效。任务仅更新已有分类快照，详情见[运维手册](OPERATIONS.md#32-行情与资金流设置)。
+
 NiuOne 的盘面总结和买卖决策需要接入大模型。
 
 推荐配置：
