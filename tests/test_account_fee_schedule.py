@@ -72,7 +72,10 @@ class AccountFeeTests(unittest.TestCase):
 
     def test_new_settings_are_visible_validated_and_protocol_locked(self):
         import niuone_dashboard as dashboard
-        from app.trading.niuone_forward_service import PROTOCOL_RUNTIME_SETTING_DEFAULTS
+        from app.trading.niuone_forward_service import (
+            PROTOCOL_DERIVED_RUNTIME_SETTING_NAMES, PROTOCOL_RUNTIME_SETTING_DEFAULTS,
+        )
+        self.assertEqual(len(set(PROTOCOL_RUNTIME_SETTING_DEFAULTS) | set(PROTOCOL_DERIVED_RUNTIME_SETTING_NAMES)), 59)
         for name in (FEE_PROFILE_ENV, "DASHBOARD_EXECUTION_PREFLIGHT_ENABLED"):
             self.assertIn(name, dashboard.ADMIN_VISIBLE_ENV_NAMES)
             self.assertIn(name, PROTOCOL_RUNTIME_SETTING_DEFAULTS)
