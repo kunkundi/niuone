@@ -303,15 +303,27 @@ def fetch_eastmoney_daily_klines(
     return normalize_kline_rows(parsed, limit=bounded_count)
 
 
+class IncompleteDailySeries(ValueError):
+    """All responding providers returned too few rows or an out-of-window date."""
+
+
 def fetch_a_share_daily_klines(
     symbol: str,
     count: int = DEFAULT_KLINE_COUNT,
+    *,
+    accepted_last_dates: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Fetch qfq daily bars with bounded Tencent-to-Eastmoney fallback."""
+    """Select the first same-adjustment source that also meets the warmup window."""
+    incomplete = False
     for fetcher in (fetch_tencent_daily_klines, fetch_eastmoney_daily_klines):
         rows = fetcher(symbol, count)
         if rows:
+            if accepted_last_dates and (len(rows) < 30 or rows[-1]["date"] not in accepted_last_dates):
+                incomplete = True
+                continue
             return rows
+    if incomplete:
+        raise IncompleteDailySeries("insufficient_or_stale_series")
     return []
 
 
@@ -778,7 +790,12 @@ def prewarm_kline_cache(
         last_error = "empty_response"
         for attempt in range(max(1, int(max_attempts or 1))):
             try:
-                rows = normalize_kline_rows(active_fetcher(symbol, count), limit=count)
+                raw = (fetch_a_share_daily_klines(symbol, count, accepted_last_dates=accepted)
+                       if fetcher is None and accepted else active_fetcher(symbol, count))
+                rows = normalize_kline_rows(raw, limit=count)
+            except IncompleteDailySeries:
+                rows = []
+                last_error = 'insufficient_or_stale_series'
             except Exception as exc:
                 rows = []
                 last_error = type(exc).__name__

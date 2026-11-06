@@ -133,6 +133,32 @@ class TencentKlineCacheTests(unittest.TestCase):
         self.assertEqual(result["success_count"], 1)
         fetcher.assert_called_once_with("sh600519", cache.DEFAULT_KLINE_COUNT)
 
+    def test_warmup_continues_to_same_adjustment_backup_for_stale_or_short_primary(self):
+        valid = sample_rows("2026-07-28")
+        for first in (sample_rows("2026-07-27"), valid[-5:]):
+            with (
+                self.subTest(primary_end=first[-1]["date"]),
+                mock.patch.object(cache, "fetch_tencent_daily_klines", return_value=first),
+                mock.patch.object(cache, "fetch_eastmoney_daily_klines", return_value=valid) as backup,
+            ):
+                result = cache.fetch_a_share_daily_klines("sh600519", 120, accepted_last_dates={"2026-07-28"})
+                self.assertEqual(result, valid)
+                backup.assert_called_once_with("sh600519", 120)
+
+    def test_prewarm_preserves_previous_series_when_both_sources_are_stale(self):
+        previous = sample_rows("2026-07-27")
+        cache.store_kline_series({"sh600519": previous}, path=self.path)
+        with (
+            mock.patch.object(cache, "fetch_tencent_daily_klines", return_value=previous),
+            mock.patch.object(cache, "fetch_eastmoney_daily_klines", return_value=previous[-5:]) as backup,
+        ):
+            result = cache.prewarm_kline_cache(["sh600519"], path=self.path, workers=1, max_attempts=1,
+                        accepted_last_dates={"2026-07-28"}, target_date="2026-07-29")
+        self.assertEqual((result["success_count"],result["failure_count"]),(0,1))
+        backup.assert_called_once()
+        kept = cache.load_kline_series_map(["sh600519"], path=self.path, accepted_last_dates={"2026-07-27"})
+        self.assertEqual(kept["sh600519"][-1]["close"], previous[-1]["close"])
+
     def test_store_and_bulk_load_only_accept_fresh_completed_history(self):
         stored = cache.store_kline_series(
             {"sh600001": sample_rows(), "sz000001": sample_rows("2026-07-25")},
