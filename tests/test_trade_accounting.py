@@ -7,6 +7,7 @@ import sys
 import tempfile
 import types
 import unittest
+from contextlib import closing
 from unittest.mock import patch
 from datetime import datetime
 from pathlib import Path
@@ -868,7 +869,7 @@ class TradeAccountingTests(unittest.TestCase):
             module.init_db()
             self.assertTrue(module.record_trade(first))
             self.assertTrue(module.record_trade(duplicate))
-            with sqlite3.connect(module.DB_PATH) as connection:
+            with closing(sqlite3.connect(module.DB_PATH)) as connection:
                 row_count = connection.execute(
                     "SELECT COUNT(*) FROM trades"
                 ).fetchone()[0]
@@ -1138,7 +1139,7 @@ class TradeAccountingTests(unittest.TestCase):
                 "concurrent_sell_exceeds_available_position"
             ),
         }
-        with sqlite3.connect(db_path) as connection:
+        with closing(sqlite3.connect(db_path)) as connection, connection:
             connection.executescript("""
                 CREATE TABLE trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

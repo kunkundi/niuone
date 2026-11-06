@@ -10,6 +10,10 @@ Sell notification headings emphasize the fraction of the stock's entire pre-sale
 
 ### Account restart, fees, and operational notifications
 
+If the portfolio snapshot is missing while ledger records or a frozen account baseline exist, restore the verified snapshot for that account. Permission errors, malformed JSON and invalid balances surface without replacing the file. The decision's `timing` fields distinguish the signal timestamp, remaining model budget and elapsed request time.
+
+A pre-funded, empty account can declare its first performance session in the snapshot using `performance_start_date` (`YYYY-MM-DD`). The closing summary prefers the actual previous closing equity. When it is missing, the declared first session uses initial capital; older accounts retain their creation-date behavior.
+
 `DASHBOARD_PRACTICE_FEE_PROFILE` is frozen into `fee_schedule` when creating an account. The default `legacy` retains 0.01% commission without a minimum; the optional simulation profile `retail_025_min5` uses 0.025% with a CNY 5 minimum per order per side, plus 0.05% sell-side stamp duty and 0.001% bilateral transfer fees. Existing accounts without the field retain legacy fees; historical fills and administrator backtests retain their original assumptions. Archive the account and database learning samples before creating an account with new assumptions. Model prompts use the actual account starting cash.
 
 `DASHBOARD_EXECUTION_PREFLIGHT_ENABLED=1` supplies per-stock scan-price sizing bounds, whole-lot cash requirements including fees, and binding constraints. It reuses execution sizing and existing risk budgets. Each stock is evaluated independently; shared cash is allocated when forming the actual portfolio. Candidate selection and scoring retain their existing flow, with lifecycle/add eligibility, replacement, T+1, and fresh quotes checked at execution. Disabled by default; runtime effect.

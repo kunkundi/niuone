@@ -139,6 +139,18 @@ class OperationalNotificationTests(unittest.TestCase):
             maybe_notify_daily_summary(env, datetime(2026, 11, 6, 8, 0, tzinfo=timezone.utc))
             self.assertEqual(notify.call_args.args[1:3], ("2026-11-06", "新报告"))
 
+    def test_prefunded_account_uses_its_declared_opening_session(self):
+        state = {"created_at": "2024-04-12 16:30:00", "initial_cash": 72500,
+                 "performance_start_date": "2024-04-15", "daily_equity_history": [
+                     {"time": "2024-04-15 15:15:00", "equity": 72512.75}]}
+        report = build_daily_summary(state, "2024-04-15", "盘后报告")
+        self.assertIn("当日盈亏 +12.75元", report.text)
+        state.pop("performance_start_date")
+        self.assertIn("基准缺失", build_daily_summary(state, "2024-04-15", "盘后报告").text)
+        state["performance_start_date"] = "2024-04-15"
+        state["daily_equity_history"].append({"time": "2024-04-12 15:15:00", "equity": 72490})
+        self.assertIn("当日盈亏 +22.75元", build_daily_summary(state, "2024-04-15", "盘后报告").text)
+
     def test_daily_trade_archive_is_read_only_and_current_revision_wins(self):
         state = self.state()
         current = state["trade_log"][0]

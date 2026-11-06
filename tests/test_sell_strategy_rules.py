@@ -2962,11 +2962,15 @@ class SellStrategyRuleTests(unittest.TestCase):
                         stderr=subprocess.PIPE,
                         text=True,
                     )
-                    for _ in range(250):
+                    # Importing the full trader can exceed five seconds on a
+                    # busy single-core container. Contention starts at "ready".
+                    import_deadline = time.monotonic() + 30
+                    while time.monotonic() < import_deadline:
                         if ready_file.exists():
                             break
                         if proc.poll() is not None:
-                            break
+                            stdout, stderr = proc.communicate()
+                            self.fail(f"lock-test child exited during import: {stdout}\n{stderr}")
                         time.sleep(0.02)
                     self.assertTrue(ready_file.exists())
                     time.sleep(0.1)

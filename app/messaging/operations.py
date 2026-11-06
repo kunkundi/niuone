@@ -90,7 +90,7 @@ def notify_operation(
     severity = "关键故障" if critical or inferred_critical else "本轮运行故障"
     notification = Notification(
         event_type=f"runtime.{'recovered' if ok else 'failed'}", title=f"NiuOne {'运行恢复' if ok else severity}：{title}",
-        text="该任务已恢复成功。" if ok else f"{category}；本轮未成功，请查看管理页或服务器日志。不会因此绕过交易风控。",
+        text="该任务已恢复成功。" if ok else f"{category}；本轮未成功，请查看管理页或服务器日志。",
         metadata={"source": source},
     )
     return _deliver_guarded(state_path, f"incident:{source}", event, notification, env,
@@ -112,7 +112,7 @@ def build_daily_summary(state: Mapping[str, Any], day: str, report: str) -> Noti
                 and float(item.get("equity") or 0) > 0]
     if previous:
         opening = float(max(previous, key=lambda item: str(item.get("time") or ""))["equity"])
-    elif str(state.get("created_at") or "")[:10] == day:
+    elif str(state.get("performance_start_date") or state.get("created_at") or "")[:10] == day:
         opening = initial
     else:
         opening = None

@@ -28,7 +28,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, time as dtime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -1289,15 +1289,63 @@ def build_strategy_performance(state: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def load_state() -> dict[str, Any]:
-    if not STATE_FILE.exists():
-        state = default_state()
-        save_state(state)
-        return state
+def _has_existing_account_boundary() -> bool:
+    """A captured account or durable ledger must be recovered, never reinitialized."""
+    protocol_path = DASHBOARD_HOME / "cron" / "state" / "niuone_forward_protocol.json"
     try:
-        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        state = default_state()
+        protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        protocol = {}
+    if (protocol.get("account_baseline") or {}).get("status") == "captured":
+        return True
+    db_path = Path(os.environ.get("DASHBOARD_NIUNIU_DB", DASHBOARD_HOME / "niuniu.db")).expanduser()
+    try:
+        db_path.stat()
+    except FileNotFoundError:
+        return False
+    tables = (
+        "daily_equity", "position_snapshots", "trades", "decisions", "account_history",
+        "probe_chase_outcomes", "post_exit_observations", "post_exit_reentry_observations",
+        "exit_feedback_policies", "exit_feedback_evaluations",
+    )
+    with closing(sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
+        existing = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        return any(db.execute(f'SELECT 1 FROM "{name}" LIMIT 1').fetchone()
+                   for name in tables if name in existing)
+
+
+def _read_account_snapshot() -> dict[str, Any]:
+    state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    if not isinstance(state, dict):
+        raise ValueError("模拟账户快照格式无效，请恢复已验证的账户快照")
+    for key in ("cash", "initial_cash"):
+        value = state.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"模拟账户快照的 {key} 无效，请恢复已验证的账户快照")
+    if not isinstance(state.get("positions"), dict):
+        # Legacy pristine accounts contained just the creation date and balances.
+        if ("positions" not in state and state.get("created_at") and state["cash"] == state["initial_cash"]
+                and not any(state.get(key) for key in ("trade_log", "pending_decisions", "decision_log"))
+                and not _has_existing_account_boundary()):
+            state["positions"] = {}
+        else:
+            raise ValueError("模拟账户快照缺少有效持仓，请恢复已验证的账户快照")
+    return state
+
+
+def load_state() -> dict[str, Any]:
+    try:
+        state = _read_account_snapshot()
+    except FileNotFoundError:
+        with state_file_write_lock():
+            try:
+                state = _read_account_snapshot()
+            except FileNotFoundError:
+                if _has_existing_account_boundary():
+                    raise RuntimeError("已有账户记录但模拟账户快照缺失，请恢复已验证的账户快照") from None
+                state = default_state()
+                save_state(state)
+                return state
     base = default_state()
     # A changed new-account default must not reprice an existing account.
     base["fee_schedule"] = LEGACY_FEE_SCHEDULE.to_dict()
@@ -10398,6 +10446,9 @@ def call_model_decision(
         market_strategy_ctx,
         news_context,
     )
+    attempt = portfolio.get('_decision_attempt')
+    if isinstance(attempt, dict):
+        attempt['intelligence'] = decision_intelligence_ctx
     if news_precheck_error:
         precheck_audit = decision_intelligence_ctx.setdefault(
             "news_precheck",
@@ -10515,14 +10566,17 @@ execution_preflight 是按扫描价、当前账户独立计算的风险数量上
     if DECISION_REASONING_EFFORT:
         payload["reasoning_effort"] = DECISION_REASONING_EFFORT
 
-    result = request_chat_json_object(
-        base_url,
-        api_key,
-        payload,
-        MODEL,
-        max_parse_attempts=DECISION_JSON_MAX_PARSE_ATTEMPTS,
-        timeout=DECISION_REQUEST_TIMEOUT,
-    )
+    transport_started = time.monotonic()
+    if isinstance(attempt, dict):
+        attempt['timing']['transport_started_at'] = now_ts()
+    try:
+        result = request_chat_json_object(
+            base_url, api_key, payload, MODEL,
+            max_parse_attempts=DECISION_JSON_MAX_PARSE_ATTEMPTS, timeout=DECISION_REQUEST_TIMEOUT,
+        )
+    finally:
+        if isinstance(attempt, dict):
+            attempt['timing']['transport_elapsed_s'] = round(time.monotonic() - transport_started, 2)
     result["model"] = MODEL
     result["provider"] = PROVIDER_DISPLAY_NAME
     result["market_guidance"] = compact_market_strategy_context(market_strategy_ctx)
@@ -14123,6 +14177,8 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
     portfolio["_preset_position_policy_context"] = preset_position_policy_context(state)
     if env_bool("DASHBOARD_EXECUTION_PREFLIGHT_ENABLED", False):
         portfolio["_execution_preflight"] = preview_niuone_buy_capacity(state, candidates, market_strategy_ctx)
+    attempt_timing = {}
+    portfolio['_decision_attempt'] = {'timing': attempt_timing}
     has_open_positions = any(
         isinstance(pos, dict) and position_qty(pos) > 0
         for pos in (state.get("positions") or {}).values()
@@ -14135,10 +14191,13 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
         if not deferred_due_at and anchor is not None and anchor > datetime.now() + timedelta(seconds=5):
             raise ModelRequestExpired("decision_input_clock_invalid")
         expiry = decision_expiry(anchor) if anchor is not None else "invalid"
+        attempt_timing.update(signal_generated_at=generated_at, decision_expires_at=expiry,
+                              preparation_finished_at=now_ts())
         freshness = {"decision_expires_at": expiry}
         if decision_is_expired(freshness, datetime.now()):
             raise ModelRequestExpired("decision_input_expired")
         remaining = (datetime.fromisoformat(expiry) - datetime.now()).total_seconds()
+        attempt_timing['model_budget_s'] = round(min(DECISION_REQUEST_TIMEOUT, remaining), 2)
         with model_request_budget(min(DECISION_REQUEST_TIMEOUT, remaining)):
             resolved_decision = generate_decision(reason)
             resolved_decision.update(freshness)
@@ -14293,15 +14352,16 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
             "provider": PROVIDER_DISPLAY_NAME,
             "error": f"{type(exc).__name__}: {exc}",
             "market_guidance": compact_market_ctx,
-            "decision_intelligence": safe_decision_intelligence_context(
-                portfolio if "portfolio" in locals() else enrich_portfolio(state),
-                candidates if "candidates" in locals() else [],
-                market_strategy_ctx,
-                "",
-            ),
+            # Record the inputs actually collected for this attempt. Fetching
+            # them again here would delay failure reporting and change its evidence.
+            "decision_intelligence": portfolio['_decision_attempt'].get('intelligence', {
+                'enabled': DECISION_INTELLIGENCE_ENABLED, 'status': 'not_collected_before_failure',
+            }),
         }
         executed = []
         state["last_error"] = decision["error"]
+    if attempt_timing:
+        decision['timing'] = dict(attempt_timing)
     if holding_cycle_only:
         decision["holding_cycle_only"] = True
         decision["decision_cycle_kind"] = decision_cycle_kind or "holding_fast"
