@@ -1959,11 +1959,14 @@ _B1_GENERATION_CACHE_LOCK = threading.Lock()
 _B1_GENERATION_CACHE: dict[str, Any] = {}
 
 
-def _b1_cache_generation() -> str:
-    """Read only a generation string once per atomic full-scan file version."""
+def _b1_cache_identity() -> tuple[str, str, str]:
+    """Read scan time and owner together once per atomic full-scan file version."""
+    def identity(payload):
+        return tuple(str(payload.get(k) or "") for k in ("generated_at", "schedule_slot", "schedule_run_kind"))
+
     if not callable(getattr(B1_CACHE_FILE, "stat", None)):
         # Historical integrations inject a lightweight read_text-only path.
-        return str(json.loads(B1_CACHE_FILE.read_text(encoding="utf-8")).get("generated_at") or "")
+        return identity(json.loads(B1_CACHE_FILE.read_text(encoding="utf-8")))
 
     def version() -> tuple[Any, ...]:
         stat = B1_CACHE_FILE.stat()
@@ -1972,20 +1975,24 @@ def _b1_cache_generation() -> str:
 
     with _B1_GENERATION_CACHE_LOCK:
         before = version()
-        if _B1_GENERATION_CACHE.get("version") == before:
-            return str(_B1_GENERATION_CACHE.get("generated_at") or "")
+        if _B1_GENERATION_CACHE.get("version") == before and "identity" in _B1_GENERATION_CACHE:
+            return _B1_GENERATION_CACHE["identity"]
         compact_path = _derived_read_model_path(PRACTICE_CANDIDATES_CACHE_FILE, B1_CACHE_FILE)
         compact = read_versioned_json_cache(compact_path) or {}
         expected = dict(zip(("device", "inode", "size", "mtime_ns"), before[1:]))
         if compact.get("source_cache") == B1_CACHE_FILE.name and compact.get("source_version") == expected:
-            generated_at = str(compact.get("generated_at") or "")
+            result = identity(compact)
         else:
             full = read_json_cache(B1_CACHE_FILE, None) or {}
-            generated_at = str(full.get("generated_at") or "")
+            result = identity(full)
         if version() == before:
             _B1_GENERATION_CACHE.clear()
-            _B1_GENERATION_CACHE.update(version=before, generated_at=generated_at)
-        return generated_at
+            _B1_GENERATION_CACHE.update(version=before, identity=result)
+        return result
+
+
+def _b1_cache_generation() -> str:
+    return _b1_cache_identity()[0]
 
 
 def b1_cache_has_newer_generation(base_payload: dict[str, Any]) -> bool:
@@ -4282,8 +4289,8 @@ def start_practice_manual_cycle() -> dict[str, Any]:
 
 def b1_cache_generated_for_slot(slot_key: str) -> bool:
     try:
-        generated_at = _b1_cache_generation()[:16]
-        return generated_at == slot_key
+        generated_at, owner, kind = _b1_cache_identity()
+        return generated_at[:16] == slot_key and (owner == slot_key or (not owner and not kind))
     except Exception:
         return False
 
@@ -4546,7 +4553,8 @@ def run_scheduled_b1_scan(slot_key: str) -> None:
         if cache.get("busy"):
             try:
                 cache = wait_for_b1_scan_result(cache)
-                if cache.get('schedule_slot') and cache['schedule_slot'] != slot_key:
+                if ((cache.get('schedule_slot') or cache.get('schedule_run_kind')) and
+                        cache.get('schedule_slot') != slot_key):
                     raise PracticeCycleError('扫描结果属于另一计划时点', code='scan_owned_by_other_slot', stage='waiting_for_scan')
                 cache = {
                     **cache,

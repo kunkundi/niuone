@@ -23,6 +23,16 @@ class Rows(list):
 
 
 class RuntimeSlotIsolationTests(unittest.TestCase):
+    def test_another_scan_finishing_in_the_due_minute_does_not_suppress_the_slot(self):
+        at = "2025-03-03 10:30"
+        for owner, kind, expected in (("2025-03-03 10:00", "catchup", False),
+                                      ("", "manual", False), (at, "scheduled", True),
+                                      ("", "", True)):
+            with self.subTest(owner=owner, kind=kind), patch.object(
+                dashboard, "_b1_cache_identity", return_value=(at + ":08", owner, kind)
+            ):
+                self.assertEqual(dashboard.b1_cache_generated_for_slot(at), expected)
+
     def test_protocol_freezes_all_scan_input_and_transport_sources(self):
         from app.trading.niuone_forward_service import PROTOCOL_SOURCE_PATHS
         for path in ("app/screening/scan_artifact.py", "app/market_data/tencent_kline_cache.py",
