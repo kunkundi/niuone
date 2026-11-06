@@ -117,6 +117,63 @@ class ScanMemoryTests(unittest.TestCase):
         with patch.object(dashboard, "read_json_cache", side_effect=AssertionError("full scan read")):
             self.assertTrue(dashboard.b1_cache_generated_for_slot("2026-11-05 10:00"))
 
+    def test_owned_archive_reaches_trader_and_joiners_without_reserialization(self):
+        from app.screening.scan_artifact import PROTOCOL, child_metadata
+        slot, stamp = '2026-09-09 10:00', '2026-09-09 10:03:01'
+        def runner(args, **kwargs):
+            fields = child_metadata(kwargs['env'], stamp)
+            value = {**fields, 'generated_at': stamp, 'items': [], 'candidates': [], 'trade_items': [],
+                     'count': 0, 'trade_count': 0, 'niuone_context': {'all': ['中文', 0.12345678901234567]}}
+            path = self.root/'multi_strategy_history'/'2026-09-09'/'2026-09-09_10-03-01.json'
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+            json.dump({'transport':PROTOCOL,'job_id':'owned','generated_at':stamp},kwargs['stdout'])
+            return subprocess.CompletedProcess(args,0,stdout=None,stderr='')
+        with patch.object(dashboard.subprocess, 'run', side_effect=runner), patch.object(dashboard, 'write_json_cache', wraps=dashboard.write_json_cache) as writer:
+            result=dashboard._trigger_b1_scan_unlocked(decision_mode='none', schedule_slot=slot, job_id='owned')
+            self.assertEqual(result['generated_at'],stamp)
+            self.assertEqual(result['schedule_slot'],slot)
+            dashboard._finish_b1_full_scan('owned', result)
+        self.assertFalse(any(call.args[0].name in ('b1_screen_latest.json','b1_scan_join_result.json') for call in writer.call_args_list))
+        joined=dashboard.wait_for_b1_scan_result({'active_job_id':'owned'},timeout_seconds=1)
+        self.assertEqual(joined,result)
+        self.assertEqual(joined['niuone_context']['all'],['中文',0.12345678901234567])
+
+    def test_archive_replacement_rejects_wrong_job_instead_of_reusing_it(self):
+        from app.screening.scan_artifact import load_owned_scan
+        import errno
+        stamp='2026-09-09 10:00:00'
+        path=self.root/'2026-09-09'/'2026-09-09_10-00-00.json'
+        path.parent.mkdir()
+        payload={'generated_at':stamp,'job_id':'a','schedule_run_kind':'manual','running':False,'error':'',
+                 'count':0,'trade_count':0,'items':[],'candidates':[],'trade_items':[]}
+        path.write_text(json.dumps(payload),encoding='utf-8')
+        ref={'generated_at':stamp,'job_id':'a'}
+        artifact=load_owned_scan(self.root,ref,'a','','manual')
+        target=self.root/'copy.json'
+        with patch('app.screening.scan_artifact.os.link',side_effect=OSError(errno.EXDEV,'cross device')):
+            artifact.publish(target)
+        self.assertEqual(json.loads(target.read_text()),payload)
+        with self.assertRaises(ValueError): load_owned_scan(self.root,ref,'a','different-slot','scheduled')
+        other=path.with_suffix('.other');other.write_text(json.dumps({**payload,'job_id':'b'}),encoding='utf-8');other.replace(path)
+        with self.assertRaises(ValueError): artifact.publish(target)
+        self.assertEqual(json.loads(target.read_text())['job_id'],'a')
+        self.assertEqual(list(self.root.glob('*.tmp')),[])
+
+    def test_managed_writer_publishes_every_alias_from_one_serialization(self):
+        from app.screening.scan_artifact import write_managed_scan
+        archive = self.root / "archive.json"
+        first, second = self.root / "first.json", self.root / "second.json"
+        payload = {"name": "行业", "value": 1.23456789012345, "rows": list(range(600))}
+        with patch("app.screening.scan_artifact.json.dump", wraps=json.dump) as encoder:
+            write_managed_scan(payload, archive, (first, second))
+        encoder.assert_called_once()
+        self.assertEqual(json.loads(first.read_bytes()), payload)
+        self.assertEqual(first.read_bytes(), second.read_bytes())
+        write_managed_scan({"value": 2}, archive, (second,))
+        self.assertEqual(json.loads(first.read_bytes()), payload)
+        self.assertEqual(json.loads(second.read_bytes()), {"value": 2})
+
 
 if __name__ == "__main__":
     unittest.main()

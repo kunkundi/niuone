@@ -103,6 +103,10 @@ def _open_database(path: Path) -> sqlite3.Connection:
             error_summary TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL DEFAULT ''
         );
+        CREATE TABLE IF NOT EXISTS prewarm_targets (
+            target_date TEXT NOT NULL, symbol TEXT NOT NULL,
+            PRIMARY KEY (target_date, symbol)
+        );
         """
     )
     prewarm_columns = {
@@ -530,7 +534,9 @@ def prewarm_completed_for_date(
     connection = _open_database(cache_path)
     try:
         row = connection.execute(
-            "SELECT requested_count, success_count, status FROM prewarm_runs WHERE target_date=?",
+            "SELECT requested_count, success_count, status, "
+            "(SELECT count(*) FROM prewarm_targets t WHERE t.target_date=r.target_date) AS targets "
+            "FROM prewarm_runs r WHERE target_date=?",
             (str(target_date)[:10],),
         ).fetchone()
     finally:
@@ -539,7 +545,7 @@ def prewarm_completed_for_date(
         return False
     requested = int(row["requested_count"] or 0)
     success = int(row["success_count"] or 0)
-    return requested > 0 and success / requested >= max(0.0, min(1.0, minimum_coverage))
+    return requested > 0 and row['targets'] == requested and success / requested >= max(0.0, min(1.0, minimum_coverage))
 
 
 def kline_cache_readiness(
@@ -599,6 +605,19 @@ def kline_cache_readiness(
                 "duration_seconds, error_summary, updated_at "
                 "FROM prewarm_runs ORDER BY target_date DESC, started_at DESC LIMIT 1"
             ).fetchone()
+            manifest_count = 0
+            if run:
+                run_day = run['target_date']
+                manifest_count = connection.execute('SELECT count(*) FROM prewarm_targets WHERE target_date=?', (run_day,)).fetchone()[0]
+                if manifest_count:
+                    date_clause = (f" AND s.last_trade_date IN ({placeholders})" if accepted else '')
+                    if accepted:
+                        date_clause += " AND (s.last_trade_date=? OR s.fetched_at >= s.last_trade_date || ' 15:00:00')"
+                    fresh_count = connection.execute(
+                        'SELECT count(*) FROM prewarm_targets t JOIN kline_series s ON s.symbol=t.symbol '
+                        'WHERE t.target_date=? AND s.row_count>=?' + date_clause,
+                        (run_day,max(1,int(min_rows or 1)),*sorted(accepted),*([max(run_day,*accepted)] if accepted else [])),
+                    ).fetchone()[0]
         finally:
             connection.close()
     except (OSError, sqlite3.Error) as exc:
@@ -613,9 +632,10 @@ def kline_cache_readiness(
     completed_count = int(run["completed_count"] or 0) if run else 0
     success_count = int(run["success_count"] or 0) if run else 0
     failure_count = int(run["failure_count"] or 0) if run else 0
-    denominator = requested_count or cached_count
+    denominator = manifest_count or max(requested_count, cached_count)
     coverage = fresh_count / denominator if denominator > 0 else 0.0
-    ready = denominator > 0 and coverage >= max(0.0, min(1.0, minimum_coverage))
+    ready = (denominator > 0 and manifest_count == requested_count and manifest_count > 0
+             and coverage >= max(0.0, min(1.0, minimum_coverage)))
     status = str(run["status"] or "unknown") if run else "untracked"
     if ready:
         error_code = ""
@@ -705,15 +725,18 @@ def prewarm_kline_cache(
         for value in (accepted_last_dates or set())
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value)[:10])
     }
-    fresh_symbols = set(
-        load_kline_series_map(
-            unique,
-            path=cache_path,
-            accepted_last_dates=accepted,
-            min_rows=30,
-            count=count,
-        )
-    ) if accepted and cache_path.exists() else set()
+    fresh_symbols = set()
+    if accepted and cache_path.exists():
+        conn = _open_database(cache_path)
+        try:
+            placeholders = ','.join('?' for _ in accepted)
+            fresh_symbols = set(unique).intersection(row[0] for row in conn.execute(
+                'SELECT symbol FROM kline_series WHERE row_count>=30 '
+                f'AND last_trade_date IN ({placeholders}) '
+                "AND (last_trade_date=? OR fetched_at >= last_trade_date || ' 15:00:00')",
+                (*sorted(accepted), run_date)))
+        finally:
+            conn.close()
     pending_symbols = [symbol for symbol in unique if symbol not in fresh_symbols]
     worker_count = max(
         1,
@@ -724,6 +747,10 @@ def prewarm_kline_cache(
     connection = _open_database(cache_path)
     try:
         with connection:
+            connection.execute('DELETE FROM prewarm_targets WHERE target_date=?', (run_date,))
+            connection.executemany('INSERT INTO prewarm_targets(target_date,symbol) VALUES(?,?)', ((run_date,s) for s in unique))
+            connection.execute('DELETE FROM prewarm_targets WHERE target_date NOT IN '
+                               '(SELECT DISTINCT target_date FROM prewarm_targets ORDER BY target_date DESC LIMIT 5)')
             connection.execute(
                 """
                 INSERT INTO prewarm_runs(
@@ -755,6 +782,9 @@ def prewarm_kline_cache(
             except Exception as exc:
                 rows = []
                 last_error = type(exc).__name__
+            if rows and accepted and (len(rows) < 30 or rows[-1]['date'] not in accepted):
+                rows = []
+                last_error = 'insufficient_or_stale_series'
             if rows:
                 return symbol, rows, ""
             if attempt + 1 < max_attempts:

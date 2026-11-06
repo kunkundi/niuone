@@ -62,6 +62,24 @@ def quote_snapshot(generated_at: str, prices: list[float]) -> dict[str, object]:
 
 
 class NiuOneMinuteRefreshTests(unittest.TestCase):
+    def test_batched_worker_preserves_entire_theme_context_and_releases_bars(self):
+        snapshot = quote_snapshot("2026-07-30 10:00:00", [10.01, 11, 10.7, 9.6, 10.9])
+        now = datetime(2026, 7, 30, 10, 0, 3)
+        batches = []
+        def load(symbols, **kwargs):
+            batches.append(len(symbols))
+            return {symbol: history_rows() for symbol in symbols}
+        with tempfile.TemporaryDirectory() as tmp:
+            options = dict(kline_cache_path=Path(tmp)/'kline', industry_cache_path=Path(tmp)/'boards',
+                           kline_loader=load, industry_loader=lambda _: {f'60000{i}':'板块' for i in range(1,6)},
+                           trading_day_status_loader=lambda *args, **kwargs: {'previous_trading_day':'2026-07-29'})
+            original = NiuOneMinuteEngine(**options).build_scan(snapshot, now=now)
+            batches.clear()
+            engine = NiuOneMinuteEngine(**options, history_batch_size=2)
+            batched = engine.build_scan(snapshot, now=now)
+        self.assertEqual(original['niuone_context'], batched['niuone_context'])
+        self.assertEqual(batches, [2,2,1])
+        self.assertEqual((engine._histories, engine._live_ema_seeds), ({},{}))
     def _capture_prepared_rows(
         self,
         engine: NiuOneMinuteEngine,

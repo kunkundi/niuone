@@ -68,6 +68,7 @@ from market_data.tencent_kline_cache import (
     fetch_a_share_daily_klines,
     kline_cache_path,
     load_kline_series_map,
+    load_cached_kline_symbols,
     merge_live_quote,
     prewarm_kline_cache,
     store_kline_series,
@@ -1122,17 +1123,30 @@ def niuone_news_shortlist(
     return candidates[:max(0, int(limit))]
 
 
+class IncompleteListingError(RuntimeError):
+    """One or more requested exchange/board listings are missing."""
+
+
 def load_a_share_code_pool(stock_universe: object | None = None):
     """Load the configured沪深 A-share pool without pulling Beijing-board data."""
     import akshare as ak
     candidates = []
     selected = selected_stock_universe(stock_universe)
+    seen_segments = set()
+    required = set()
+    if 'main_board' in selected or 'st' in selected:
+        required.update(('sh_main_board', 'sz_main_board'))
+    if 'star_market' in selected or 'st' in selected:
+        required.add('sh_star_market')
+    if 'chi_next' in selected or 'st' in selected:
+        required.add('sz_chi_next')
 
     def add(code, name):
         code = str(code or "").strip().split(".")[0].zfill(6)
         name = str(name or "").strip()
-        if not code or not name:
+        if not re.fullmatch(r'\d{6}', code) or not name or not stock_board(code):
             return
+        seen_segments.add(('sh_' if code.startswith('6') else 'sz_') + stock_board(code))
         if "退" in name or not stock_in_universe(code, name, selected):
             return
         candidates.append((code, name))
@@ -1158,22 +1172,95 @@ def load_a_share_code_pool(stock_universe: object | None = None):
     except Exception as exc:
         errors.append(f"SZ:{type(exc).__name__}")
 
-    if not candidates:
-        df = ak.stock_info_a_code_name()
-        for _, row in df.iterrows():
-            add(row.get("code"), row.get("name"))
+    if required - seen_segments:
+        try:
+            df = ak.stock_info_a_code_name()
+            for _, row in df.iterrows():
+                add(row.get('code'), row.get('name'))
+        except Exception as exc:
+            errors.append(f'combined:{type(exc).__name__}')
+    if required - seen_segments:
+        raise IncompleteListingError('incomplete listed universe: ' + ', '.join(sorted(required - seen_segments)))
 
     deduped = {}
     for code, name in candidates:
         deduped[code] = name
     if errors:
-        print("  Code pool partial fallback: " + ", ".join(errors), file=sys.stderr)
+        print("  Code pool recovered via combined listing: " + ", ".join(errors), file=sys.stderr)
     return sorted(deduped.items())
 
 
 def load_main_board_code_pool():
     """Backward-compatible legacy pool helper."""
     return load_a_share_code_pool(DEFAULT_STOCK_UNIVERSE)
+
+
+def load_daily_scan_pool(universe: object) -> list[tuple[str, str]]:
+    """Share one complete, same-day exchange catalog between warmup and scans."""
+    import subprocess
+    from app.core.json_cache import read_json_cache
+    from app.core.process_lease import FileLease
+    from app.market_data.tencent_market_breadth import DEFAULT_MIN_ROWS
+
+    day = datetime.now().strftime('%Y-%m-%d')
+    path = B1_OUTPUT_DIR / 'a_share_listing_latest.json'
+    expected = {'sh_main_board','sz_main_board','sz_chi_next','sh_star_market'}
+    def validated(value: object) -> list[tuple[str, str]] | None:
+        if not isinstance(value, dict) or value.get('date') != day or value.get('schema_version') != 1:
+            return None
+        rows = value.get('rows')
+        if not isinstance(rows, list) or not DEFAULT_MIN_ROWS <= len(rows) <= 20000:
+            return None
+        names = {}
+        segments = set()
+        for row in rows:
+            if not isinstance(row, (tuple,list)) or len(row)!=2:
+                return None
+            code,name=row
+            if not isinstance(code,str) or not re.fullmatch(r'\d{6}',code) or not isinstance(name,str) or not name or code in names or not stock_board(code):
+                return None
+            names[code]=name
+            segments.add(('sh_' if code.startswith('6') else 'sz_') + stock_board(code))
+        if not expected <= segments:
+            return None
+        return [(code,name) for code,name in sorted(names.items()) if stock_in_universe(code,name,universe)]
+
+    cached = validated(read_json_cache(path))
+    if cached is not None:
+        return cached
+    path.parent.mkdir(parents=True,exist_ok=True)
+    lease = FileLease(path.with_suffix('.lock'), stale_after_seconds=75)
+    if not lease.acquire():
+        # Warmup and a scheduled scan can request the same catalog together.
+        deadline = time.monotonic() + 61
+        while lease.path.exists() and time.monotonic() < deadline:
+            time.sleep(0.25)
+        cached = validated(read_json_cache(path))
+        if cached is not None:
+            return cached
+        raise IncompleteListingError('concurrent exchange listing refresh did not publish a complete catalog')
+    try:
+        cached = validated(read_json_cache(path))
+        if cached is not None:
+            return cached
+        try:
+            run = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1]/'entrypoints/multi_strategy_screen.py'), '--listed-codes-json'],
+                                 capture_output=True,timeout=60,check=False,env={**os.environ,'PYTHONIOENCODING':'utf-8'})
+        except subprocess.TimeoutExpired as exc:
+            raise IncompleteListingError('exchange listing refresh timed out') from exc
+        if run.returncode or len(run.stdout)>2*1024*1024:
+            raise IncompleteListingError('complete exchange listing unavailable')
+        try:
+            value = json.loads(run.stdout)
+        except (UnicodeError, ValueError) as exc:
+            raise IncompleteListingError('invalid exchange listing response') from exc
+        result = validated(value)
+        if result is None:
+            raise IncompleteListingError('incomplete exchange listing')
+        write_json_cache(path,value)
+        return result
+    finally:
+        lease.release()
 
 
 def get_margin_signal(code: str) -> dict | None:
@@ -1685,25 +1772,27 @@ def write_outputs(
     d = MULTI_STRATEGY_HISTORY / date_part
     d.mkdir(parents=True, exist_ok=True)
     f = d / f"{safe_ts}.json"
-    # Serialize once to disk, then copy in bounded chunks. Keep all three
-    # snapshots identical even if another producer replaces a latest cache.
-    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as serialized:
-        if json_str is not None:
-            serialized.write(json_str)
-        else:
-            json.dump(payload, serialized, ensure_ascii=False, indent=2)
-        serialized.write("\n")
-        for target in (MULTI_STRATEGY_CACHE, B1_CACHE_FILE, f):
-            temporary = target.with_name(
-                f".{target.name}.{os.getpid()}.{time.monotonic_ns()}.tmp"
-            )
-            try:
-                serialized.seek(0)
-                with temporary.open("w", encoding="utf-8") as stream:
-                    shutil.copyfileobj(serialized, stream, length=1024 * 1024)
-                temporary.replace(target)
-            finally:
-                temporary.unlink(missing_ok=True)
+    from app.screening.scan_artifact import PROTOCOL, write_managed_scan
+    if os.environ.get('NIUONE_SCAN_TRANSPORT') == PROTOCOL and json_str is None:
+        write_managed_scan(payload, f, (MULTI_STRATEGY_CACHE, B1_CACHE_FILE))
+    else:
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as serialized:
+            if json_str is not None:
+                serialized.write(json_str)
+            else:
+                json.dump(payload, serialized, ensure_ascii=False, indent=2)
+            serialized.write("\n")
+            for target in (MULTI_STRATEGY_CACHE, B1_CACHE_FILE, f):
+                temporary = target.with_name(
+                    f".{target.name}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+                )
+                try:
+                    serialized.seek(0)
+                    with temporary.open("w", encoding="utf-8") as stream:
+                        shutil.copyfileobj(serialized, stream, length=1024 * 1024)
+                    temporary.replace(target)
+                finally:
+                    temporary.unlink(missing_ok=True)
 
     # The Dashboard polls this bounded read model instead of the full scan.
     write_practice_candidates_cache(
@@ -1733,11 +1822,25 @@ def prewarm_full_market_klines(
         or os.environ.get("DASHBOARD_KLINE_PREWARM_TARGET_DATE")
         or datetime.now().strftime("%Y-%m-%d")
     )[:10]
-    candidates = load_a_share_code_pool(FULL_SUPPORTED_NON_ST_UNIVERSE)
-    symbols = [
-        ("sh" if code.startswith(("6", "9")) else "sz") + code
-        for code, _name in candidates
-    ]
+    try:
+        candidates = load_daily_scan_pool(FULL_SUPPORTED_NON_ST_UNIVERSE)
+        symbols = [("sh" if code.startswith(("6", "9")) else "sz") + code for code, _name in candidates]
+    except IncompleteListingError:
+        # This fallback supplies warming targets only. Selection still requires
+        # the complete exchange listing and applies its normal universe rules.
+        from app.market_data.tencent_market_breadth import fetch_tencent_market_breadth
+        warm_targets = set(load_cached_kline_symbols(path=kline_cache_path()))
+        live_targets = set()
+        def collect(snapshot):
+            for symbol, row in snapshot['quotes'].items():
+                if stock_in_universe(row['code'], row['name'], FULL_SUPPORTED_NON_ST_UNIVERSE):
+                    live_targets.add(symbol)
+        fetch_tencent_market_breadth(quote_snapshot_consumer=collect,
+                                     previous_turnover_fetcher=lambda _: None,
+                                     turnover_estimate_fetcher=lambda *_: {})
+        if not any(s.startswith('sh') for s in live_targets) or not any(s.startswith('sz') for s in live_targets):
+            raise IncompleteListingError('complete dual-exchange warming targets unavailable')
+        symbols = sorted(warm_targets | live_targets)
     if workers is None:
         try:
             workers = int(
@@ -1762,11 +1865,11 @@ def prewarm_full_market_klines(
         )
 
     accepted_last_dates: set[str] = set()
-    if dashboard_env_enabled("DASHBOARD_KLINE_PREWARM_RESUME", False):
-        try:
-            from a_share_calendar import trading_day_status
+    try:
+        from a_share_calendar import trading_day_status
 
-            calendar = trading_day_status(resolved_target_date, allow_refresh=False)
+        calendar = trading_day_status(resolved_target_date, allow_refresh=False)
+        if calendar.get('calendar_cached'):
             accepted_last_dates = {
                 str(calendar.get("date") or "")[:10],
                 str(calendar.get("previous_trading_day") or "")[:10],
@@ -1776,8 +1879,8 @@ def prewarm_full_market_klines(
                 for value in accepted_last_dates
                 if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
             }
-        except Exception:
-            accepted_last_dates = set()
+    except (OSError, ValueError):
+        accepted_last_dates = set()
 
     return prewarm_kline_cache(
         symbols,
@@ -1791,6 +1894,16 @@ def prewarm_full_market_klines(
 
 
 def main():
+    if '--listed-codes-json' in sys.argv[1:]:
+        from a_share_calendar import trading_day_status
+        from app.market_data.exchange_listing import fetch_exchange_listing
+        day = datetime.now().strftime('%Y-%m-%d')
+        calendar = trading_day_status(day, allow_refresh=False)
+        accepted = {day, str(calendar.get('previous_trading_day') or '')[:10]}
+        rows = [(code, name) for code, name in fetch_exchange_listing(accepted)
+                if stock_board(code) and '退' not in name]
+        json.dump({'schema_version':1,'date':day,'rows':rows},sys.stdout,ensure_ascii=False)
+        return
     if kline_prewarm_only_mode():
         report_scan_progress(
             "kline_prewarm",
@@ -1876,11 +1989,11 @@ def main():
         print("  Independent theme-strength research mode; trading suite is ignored", file=sys.stderr)
     configured_universe = configured_stock_universe()
     stock_universe, reference_stock_universe = scan_stock_universes(scorers, configured_universe)
-    candidates = load_a_share_code_pool(stock_universe)
+    candidates = load_daily_scan_pool(stock_universe)
     if reference_stock_universe == stock_universe:
         reference_candidates = candidates
     else:
-        reference_candidates = load_a_share_code_pool(reference_stock_universe)
+        reference_candidates = load_daily_scan_pool(reference_stock_universe)
     scan_candidates = merge_stock_code_pools(candidates, reference_candidates)
 
     print(
@@ -2856,6 +2969,9 @@ def main():
         output["zettaranc_context"] = {
             "industry_money_flow": sector_tide_flow_rows,
         }
+    from app.screening.scan_artifact import PROTOCOL, child_metadata
+    managed = child_metadata(os.environ, time.strftime('%Y-%m-%d %H:%M:%S'))
+    output.update(managed)
     report_scan_progress("persisting", stage_label="正在保存本轮候选结果")
     if niuone_context is not None:
         write_niuone_mainline_cache(NIUONE_MAINLINE_CACHE, output)
@@ -2864,7 +2980,8 @@ def main():
             output,
         )
     write_outputs(output, generated_at)
-    json.dump(output, sys.stdout, ensure_ascii=False, indent=2)
+    returned = {'transport': PROTOCOL, 'job_id': managed['job_id'], 'generated_at': generated_at} if managed else output
+    json.dump(returned, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
     report_scan_progress(
         "completed",

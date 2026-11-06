@@ -292,6 +292,31 @@ class TencentKlineCacheTests(unittest.TestCase):
         self.assertEqual(result["reused_count"], 1)
         self.assertEqual(result["success_count"], 2)
 
+    def test_coverage_counts_only_expected_symbols_and_rejects_legacy_partial_run(self):
+        import sqlite3
+        from contextlib import closing
+        day='2026-07-29'
+        cache.prewarm_kline_cache(['sh600001','sz000001'],path=self.path,target_date=day,workers=1,
+                                 max_attempts=1,fetcher=lambda s,_: sample_rows() if s.startswith('sh') else [])
+        cache.store_kline_series({'sh600002':sample_rows()},path=self.path)
+        result=cache.kline_cache_readiness(accepted_last_dates={'2026-07-28'},path=self.path)
+        self.assertFalse(result['ready'])
+        self.assertEqual((result['fresh_count'],result['coverage']), (1,0.5))
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.execute('DELETE FROM prewarm_targets');conn.execute('UPDATE prewarm_runs SET requested_count=1,success_count=1');conn.commit()
+        self.assertFalse(cache.prewarm_completed_for_date(day,path=self.path))
+        self.assertFalse(cache.kline_cache_readiness(accepted_last_dates={'2026-07-28'},path=self.path)['ready'])
+
+    def test_resume_refetches_previous_session_intraday_bar_and_rejects_stale_provider(self):
+        cache.store_kline_series({'sh600001':sample_rows('2026-07-28')},path=self.path,fetched_at='2026-07-28 10:00:00')
+        calls=[]
+        result=cache.prewarm_kline_cache(['sh600001'],path=self.path,target_date='2026-07-29',workers=1,
+                                        accepted_last_dates={'2026-07-28'},max_attempts=1,
+                                        fetcher=lambda s,_: calls.append(s) or sample_rows('2026-07-27'))
+        self.assertEqual(calls,['sh600001'])
+        self.assertEqual((result['success_count'],result['failure_count']), (0,1))
+        self.assertFalse(cache.prewarm_completed_for_date('2026-07-29',path=self.path))
+        self.assertFalse(cache.kline_cache_readiness(accepted_last_dates={'2026-07-28'},path=self.path)['ready'])
     def test_aggregate_failure_is_visible_without_deleting_cache(self):
         cache.prewarm_kline_cache(
             ["sh600001"],

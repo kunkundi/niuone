@@ -169,7 +169,7 @@ from screening.niuone_mainline_cache import (
     write_niuone_mainline_cache,
     write_niuone_mainline_summary_cache,
 )
-from screening.niuone_minute import NiuOneMinuteEngine
+from screening.niuone_minute import DEFAULT_MAX_QUOTE_AGE_SECONDS, NiuOneMinuteEngine
 from screening.stock_universe import (
     DEFAULT_STOCK_UNIVERSE,
     STOCK_UNIVERSE_ENV,
@@ -2891,6 +2891,7 @@ def get_niuone_mainline_minute_engine() -> NiuOneMinuteEngine:
             NIUONE_MAINLINE_MINUTE_ENGINE = NiuOneMinuteEngine(
                 kline_cache_path=Path(resolved_paths[0]),
                 industry_cache_path=Path(resolved_paths[1]),
+                history_batch_size=96,
             )
             NIUONE_MAINLINE_MINUTE_ENGINE_PATHS = resolved_paths
         return NIUONE_MAINLINE_MINUTE_ENGINE
@@ -3055,6 +3056,15 @@ def _niuone_mainline_minute_worker() -> None:
                 NIUONE_MAINLINE_MINUTE_PENDING = None
         if wait_seconds > 0:
             time.sleep(wait_seconds)
+            continue
+        # Coalesced snapshots can expire while a full scan owns the CPU.
+        # Discard that work before starting an interpreter; the newest quote wins.
+        try:
+            quote_time = datetime.strptime(str(snapshot.get("generated_at") or "")[:19], "%Y-%m-%d %H:%M:%S")
+            age = (current_cn_datetime().replace(tzinfo=None) - quote_time).total_seconds()
+        except ValueError:
+            age = float("inf")
+        if age < -120 or age > DEFAULT_MAX_QUOTE_AGE_SECONDS:
             continue
         started = time.monotonic()
         try:
@@ -3403,6 +3413,7 @@ def _trigger_b1_scan_unlocked(
     require_ready_cache: bool = True,
 ) -> dict[str, Any]:
     import subprocess, sys
+    from app.screening.scan_artifact import PROTOCOL, load_owned_scan
     script = Path(os.environ.get("DASHBOARD_B1_SCANNER", ENTRYPOINT_DIR / "multi_strategy_screen.py")).expanduser()
     if not script.exists():
         return {"error": f"扫描脚本不存在：{script}", "items": [], "count": 0, "generated_at": "", "running": False}
@@ -3424,6 +3435,9 @@ def _trigger_b1_scan_unlocked(
         child_env = os.environ.copy()
         child_env["DASHBOARD_B1_PROGRESS_FILE"] = str(progress_file)
         child_env["DASHBOARD_B1_JOB_ID"] = resolved_job_id
+        child_env['NIUONE_SCAN_TRANSPORT'] = PROTOCOL
+        child_env['NIUONE_SCAN_SLOT'] = schedule_slot
+        child_env['NIUONE_SCAN_RUN_KIND'] = schedule_run_kind or ('scheduled' if schedule_slot else 'manual')
         child_env["PYTHONIOENCODING"] = "utf-8"
         child_env["DASHBOARD_B1_REQUIRE_READY_CACHE"] = (
             "1" if require_ready_cache else "0"
@@ -3470,8 +3484,15 @@ def _trigger_b1_scan_unlocked(
                      "generated_at": data.get("generated_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                      "running": False, "error": "", "cooldown_remaining_seconds": 0,
                      **schedule_meta}
+            archived = data.get('transport') == PROTOCOL
+            if archived:
+                cache = load_owned_scan(B1_CACHE_FILE.parent / 'multi_strategy_history', data, resolved_job_id,
+                                        schedule_slot, child_env['NIUONE_SCAN_RUN_KIND'])
             with B1_CANDIDATE_REFRESH_LOCK:
-                write_json_cache(B1_CACHE_FILE, cache)
+                if archived:
+                    cache.publish(B1_CACHE_FILE)
+                else:
+                    write_json_cache(B1_CACHE_FILE, cache)
                 write_practice_candidates_cache(
                     _derived_read_model_path(
                         PRACTICE_CANDIDATES_CACHE_FILE,
@@ -3691,8 +3712,13 @@ def _finish_b1_full_scan(
     }
     terminal.setdefault("job_id", job_id)
     terminal["running"] = False
+    from app.screening.scan_artifact import ArchivedScan
     try:
-        write_json_cache(B1_CACHE_FILE.with_name("b1_scan_join_result.json"), terminal)
+        target = B1_CACHE_FILE.with_name('b1_scan_join_result.json')
+        if isinstance(result, ArchivedScan) and result.get('job_id') == job_id and 'decision_result' not in result:
+            result.publish(target)
+        else:
+            write_json_cache(target, terminal)
         retained_result = None
         result_on_disk = True
     except (OSError, TypeError, ValueError) as exc:
@@ -4355,6 +4381,12 @@ def _mark_b1_schedule_slot(slot_key: str, status: str, **fields: Any) -> None:
         slots = state.setdefault("slots", {})
         slot = slots.setdefault(slot_key, {"scheduled_at": slot_key})
         now_text = _b1_schedule_now_text()
+        for field in ('error', 'error_code', 'failure_stage', 'reason'):
+            if field not in fields:
+                slot.pop(field, None)
+        if status == 'running':
+            slot.pop('finished_at', None)
+            slot.pop('finished_ts', None)
         slot.update({"status": status, "updated_at": now_text, **fields})
         if status == "running":
             slot.pop("error", None)
@@ -4399,12 +4431,22 @@ def claim_due_b1_schedule_slot(now: datetime | None = None) -> str | None:
                 slots.pop(key, None)
         B1_SCHEDULE_RUN_KEYS.intersection_update(key for key in B1_SCHEDULE_RUN_KEYS if key.startswith(today_prefix))
 
+        workers = {t.name for t in threading.enumerate() if t.is_alive()}
+        if any((slots.get(k) or {}).get('status') == 'running' and (
+                f'b1-scheduled-scan:{k}' in workers or
+                now_float - float(slots[k].get('started_ts') or 0) < stale_seconds)
+               for k in B1_SCHEDULE_RUN_KEYS):
+            return None
+        latest_due = max(due_slots)[1]
+
         eligible: list[tuple[datetime, str]] = []
         for slot_dt, slot_key in sorted(due_slots):
             slot = slots.get(slot_key) or {}
             status = str(slot.get("status") or "")
             if status in {"ok", "skipped"}:
                 continue
+            if status == 'error' and slot_key < latest_due:
+                continue  # Keep the old terminal evidence; the newer slot takes priority.
             started_ts = float(slot.get("started_ts") or 0)
             finished_ts = float(slot.get("finished_ts") or 0)
             if status == "running" and now_float - started_ts < stale_seconds:
@@ -4504,6 +4546,8 @@ def run_scheduled_b1_scan(slot_key: str) -> None:
         if cache.get("busy"):
             try:
                 cache = wait_for_b1_scan_result(cache)
+                if cache.get('schedule_slot') and cache['schedule_slot'] != slot_key:
+                    raise PracticeCycleError('扫描结果属于另一计划时点', code='scan_owned_by_other_slot', stage='waiting_for_scan')
                 cache = {
                     **cache,
                     "schedule_slot": slot_key,
@@ -4545,6 +4589,12 @@ def run_scheduled_b1_scan(slot_key: str) -> None:
                 refresh_market_summary=False,
             )
             cache["decision_result"] = decision_result
+            if (isinstance(decision_result, dict) and decision_result.get('skipped') is True
+                    and decision_result.get('reason') == 'already_decided_for_this_b1'
+                    and decision_result.get('durable_evidence_persisted') is not True):
+                _mark_b1_schedule_slot(slot_key, 'skipped', reason='shared_scan_already_decided',
+                                       generated_at=cache.get('generated_at') or '', run_kind=run_kind)
+                return
             decision = (
                 decision_result.get("decision")
                 if isinstance(decision_result, dict)
@@ -4600,7 +4650,7 @@ def b1_schedule_loop() -> None:
     while True:
         slot_key = claim_due_b1_schedule_slot()
         if slot_key:
-            threading.Thread(target=run_scheduled_b1_scan, args=(slot_key,), name="b1-scheduled-scan", daemon=True).start()
+            threading.Thread(target=run_scheduled_b1_scan, args=(slot_key,), name=f"b1-scheduled-scan:{slot_key}", daemon=True).start()
         time.sleep(15)
 
 
