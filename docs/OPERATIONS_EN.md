@@ -76,6 +76,10 @@ Public deployments continue to run `./run-dashboard.sh`: FastAPI/Uvicorn serves 
 
 `/healthz` reports only that the web process is alive and is suitable for container liveness. `/readyz` also checks that runtime storage is writable and that market data required by the active strategy is ready; it returns `503` during first-start initialization and `200` afterward. `/api/system/data-readiness` always returns `200` with the same structured diagnosis for UI progress, cache coverage, persistent-volume, and timezone notices. Do not use `/readyz` as a liveness probe that restarts the container during initialization.
 
+Readiness also requires the complete current-day Shanghai/Shenzhen catalog. The `listing` field reports its date, row count, and `exchange_listing_unavailable` diagnosis. Verified exchange segments are retained for the day. If the Shenzhen workbook fails, the reader checks every page of the same exchange's JSON report against its date, totals, and unique codes. Missing catalogs remain eligible for bounded bootstrap retries even after daily bars have finished warming.
+
+Midday and closing reports try bounded direct quotes first. The Tencent fallback covers Shanghai, Shenzhen, and Beijing stocks, including ST and new listings, and rejects snapshots with failed batches. Legacy AkShare calls run in child processes with parent-enforced deadlines before source failover.
+
 The final **About** settings group shows the project author, GitHub repository, Apache License 2.0, current version, and newest Docker Hub release, with a **Check for updates** button that bypasses the server cache and refreshes the upstream result. **Automatically check for new versions** is enabled by default and takes effect at runtime; set `DASHBOARD_AUTO_VERSION_CHECK_ENABLED=0` in `dashboard.env` to disable it. “Do not remind me about this version” is stored only in the current browser; manually clicking the home-page version still checks again, and a later release can trigger a new reminder.
 
 ## 3. Model and Data-Source Configuration

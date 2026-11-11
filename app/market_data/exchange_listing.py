@@ -4,7 +4,9 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from io import BytesIO
+import html
 import json
+from pathlib import Path
 import re
 import time
 from typing import Any, Callable
@@ -26,7 +28,7 @@ def _get(url: str, params: dict[str, str], deadline: float) -> bytes:
             break
         request = Request(url + "?" + urlencode(params), headers={"Referer": ref, "User-Agent": "Mozilla/5.0"})
         try:
-            with urlopen(request, timeout=min(16, remaining)) as response:
+            with urlopen(request, timeout=min(8, remaining)) as response:
                 raw = response.read(MAX_BODY + 1)
             if not raw or len(raw) > MAX_BODY:
                 raise ValueError("invalid exchange report size")
@@ -101,17 +103,113 @@ def _sz_rows(raw: bytes, metadata: Any, accepted_dates: set[str]) -> list[tuple[
         book.close()
 
 
-def fetch_exchange_listing(accepted_dates: set[str], *, get: Callable = _get) -> list[tuple[str, str]]:
+def _sz_tab(payload: Any, accepted_dates: set[str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    tab = next(tab for tab in payload if tab.get('metadata', {}).get('tabkey') == 'tab1')
+    meta = tab['metadata']
+    stamp = str(meta['subname']).strip()[:10]
+    date.fromisoformat(stamp)
+    if stamp not in accepted_dates:
+        raise ValueError('stale Shenzhen exchange listing date')
+    return meta, tab.get('data') or []
+
+
+def _sz_json_rows(first: Any, accepted_dates: set[str], deadline: float, get: Callable) -> list[tuple[str, str]]:
+    meta, initial = _sz_tab(first, accepted_dates)
+    total, pages, size = (int(meta[key]) for key in ('recordcount', 'pagecount', 'pagesize'))
+    if not 0 < total < 16000 or not 0 < pages <= 256 or not 0 < size <= 2000 or (total + size - 1) // size != pages or int(meta['pageno']) != 1:
+        raise ValueError('inconsistent Shenzhen exchange pagination')
+
+    def page(number: int) -> list[dict[str, Any]]:
+        raw = get(SZ + '/data', {'CATALOGID':'1110', 'TABKEY':'tab1', 'SHOWTYPE':'JSON', 'PAGENO':str(number)}, deadline)
+        current, rows = _sz_tab(json.loads(raw), accepted_dates)
+        if any(str(current.get(key)) != str(meta.get(key)) for key in ('recordcount','pagecount','pagesize','subname')) or int(current['pageno']) != number:
+            raise ValueError('inconsistent Shenzhen exchange pagination')
+        return rows
+
+    all_rows = list(initial)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for rows in pool.map(page, range(2, pages + 1)):
+            all_rows.extend(rows)
+    result: dict[str, str] = {}
+    for row in all_rows:
+        code = str(row.get('agdm') or '').strip()
+        name = html.unescape(re.sub(r'<[^>]+>', '', str(row.get('agjc') or ''))).strip()
+        if not re.fullmatch(r'[03]\d{5}', code) or not name or code in result:
+            raise ValueError('invalid Shenzhen exchange JSON row')
+        result[code] = name
+    if len(result) != total:
+        raise ValueError('incomplete Shenzhen exchange JSON listing')
+    return sorted(result.items())
+
+
+def listing_error_summary(exc: BaseException) -> str:
+    """Keep endpoint stages and error categories without provider bodies or request URLs."""
+    if isinstance(exc, ListingFetchError):
+        return str(exc)
+    parts = []
+    while exc is not None and len(parts) < 4:
+        code = getattr(exc, 'code', None)
+        part = type(exc).__name__ + (f'(HTTP {code})' if isinstance(code, int) else '')
+        if type(exc) is ValueError:
+            part += ': ' + str(exc)[:120]
+        parts.append(part)
+        exc = exc.__cause__
+    return ' -> '.join(parts)
+
+
+class ListingFetchError(ValueError):
+    pass
+
+
+def fetch_exchange_listing(accepted_dates: set[str], *, get: Callable = _get,
+                           cache_path: Path | None = None, cache_day: str = '') -> list[tuple[str, str]]:
     """Validate each exchange's declared row count before combining its exact universe."""
-    deadline = time.monotonic() + 37
+    from app.core.json_cache import read_json_cache, write_json_cache
+
+    deadline = time.monotonic() + 45
     params = {"CATALOGID": "1110", "TABKEY": "tab1"}
+    parts: dict[str, list[tuple[str, str]]] = {}
+    patterns = {'Shanghai main':r'60\d{4}', 'Shanghai STAR':r'68\d{4}', 'Shenzhen':r'[03]\d{5}'}
+    cached = read_json_cache(cache_path) if cache_path is not None else None
+    if cache_day and isinstance(cached, dict) and cached.get('date') == cache_day and isinstance(cached.get('parts'), dict):
+        for key, value in cached['parts'].items():
+            if key not in patterns or not isinstance(value, dict):
+                continue
+            rows = value.get('rows')
+            if not isinstance(rows, list) or not 0 < len(rows) <= 16000 or len(rows) != value.get('count'):
+                continue
+            if all(isinstance(row, (list,tuple)) and len(row) == 2 and isinstance(row[0], str) and re.fullmatch(patterns[key],row[0]) and isinstance(row[1],str) and row[1] for row in rows) and len({row[0] for row in rows}) == len(rows):
+                parts[key] = [tuple(row) for row in rows]
+    errors: list[str] = []
+
+    def shenzhen() -> list[tuple[str, str]]:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            xlsx = pool.submit(get, SZ, {**params, 'SHOWTYPE':'xlsx'}, deadline)
+            summary = pool.submit(get, SZ + '/data', {**params, 'SHOWTYPE':'JSON', 'PAGENO':'1'}, deadline)
+            metadata = json.loads(summary.result())
+            try:
+                return _sz_rows(xlsx.result(), metadata, accepted_dates)
+            except Exception as exc:
+                try:
+                    return _sz_json_rows(metadata, accepted_dates, deadline, get)
+                except Exception as fallback:
+                    raise ListingFetchError('workbook=' + listing_error_summary(exc) + '; JSON=' + listing_error_summary(fallback)) from fallback
+
     with ThreadPoolExecutor(max_workers=4) as pool:
-        boards = [pool.submit(_sh_board, kind, deadline, get) for kind in ("1", "8")]
-        xlsx = pool.submit(get, SZ, {**params, "SHOWTYPE": "xlsx"}, deadline)
-        summary = pool.submit(get, SZ + "/data", {**params, "SHOWTYPE": "JSON", "PAGENO": "1"}, deadline)
-        rows = _sz_rows(xlsx.result(), json.loads(summary.result()), accepted_dates)
-        for board in boards:
-            rows.extend(board.result())
+        tasks = {key:pool.submit(_sh_board, kind, deadline, get) for key,kind in
+                 (('Shanghai main','1'), ('Shanghai STAR','8')) if key not in parts}
+        if 'Shenzhen' not in parts:
+            tasks['Shenzhen'] = pool.submit(shenzhen)
+        for key, task in tasks.items():
+            try:
+                parts[key] = task.result()
+            except Exception as exc:
+                errors.append(key + ': ' + listing_error_summary(exc))
+    if cache_path is not None and cache_day:
+        write_json_cache(cache_path, {'date':cache_day, 'parts':{key:{'count':len(rows), 'rows':rows} for key,rows in parts.items()}})
+    if errors:
+        raise ListingFetchError('; '.join(errors))
+    rows = [row for part in parts.values() for row in part]
     if len({code for code, _ in rows}) != len(rows):
         raise ValueError("overlapping exchange listings")
     return sorted(rows)

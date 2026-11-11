@@ -1343,6 +1343,8 @@ def _runtime_storage_status() -> dict[str, Any]:
 
 def market_data_readiness(now: datetime | None = None) -> dict[str, Any]:
     """Build the public, non-sensitive deployment and market-data readiness view."""
+    from app.market_data.listing_cache import catalog_readiness
+
     current = now or current_cn_datetime()
     accepted_dates = accepted_kline_dates_for_dashboard(current)
     cache = kline_cache_readiness(
@@ -1355,6 +1357,7 @@ def market_data_readiness(now: datetime | None = None) -> dict[str, Any]:
     except (TypeError, ValueError):
         active_strategy = "invalid"
     requires_full_cache = practice_scan_requires_full_kline_cache()
+    listing = catalog_readiness(CRON_OUTPUT_DIR / 'a_share_listing_latest.json', current_cn_date_key(current))
     storage = _runtime_storage_status()
     offset = datetime.now().astimezone().utcoffset()
     timezone_ok = offset == timedelta(hours=8)
@@ -1364,7 +1367,7 @@ def market_data_readiness(now: datetime | None = None) -> dict[str, Any]:
         configured_workers = 6
     cpu_count = max(1, int(os.cpu_count() or 1))
     effective_workers = max(1, min(16, configured_workers, cpu_count * 2))
-    data_ready = bool(cache.get("ready")) or not requires_full_cache
+    data_ready = (bool(cache.get("ready")) and listing['ready']) or not requires_full_cache
     blockers = []
     warnings = []
     if requires_full_cache and not cache.get("ready"):
@@ -1374,6 +1377,8 @@ def market_data_readiness(now: datetime | None = None) -> dict[str, Any]:
             blockers.append("kline_prewarm_disabled")
         else:
             blockers.append(str(cache.get("error_code") or "kline_cache_incomplete"))
+    if requires_full_cache and not listing['ready']:
+        blockers.append('exchange_listing_unavailable')
     if not storage["writable"]:
         blockers.append("runtime_storage_not_writable")
     elif storage["containerized"] and not storage["persistent_storage_detected"]:
@@ -1409,6 +1414,7 @@ def market_data_readiness(now: datetime | None = None) -> dict[str, Any]:
         "requires_full_kline_cache": requires_full_cache,
         "blockers": list(dict.fromkeys(blockers)),
         "warnings": list(dict.fromkeys(warnings)),
+        "listing": listing,
         "kline": {
             **cache,
             "progress_pct": progress_pct,
@@ -3246,7 +3252,8 @@ def kline_prewarm_due(now: datetime | None = None) -> bool:
     if age_seconds < 0 or age_seconds > max(0, KLINE_PREWARM_CATCHUP_MINUTES) * 60:
         return False
     if prewarm_completed_for_date(current.strftime("%Y-%m-%d"), path=kline_cache_path()):
-        return False
+        if market_data_readiness(current).get('data_ready'):
+            return False
     if KLINE_PREWARM_LOCK.locked():
         return False
     return time.time() - KLINE_PREWARM_LAST_ATTEMPT_TS >= max(30, KLINE_PREWARM_RETRY_SECONDS)
@@ -3305,7 +3312,10 @@ def run_kline_prewarm(
     KLINE_PREWARM_LAST_ATTEMPT_TS = time.time()
     try:
         run_date = str(target_date or datetime.now().strftime("%Y-%m-%d"))[:10]
-        if prewarm_completed_for_date(run_date, path=kline_cache_path()):
+        from app.market_data.listing_cache import catalog_readiness
+        if prewarm_completed_for_date(run_date, path=kline_cache_path()) and catalog_readiness(
+            CRON_OUTPUT_DIR / 'a_share_listing_latest.json', run_date
+        )['ready']:
             return {"skipped": True, "reason": "already_completed", "target_date": run_date}
         script = Path(
             os.environ.get("DASHBOARD_B1_SCANNER", ENTRYPOINT_DIR / "multi_strategy_screen.py")
@@ -3340,6 +3350,10 @@ def run_kline_prewarm(
             return {"error": error, "target_date": run_date}
         if runner is None and not prewarm_completed_for_date(run_date, path=kline_cache_path()):
             return {"error": "盘前日K预热完成但有效覆盖率不足", "target_date": run_date}
+        if runner is None and not catalog_readiness(CRON_OUTPUT_DIR / 'a_share_listing_latest.json', run_date)['ready']:
+            record_kline_prewarm_failure(run_date, 'exchange_listing_unavailable')
+            return {'error': '当日交易所股票名录尚未完整获取，等待下次有界重试',
+                    'error_code': 'exchange_listing_unavailable', 'target_date': run_date}
         print(f"[K-line cache] pre-market refresh completed for {run_date}", flush=True)
         return {"updated": True, "target_date": run_date}
     except subprocess.TimeoutExpired:
@@ -3613,6 +3627,8 @@ def trigger_b1_scan(
                     if storage_blocked
                     else "日K缓存或初始化已禁用，请在设置页启用后重启服务"
                     if error_code in {"kline_cache_disabled", "kline_prewarm_disabled"}
+                    else "当日完整股票名录尚未就绪，已在后台恢复交易所名录"
+                    if error_code == "exchange_listing_unavailable"
                     else "市场数据尚未达到安全覆盖率，已在后台初始化日K缓存"
                 ),
                 "error_code": error_code,
@@ -3990,7 +4006,7 @@ def _wait_for_manual_cycle_market_data() -> None:
         )
     _set_practice_manual_cycle_state(
         stage="data_initializing",
-        stage_label="正在初始化全市场日K数据",
+        stage_label=("正在恢复当日完整股票名录" if "exchange_listing_unavailable" in blockers else "正在初始化全市场日K数据"),
         completed=int((readiness.get("kline") or {}).get("completed_count") or 0),
         total=int((readiness.get("kline") or {}).get("requested_count") or 0),
         error_code="",
@@ -4017,7 +4033,7 @@ def _wait_for_manual_cycle_market_data() -> None:
         kline = readiness.get("kline") if isinstance(readiness.get("kline"), dict) else {}
         _set_practice_manual_cycle_state(
             stage="data_initializing",
-            stage_label="正在初始化全市场日K数据",
+            stage_label=("正在恢复当日完整股票名录" if "exchange_listing_unavailable" in (readiness.get('blockers') or []) else "正在初始化全市场日K数据"),
             completed=int(kline.get("completed_count") or 0),
             total=int(kline.get("requested_count") or 0),
             cache_hits=int(kline.get("fresh_count") or 0),
@@ -4041,12 +4057,16 @@ def _wait_for_manual_cycle_market_data() -> None:
         ):
             raise PracticeCycleError(
                 (
-                    "全市场日K初始化完成，但有效覆盖率仍低于安全阈值"
+                    "当日交易所股票名录尚未完整获取，请检查名录刷新诊断"
+                    if "exchange_listing_unavailable" in blockers
+                    else "全市场日K初始化完成，但有效覆盖率仍低于安全阈值"
                     if kline_status == "completed"
                     else "全市场日K初始化失败，请检查腾讯行情连通性和持久化目录"
                 ),
                 code=(
-                    "kline_coverage_insufficient"
+                    "exchange_listing_unavailable"
+                    if "exchange_listing_unavailable" in blockers
+                    else "kline_coverage_insufficient"
                     if kline_status == "completed"
                     else str(kline.get("error_code") or "kline_prewarm_failed")
                 ),

@@ -1201,29 +1201,13 @@ def load_daily_scan_pool(universe: object) -> list[tuple[str, str]]:
     from app.core.json_cache import read_json_cache
     from app.core.process_lease import FileLease
     from app.market_data.tencent_market_breadth import DEFAULT_MIN_ROWS
+    from app.market_data.listing_cache import validate_catalog
 
     day = datetime.now().strftime('%Y-%m-%d')
     path = B1_OUTPUT_DIR / 'a_share_listing_latest.json'
-    expected = {'sh_main_board','sz_main_board','sz_chi_next','sh_star_market'}
     def validated(value: object) -> list[tuple[str, str]] | None:
-        if not isinstance(value, dict) or value.get('date') != day or value.get('schema_version') != 1:
-            return None
-        rows = value.get('rows')
-        if not isinstance(rows, list) or not DEFAULT_MIN_ROWS <= len(rows) <= 20000:
-            return None
-        names = {}
-        segments = set()
-        for row in rows:
-            if not isinstance(row, (tuple,list)) or len(row)!=2:
-                return None
-            code,name=row
-            if not isinstance(code,str) or not re.fullmatch(r'\d{6}',code) or not isinstance(name,str) or not name or code in names or not stock_board(code):
-                return None
-            names[code]=name
-            segments.add(('sh_' if code.startswith('6') else 'sz_') + stock_board(code))
-        if not expected <= segments:
-            return None
-        return [(code,name) for code,name in sorted(names.items()) if stock_in_universe(code,name,universe)]
+        rows = validate_catalog(value, day, minimum_rows=DEFAULT_MIN_ROWS)
+        return None if rows is None else [(code, name) for code, name in rows if stock_in_universe(code, name, universe)]
 
     cached = validated(read_json_cache(path))
     if cached is not None:
@@ -1249,7 +1233,14 @@ def load_daily_scan_pool(universe: object) -> list[tuple[str, str]]:
         except subprocess.TimeoutExpired as exc:
             raise IncompleteListingError('exchange listing refresh timed out') from exc
         if run.returncode or len(run.stdout)>2*1024*1024:
-            raise IncompleteListingError('complete exchange listing unavailable')
+            detail = ''
+            try:
+                failure = json.loads(run.stdout)
+                if isinstance(failure, dict) and failure.get('error_code') == 'exchange_listing_unavailable':
+                    detail = str(failure.get('diagnostic') or '')[:600]
+            except (UnicodeError, ValueError):
+                pass
+            raise IncompleteListingError('complete exchange listing unavailable' + (': ' + detail if detail else ''))
         try:
             value = json.loads(run.stdout)
         except (UnicodeError, ValueError) as exc:
@@ -1825,7 +1816,8 @@ def prewarm_full_market_klines(
     try:
         candidates = load_daily_scan_pool(FULL_SUPPORTED_NON_ST_UNIVERSE)
         symbols = [("sh" if code.startswith(("6", "9")) else "sz") + code for code, _name in candidates]
-    except IncompleteListingError:
+    except IncompleteListingError as exc:
+        print(f'[WARN] Exchange listing refresh failed during warmup: {exc}', file=sys.stderr)
         # This fallback supplies warming targets only. Selection still requires
         # the complete exchange listing and applies its normal universe rules.
         from app.market_data.tencent_market_breadth import fetch_tencent_market_breadth
@@ -1896,12 +1888,17 @@ def prewarm_full_market_klines(
 def main():
     if '--listed-codes-json' in sys.argv[1:]:
         from a_share_calendar import trading_day_status
-        from app.market_data.exchange_listing import fetch_exchange_listing
+        from app.market_data.exchange_listing import fetch_exchange_listing, listing_error_summary
         day = datetime.now().strftime('%Y-%m-%d')
         calendar = trading_day_status(day, allow_refresh=False)
         accepted = {day, str(calendar.get('previous_trading_day') or '')[:10]}
-        rows = [(code, name) for code, name in fetch_exchange_listing(accepted)
-                if stock_board(code) and '退' not in name]
+        try:
+            rows = [(code, name) for code, name in fetch_exchange_listing(accepted,
+                    cache_path=B1_OUTPUT_DIR / 'a_share_listing_parts.json', cache_day=day)
+                    if stock_board(code) and '退' not in name]
+        except Exception as exc:
+            json.dump({'error_code':'exchange_listing_unavailable', 'diagnostic':listing_error_summary(exc)}, sys.stdout)
+            raise SystemExit(2)
         json.dump({'schema_version':1,'date':day,'rows':rows},sys.stdout,ensure_ascii=False)
         return
     if kline_prewarm_only_mode():

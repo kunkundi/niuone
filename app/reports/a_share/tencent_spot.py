@@ -27,8 +27,8 @@ def _normalize_code(value: Any) -> str:
     return report_common.normalize_code(value)
 
 
-def _is_normal_a_share(code: str, name: str) -> bool:
-    return report_common.is_normal_a_share(code, name, code_normalizer=_normalize_code)
+def _is_full_market_a_share(code: str, name: str) -> bool:
+    return report_common.is_full_market_a_share(code, name, code_normalizer=_normalize_code)
 
 
 def _symbols() -> list[str]:
@@ -38,6 +38,9 @@ def _symbols() -> list[str]:
         + [f"sz{i:06d}" for i in range(300001, 302000)]
         + [f"sh{i:06d}" for i in range(600000, 606000)]
         + [f"sh{i:06d}" for i in range(688000, 690000)]
+        + [f"bj{i:06d}" for start, stop in ((430000, 440000), (830000, 840000),
+                                            (870000, 890000), (920000, 930000))
+           for i in range(start, stop)]
     )
 
 
@@ -91,7 +94,7 @@ def fetch_tencent_spot_snapshot(
             if len(parts) < 38:
                 continue
             code, name = _normalize_code(parts[2]), parts[1].strip()
-            if not _is_normal_a_share(code, name):
+            if not _is_full_market_a_share(code, name):
                 continue
             price = _safe_float(parts[3])
             prev_close = _safe_float(parts[4])
@@ -141,12 +144,11 @@ def fetch_tencent_spot_snapshot(
         pool.shutdown(wait=False, cancel_futures=True)
 
     result = sorted({row["code"]: row for row in rows}.values(), key=lambda row: row["code"])
+    if errors:
+        return [], f"腾讯全市场行情部分请求失败 {len(errors)} 组，等待完整快照"
     if len(result) < min_rows:
         detail = f"腾讯全市场行情仅取到 {len(result)} 只，低于完整性下限 {min_rows} 只"
         if errors:
             detail += f"；{errors[0]}"
         return [], detail
-    notes: list[str] = []
-    if errors:
-        notes.append(f"腾讯备用行情部分请求失败 {len(errors)} 组")
-    return result, "；".join(notes) or None
+    return result, None

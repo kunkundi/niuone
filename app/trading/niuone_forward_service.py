@@ -60,6 +60,7 @@ PROTOCOL_SOURCE_PATHS = (
     "app/market_data/cn_stock_tools.py",
     "app/market_data/tencent_kline_cache.py",
     "app/market_data/exchange_listing.py",
+    "app/market_data/listing_cache.py",
     "app/screening/niuone_minute.py",
     "app/storage/practice_db.py",
     "app/strategies/attribution.py",

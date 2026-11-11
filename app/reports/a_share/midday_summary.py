@@ -97,10 +97,8 @@ def normalize_industry_name(name: str) -> str:
 
 
 def quiet_call(fn, *args, **kwargs):
-    """Call noisy akshare endpoints without leaking tqdm/progress bars into cron output."""
-    with open(os.devnull, "w") as devnull:
-        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
-            return fn(*args, **kwargs)
+    from reports.a_share.provider_worker import fetch_frame
+    return fetch_frame(fn.__name__, *args, **kwargs)
 
 
 def extract_eastmoney_spot_rows(diff: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -273,27 +271,11 @@ def fetch_eastmoney_spot_direct_single_page():
 def fetch_spot():
     errors: list[str] = []
     try:
-        with time_limit(safe_int(os.getenv("A_SHARE_SUMMARY_SPOT_TIMEOUT", "50"), 50)):
-            df = quiet_call(ak.stock_zh_a_spot_em)
-        if df is not None and len(df):
-            issue = spot_snapshot_issue(extract_market(df), None)
-            if not issue:
-                return df, None
-            errors.append(f"stock_zh_a_spot_em: {issue}")
-        else:
-            errors.append("stock_zh_a_spot_em: returned empty")
-    except Exception as e:
-        errors.append(f"stock_zh_a_spot_em: {type(e).__name__}: {e}")
-
-    try:
         rows, direct_warning = fetch_eastmoney_spot_direct()
         if rows:
             issue = spot_snapshot_issue(rows, direct_warning)
             if not issue:
-                msg = "akshare东财现货接口失败，已切换东方财富直连：" + errors[-1]
-                if direct_warning:
-                    msg += f"；{direct_warning}"
-                return rows, msg
+                return rows, direct_warning
             errors.append(f"东财分页直连不完整: {issue}")
         else:
             errors.append("东财分页直连返回空")
@@ -314,6 +296,18 @@ def fetch_spot():
             errors.append(tencent_warning or "腾讯全市场行情返回空")
     except Exception as e:
         errors.append(f"腾讯全市场行情: {type(e).__name__}: {e}")
+
+    try:
+        df = quiet_call(ak.stock_zh_a_spot_em)
+        if df is not None and len(df):
+            issue = spot_snapshot_issue(extract_market(df), None)
+            if not issue:
+                return df, "直连行情暂不可用，已切换 AkShare 东财现货"
+            errors.append(f"stock_zh_a_spot_em: {issue}")
+        else:
+            errors.append("stock_zh_a_spot_em: returned empty")
+    except Exception as e:
+        errors.append(f"stock_zh_a_spot_em: {type(e).__name__}: {e}")
 
     try:
         with time_limit(safe_int(os.getenv("A_SHARE_SUMMARY_SINA_TIMEOUT", "10"), 10)):
