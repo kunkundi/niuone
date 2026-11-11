@@ -390,7 +390,7 @@ def a_share_price_limits(
     ratio = 0.05 if bar.is_st else 0.10
     if not bar.is_st and code.startswith(("688", "689")):
         ratio = 0.20
-    elif not bar.is_st and code.startswith(("300", "301")) and bar.date >= "2020-08-24":
+    elif not bar.is_st and code.startswith(("300", "301", "302")) and bar.date >= "2020-08-24":
         ratio = 0.20
     elif not bar.is_st and code.startswith(("4", "8")):
         ratio = 0.30

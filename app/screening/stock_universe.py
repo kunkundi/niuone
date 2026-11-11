@@ -20,7 +20,7 @@ STOCK_UNIVERSE_OPTIONS = (
     {
         "id": "chi_next",
         "label": "创业板",
-        "desc": "纳入 300、301 开头的非 ST 股票",
+        "desc": "纳入 300、301、302 开头的非 ST 股票",
         "color": "#8b5cf6",
     },
     {
@@ -83,7 +83,7 @@ def friendly_stock_universe(value: object | None) -> str:
 
 def stock_board(code: object) -> str:
     normalized = re.sub(r"\D", "", str(code or ""))[-6:]
-    if normalized.startswith(("300", "301")):
+    if normalized.startswith(("300", "301", "302")):
         return "chi_next"
     if normalized.startswith(("688", "689")):
         return "star_market"

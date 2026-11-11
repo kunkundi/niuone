@@ -79,6 +79,7 @@ PROTOCOL_SOURCE_PATHS = (
     "app/screening/holding_cycle.py",
     "app/screening/scan_artifact.py",
     "app/screening/multi_strategy.py",
+    "app/screening/stock_universe.py",
     "app/trading/fees.py",
     "app/trading/lifecycles.py",
     "app/strategies/performance.py",

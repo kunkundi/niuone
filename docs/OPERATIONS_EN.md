@@ -82,6 +82,8 @@ Midday and closing reports try bounded direct quotes first. The Tencent fallback
 
 Reports and scans share a lightweight listing worker and the same complete daily catalog. The catalog retains currently listed delisting-period securities; trading consumers apply their existing exclusions. Report quotes for Shanghai and Shenzhen are checked against that catalog so obsolete delisted quote aliases cannot inflate advance, decline, or flat counts.
 
+The ChiNext universe covers `300`, `301`, and `302` codes. Full-market quotes, auction fallback snapshots, pre-execution limit checks, and historical replay use the corresponding board classification. The universe-classification source is included in the strict-forward fingerprint.
+
 The final **About** settings group shows the project author, GitHub repository, Apache License 2.0, current version, and newest Docker Hub release, with a **Check for updates** button that bypasses the server cache and refreshes the upstream result. **Automatically check for new versions** is enabled by default and takes effect at runtime; set `DASHBOARD_AUTO_VERSION_CHECK_ENABLED=0` in `dashboard.env` to disable it. “Do not remind me about this version” is stored only in the current browser; manually clicking the home-page version still checks again, and a later release can trigger a new reminder.
 
 ## 3. Model and Data-Source Configuration

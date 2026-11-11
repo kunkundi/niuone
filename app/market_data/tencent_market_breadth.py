@@ -66,7 +66,7 @@ def _symbols() -> list[str]:
 
     return (
         [f"sz{i:06d}" for i in range(1, 4_000)]
-        + [f"sz{i:06d}" for i in range(300_001, 302_000)]
+        + [f"sz{i:06d}" for i in range(300_001, 303_000)]
         + [f"sh{i:06d}" for i in range(600_000, 606_000)]
         + [f"sh{i:06d}" for i in range(688_000, 690_000)]
     )
