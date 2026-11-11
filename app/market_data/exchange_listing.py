@@ -170,7 +170,12 @@ def fetch_exchange_listing(accepted_dates: set[str], *, get: Callable = _get,
     params = {"CATALOGID": "1110", "TABKEY": "tab1"}
     parts: dict[str, list[tuple[str, str]]] = {}
     patterns = {'Shanghai main':r'60\d{4}', 'Shanghai STAR':r'68\d{4}', 'Shenzhen':r'[03]\d{5}'}
-    cached = read_json_cache(cache_path) if cache_path is not None else None
+    cached = None
+    try:
+        if cache_path is not None and cache_path.stat().st_size <= 2 * 1024 * 1024:
+            cached = read_json_cache(cache_path)
+    except (OSError, UnicodeError):
+        pass
     if cache_day and isinstance(cached, dict) and cached.get('date') == cache_day and isinstance(cached.get('parts'), dict):
         for key, value in cached['parts'].items():
             if key not in patterns or not isinstance(value, dict):
@@ -213,3 +218,24 @@ def fetch_exchange_listing(accepted_dates: set[str], *, get: Callable = _get,
     if len({code for code, _ in rows}) != len(rows):
         raise ValueError("overlapping exchange listings")
     return sorted(rows)
+
+
+def main() -> None:
+    import sys
+    from app.reports.a_share.calendar import trading_day_status
+
+    request = json.load(sys.stdin)
+    day = str(request['day'])
+    date.fromisoformat(day)
+    calendar = trading_day_status(day, allow_refresh=False)
+    accepted = {day, str(calendar.get('previous_trading_day') or '')[:10]}
+    try:
+        rows = fetch_exchange_listing(accepted, cache_path=Path(request['parts_path']), cache_day=day)
+    except Exception as exc:
+        json.dump({'error_code':'exchange_listing_unavailable','diagnostic':listing_error_summary(exc)},sys.stdout)
+        raise SystemExit(2)
+    json.dump({'schema_version':2,'date':day,'rows':rows},sys.stdout,ensure_ascii=False)
+
+
+if __name__ == '__main__':
+    main()

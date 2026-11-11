@@ -61,15 +61,15 @@ class RuntimeSlotIsolationTests(unittest.TestCase):
             path = Path(tmp) / 'a_share_listing_latest.json'
             stack.enter_context(patch.object(scanner, 'B1_OUTPUT_DIR', Path(tmp)))
             runner = stack.enter_context(patch('subprocess.run'))
-            yesterday = {'schema_version': 1, 'date': '2000-01-01', 'rows': []}
+            yesterday = {'schema_version':2, 'date': '2000-01-01', 'rows': []}
             path.write_text(json.dumps(yesterday), encoding='utf-8')
             today = datetime.now().strftime('%Y-%m-%d')
             sh_only = [[f'{prefix}{i:03d}', f'测试{i}'] for prefix in ('600','601','603','605','688') for i in range(1000)]
-            runner.return_value = types.SimpleNamespace(returncode=0,stdout=json.dumps({'date':today,'schema_version':1,'rows':sh_only}).encode())
+            runner.return_value = types.SimpleNamespace(returncode=0,stdout=json.dumps({'date':today,'schema_version':2,'rows':sh_only}).encode())
             with self.assertRaises(scanner.IncompleteListingError): scanner.load_daily_scan_pool('main_board')
             self.assertEqual(json.loads(path.read_text()),yesterday)
             complete = sh_only + [['000001','深市'],['300001','创业']]
-            runner.return_value.stdout = json.dumps({'date':today,'schema_version':1,'rows':complete}).encode()
+            runner.return_value.stdout = json.dumps({'date':today,'schema_version':2,'rows':complete}).encode()
             self.assertEqual(scanner.load_daily_scan_pool('chi_next'), [('300001','创业')])
             runner.side_effect = AssertionError('fresh complete catalog should be shared')
             self.assertEqual(len(scanner.load_daily_scan_pool('star_market')), 1000)
@@ -101,7 +101,7 @@ class RuntimeSlotIsolationTests(unittest.TestCase):
             rows += [['000001','深市'],['300001','创业板']]
             def publish(_delay):
                 (root/'a_share_listing_latest.json').write_text(json.dumps({
-                    'schema_version':1, 'date':datetime.now().strftime('%Y-%m-%d'), 'rows':rows}), encoding='utf-8')
+                    'schema_version':2, 'date':datetime.now().strftime('%Y-%m-%d'), 'rows':rows}), encoding='utf-8')
                 lock.unlink()
             stack.enter_context(patch.object(scanner.time,'sleep',side_effect=publish))
             self.assertEqual(scanner.load_daily_scan_pool('chi_next'), [('300001','创业板')])

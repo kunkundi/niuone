@@ -1197,61 +1197,12 @@ def load_main_board_code_pool():
 
 def load_daily_scan_pool(universe: object) -> list[tuple[str, str]]:
     """Share one complete, same-day exchange catalog between warmup and scans."""
-    import subprocess
-    from app.core.json_cache import read_json_cache
-    from app.core.process_lease import FileLease
-    from app.market_data.tencent_market_breadth import DEFAULT_MIN_ROWS
-    from app.market_data.listing_cache import validate_catalog
-
-    day = datetime.now().strftime('%Y-%m-%d')
-    path = B1_OUTPUT_DIR / 'a_share_listing_latest.json'
-    def validated(value: object) -> list[tuple[str, str]] | None:
-        rows = validate_catalog(value, day, minimum_rows=DEFAULT_MIN_ROWS)
-        return None if rows is None else [(code, name) for code, name in rows if stock_in_universe(code, name, universe)]
-
-    cached = validated(read_json_cache(path))
-    if cached is not None:
-        return cached
-    path.parent.mkdir(parents=True,exist_ok=True)
-    lease = FileLease(path.with_suffix('.lock'), stale_after_seconds=75)
-    if not lease.acquire():
-        # Warmup and a scheduled scan can request the same catalog together.
-        deadline = time.monotonic() + 61
-        while lease.path.exists() and time.monotonic() < deadline:
-            time.sleep(0.25)
-        cached = validated(read_json_cache(path))
-        if cached is not None:
-            return cached
-        raise IncompleteListingError('concurrent exchange listing refresh did not publish a complete catalog')
+    from app.market_data.listing_cache import ListingCacheError, load_current_listing
     try:
-        cached = validated(read_json_cache(path))
-        if cached is not None:
-            return cached
-        try:
-            run = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1]/'entrypoints/multi_strategy_screen.py'), '--listed-codes-json'],
-                                 capture_output=True,timeout=60,check=False,env={**os.environ,'PYTHONIOENCODING':'utf-8'})
-        except subprocess.TimeoutExpired as exc:
-            raise IncompleteListingError('exchange listing refresh timed out') from exc
-        if run.returncode or len(run.stdout)>2*1024*1024:
-            detail = ''
-            try:
-                failure = json.loads(run.stdout)
-                if isinstance(failure, dict) and failure.get('error_code') == 'exchange_listing_unavailable':
-                    detail = str(failure.get('diagnostic') or '')[:600]
-            except (UnicodeError, ValueError):
-                pass
-            raise IncompleteListingError('complete exchange listing unavailable' + (': ' + detail if detail else ''))
-        try:
-            value = json.loads(run.stdout)
-        except (UnicodeError, ValueError) as exc:
-            raise IncompleteListingError('invalid exchange listing response') from exc
-        result = validated(value)
-        if result is None:
-            raise IncompleteListingError('incomplete exchange listing')
-        write_json_cache(path,value)
-        return result
-    finally:
-        lease.release()
+        rows = load_current_listing(B1_OUTPUT_DIR / 'a_share_listing_latest.json', datetime.now().strftime('%Y-%m-%d'))
+    except ListingCacheError as exc:
+        raise IncompleteListingError(str(exc)) from exc
+    return [(code,name) for code,name in rows if '退' not in name and stock_in_universe(code,name,universe)]
 
 
 def get_margin_signal(code: str) -> dict | None:

@@ -80,6 +80,8 @@ Readiness also requires the complete current-day Shanghai/Shenzhen catalog. The 
 
 Midday and closing reports try bounded direct quotes first. The Tencent fallback covers Shanghai, Shenzhen, and Beijing stocks, including ST and new listings, and rejects snapshots with failed batches. Legacy AkShare calls run in child processes with parent-enforced deadlines before source failover.
 
+Reports and scans share a lightweight listing worker and the same complete daily catalog. The catalog retains currently listed delisting-period securities; trading consumers apply their existing exclusions. Report quotes for Shanghai and Shenzhen are checked against that catalog so obsolete delisted quote aliases cannot inflate advance, decline, or flat counts.
+
 The final **About** settings group shows the project author, GitHub repository, Apache License 2.0, current version, and newest Docker Hub release, with a **Check for updates** button that bypasses the server cache and refreshes the upstream result. **Automatically check for new versions** is enabled by default and takes effect at runtime; set `DASHBOARD_AUTO_VERSION_CHECK_ENABLED=0` in `dashboard.env` to disable it. “Do not remind me about this version” is stored only in the current browser; manually clicking the home-page version still checks again, and a later release can trigger a new reminder.
 
 ## 3. Model and Data-Source Configuration

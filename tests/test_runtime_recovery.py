@@ -97,9 +97,9 @@ class RuntimeRecoveryTests(unittest.TestCase):
             result = dashboard.market_data_readiness(at)
             self.assertFalse(result['ready'])
             self.assertIn('exchange_listing_unavailable', result['blockers'])
-            rows = [[f'{600000+i:06d}', '沪市'] for i in range(5000)] + [['688001','科创'],['000001','深市'],['300001','创业']]
+            rows = [[f'{prefix}{i:03d}', '沪市'] for prefix in ('600','601','603','605','688') for i in range(1000)] + [['000001','深市'],['300001','创业']]
             path = root/'a_share_listing_latest.json'
-            path.write_text(json.dumps({'schema_version':1,'date':self.day,'rows':rows}),encoding='utf-8')
+            path.write_text(json.dumps({'schema_version':2,'date':self.day,'rows':rows}),encoding='utf-8')
             self.assertTrue(dashboard.market_data_readiness(at)['ready'])
             self.assertFalse(catalog_readiness(path,'2026-11-13')['ready'])
 
@@ -141,8 +141,10 @@ class RuntimeRecoveryTests(unittest.TestCase):
 
     def test_tencent_report_includes_bse_st_and_new_listings(self):
         symbols = set(tencent_spot._symbols())
-        for symbol in ('bj430001','bj830001','bj870001','bj880001','bj920001'):
+        for symbol in ('bj920001','bj920799','bj920999'):
             self.assertIn(symbol,symbols)
+        self.assertEqual(sum(s.startswith('bj') for s in symbols),1000)
+        self.assertNotIn('bj830799',symbols)
         for code,name in [('920001','北交'),('600001','*ST测试'),('300001','N新股')]:
             self.assertTrue(tencent_spot._is_full_market_a_share(code,name))
 
@@ -152,14 +154,67 @@ class RuntimeRecoveryTests(unittest.TestCase):
         class Response(BytesIO):
             def read(self, *args):return super().read(*args)
         def open_url(request, **kwargs):
-            if request.full_url.endswith('sh600002'):raise TimeoutError()
+            if request.full_url.endswith('sh600051'):raise TimeoutError()
             return Response(('v_sh600001="'+'~'.join(fields)+'";').encode('gb18030'))
         with tempfile.TemporaryDirectory() as tmp, patch.object(tencent_spot,'_symbols',return_value=['sh600001','sh600002']), patch.object(tencent_spot,'urlopen',side_effect=open_url), patch.dict('os.environ',{'RECOVERY_CHUNK':'50'}):
             # One failed batch must invalidate even a snapshot above min_rows.
-            with patch.object(tencent_spot,'_symbols',return_value=['sh600001']*50+['sh600002']):
-                rows,issue = tencent_spot.fetch_tencent_spot_snapshot(Path(tmp),env_prefix='RECOVERY',min_rows=1)
+            with patch.object(tencent_spot,'_symbols',return_value=[]):
+                rows,issue = tencent_spot.fetch_tencent_spot_snapshot(Path(tmp),env_prefix='RECOVERY',min_rows=1,listed_codes={f'{600000+i:06d}' for i in range(1,52)})
         self.assertEqual(rows,[])
         self.assertIn('部分请求失败',issue)
+
+    def test_queued_batches_expiring_before_start_are_recorded_as_failures(self):
+        stamps=iter([0,6])
+        with tempfile.TemporaryDirectory() as tmp, patch.object(tencent_spot,'_symbols',return_value=['sh600001']), patch.object(tencent_spot.time,'monotonic',side_effect=lambda:next(stamps,6)), patch.dict('os.environ',{'QUEUE_DEADLINE':'5'}), patch.object(tencent_spot,'urlopen') as request:
+            rows,issue=tencent_spot.fetch_tencent_spot_snapshot(Path(tmp),env_prefix='QUEUE',min_rows=1,listed_codes={'600001'})
+        request.assert_not_called()
+        self.assertEqual(rows,[])
+        self.assertIn('部分请求失败',issue)
+
+    def test_tencent_helper_imports_through_the_canonical_package(self):
+        script = "import sys; from pathlib import Path; root=Path.cwd(); excluded={str(root/'app'),str(root/'app/compat')}; sys.path=[p for p in sys.path if p not in excluded]; import app.reports.a_share.tencent_spot"
+        result=subprocess.run([sys.executable,'-c',script],cwd=ROOT,capture_output=True,text=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_corrupt_fragment_cache_is_rebuilt_from_verified_exchange_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'parts.json'
+            path.write_bytes(b'\xff')
+            rows=listing.fetch_exchange_listing({self.day},get=self.get,cache_path=path,cache_day=self.day)
+            self.assertEqual(len(rows),4)
+            self.assertEqual(json.loads(path.read_text())['date'],self.day)
+
+    def test_corrupt_daily_catalog_is_refreshed_without_reusing_its_contents(self):
+        rows=[[f'{prefix}{i:03d}','测试'] for prefix in ('600','601','603','605','688') for i in range(1000)]+[['000001','深市'],['300001','创业']]
+        with tempfile.TemporaryDirectory() as tmp, patch.object(scanner,'B1_OUTPUT_DIR',Path(tmp)), patch('subprocess.run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps({'schema_version':2,'date':datetime.now().strftime('%Y-%m-%d'),'rows':rows}).encode())):
+            (Path(tmp)/'a_share_listing_latest.json').write_bytes(b'\xff')
+            self.assertEqual(scanner.load_daily_scan_pool('chi_next'),[('300001','创业')])
+
+    def test_report_quotes_are_intersected_with_the_current_exchange_listing(self):
+        from app.market_data.listing_cache import validate_catalog
+        fields=['']*38
+        for index,value in {1:'已退市别名',2:'600002',3:'10',4:'10',30:'20261111090000',32:'0',37:'0'}.items():fields[index]=value
+        class Response(BytesIO):
+            pass
+        with tempfile.TemporaryDirectory() as tmp, patch.object(tencent_spot,'_symbols',return_value=['sh600001']), patch.object(tencent_spot,'urlopen',return_value=Response(('v_sh600002="'+'~'.join(fields)+'";').encode('gb18030'))):
+            rows,issue=tencent_spot.fetch_tencent_spot_snapshot(Path(tmp),min_rows=1,listed_codes={'600001'})
+        self.assertEqual(rows,[])
+        self.assertIn('低于完整性下限',issue)
+        catalog={'schema_version':1,'date':self.day,'rows':[['600001','沪市'],['688001','科创'],['000001','深市'],['300001','创业']]}
+        self.assertIsNone(validate_catalog(catalog,self.day,minimum_rows=1))
+
+    def test_report_requests_the_actual_exchange_code_beyond_legacy_ranges(self):
+        fields=['']*38
+        for index,value in {1:'中航成飞',2:'302132',3:'11',4:'10',30:'20261111150000',32:'10',37:'100'}.items():fields[index]=value
+        requests=[]
+        def opened(request,**kwargs):
+            requests.append(request.full_url)
+            return BytesIO(('v_sz302132="'+'~'.join(fields)+'";').encode('gb18030'))
+        with tempfile.TemporaryDirectory() as tmp, patch.object(tencent_spot,'_symbols',return_value=[]), patch.object(tencent_spot,'urlopen',side_effect=opened):
+            rows,issue=tencent_spot.fetch_tencent_spot_snapshot(Path(tmp),min_rows=1,listed_codes={'302132'})
+        self.assertIsNone(issue)
+        self.assertEqual([row['code'] for row in rows],['302132'])
+        self.assertEqual(requests,['https://qt.gtimg.cn/q=sz302132'])
 
 
 if __name__ == '__main__':
