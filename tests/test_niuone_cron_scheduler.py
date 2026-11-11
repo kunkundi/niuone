@@ -32,8 +32,8 @@ class NiuoneCronSchedulerTests(unittest.TestCase):
         scheduler = load_scheduler_module()
         report = next(job for job in scheduler.JOBS if job.env_name == "DASHBOARD_MARKET_CLOSE_CRON")
         settings = {"A_SHARE_MODEL_SUMMARY_DEADLINE_SECONDS": "300"}
-        self.assertEqual(scheduler.job_timeout_seconds(report, {}), 180)
-        self.assertEqual(scheduler.job_timeout_seconds(report, settings), 420)
+        self.assertEqual(scheduler.job_timeout_seconds(report, {}), 240)
+        self.assertEqual(scheduler.job_timeout_seconds(report, settings), 480)
         self.assertEqual(scheduler.job_timeout_seconds(report, {
             **settings, "A_SHARE_MODEL_SUMMARY_ENABLED": "0",
         }), 180)
@@ -49,7 +49,7 @@ class NiuoneCronSchedulerTests(unittest.TestCase):
         ):
             result = scheduler.run_job_once(report, datetime(2026, 11, 5, 15, 10, tzinfo=scheduler.CN_TZ))
         self.assertTrue(result.success)
-        self.assertEqual(run.call_args.kwargs["timeout"], 420)
+        self.assertEqual(run.call_args.kwargs["timeout"], 480)
 
     def test_scheduler_log_rotates_at_a_bounded_size(self):
         scheduler = load_scheduler_module()

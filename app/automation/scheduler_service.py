@@ -252,7 +252,7 @@ def job_timeout_seconds(job: Job, env_values: dict[str, str]) -> int:
         env_values, "A_SHARE_MODEL_SUMMARY_DEADLINE_SECONDS", 60,
         min_value=15, max_value=1800,
     )
-    return max(job.timeout_seconds, min(1800, deadline + 120))
+    return max(job.timeout_seconds, min(1800, deadline + 180))
 
 
 def run_job_once(job: Job, run_time: datetime, *, attempt: int = 1, max_attempts: int = 1) -> JobRunResult:
