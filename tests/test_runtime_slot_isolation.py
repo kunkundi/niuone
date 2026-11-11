@@ -36,9 +36,10 @@ class RuntimeSlotIsolationTests(unittest.TestCase):
     def test_protocol_freezes_all_scan_input_and_transport_sources(self):
         from app.trading.niuone_forward_service import PROTOCOL_SOURCE_PATHS
         for path in ("app/screening/scan_artifact.py", "app/market_data/tencent_kline_cache.py",
-                     "app/market_data/exchange_listing.py", "app/screening/niuone_minute.py"):
+                     "app/market_data/exchange_listing.py", "app/screening/niuone_minute.py",
+                     "app/market_data/listing_cache.py", "app/screening/stock_universe.py"):
             self.assertIn(path, PROTOCOL_SOURCE_PATHS)
-        self.assertEqual(len(set(PROTOCOL_SOURCE_PATHS)), 36)
+        self.assertEqual(len(set(PROTOCOL_SOURCE_PATHS)), 38)
 
     def test_partial_listing_requires_verified_second_exchange(self):
         fallback = Rows([{'code': '000001', 'name': '深市主板'}, {'code': '300001', 'name': '创业板'}])
