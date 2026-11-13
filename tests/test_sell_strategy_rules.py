@@ -9,6 +9,7 @@ import threading
 import time
 import types
 import unittest
+from unittest.mock import patch
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
@@ -50,6 +51,18 @@ def complete_preset_interpretation() -> dict[str, list[str]]:
 
 
 class SellStrategyRuleTests(unittest.TestCase):
+    def setUp(self):
+        # 风控与提示词回归使用固定行情输入；数据源由独立回归覆盖。
+        fixtures = (
+            ('fetch_global_decision_sources', {'enabled': True, 'generated_at': '2026-06-24 10:00:00', 'sources': {}}),
+            ('check_market_environment', {'bullish': True, 'detail': '固定指数快照'}),
+            ('check_market_sentiment', {'sentiment': 'neutral', 'detail': '固定情绪快照', 'hot_sectors': []}),
+        )
+        for name, value in fixtures:
+            fixture = patch.object(trader, name, return_value=value)
+            fixture.start()
+            self.addCleanup(fixture.stop)
+
     def test_trading_time_tracks_auction_and_static_period(self):
         allowed, reason = trader.is_a_share_trading_time(datetime(2026, 6, 24, 9, 15))
         self.assertTrue(allowed)
@@ -2962,11 +2975,15 @@ class SellStrategyRuleTests(unittest.TestCase):
                         stderr=subprocess.PIPE,
                         text=True,
                     )
-                    for _ in range(250):
+                    # Importing the full trader can exceed five seconds on a
+                    # busy single-core container. Contention starts at "ready".
+                    import_deadline = time.monotonic() + 30
+                    while time.monotonic() < import_deadline:
                         if ready_file.exists():
                             break
                         if proc.poll() is not None:
-                            break
+                            stdout, stderr = proc.communicate()
+                            self.fail(f"lock-test child exited during import: {stdout}\n{stderr}")
                         time.sleep(0.02)
                     self.assertTrue(ready_file.exists())
                     time.sleep(0.1)

@@ -2,11 +2,14 @@
 """Small local scheduler for NiuOne cron-style jobs."""
 from __future__ import annotations
 
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +47,7 @@ LOG_BACKUP_COUNT = 3
 STATE_PATH = DASHBOARD_HOME / "cron" / "state" / "niuone_cron_scheduler.json"
 CN_TZ = ZoneInfo("Asia/Shanghai")
 STOP = False
+_LOG_LOCK = threading.RLock()
 JOB_HISTORY_RETENTION_DAYS = 400
 JOB_HISTORY_RUNS_PER_JOB = 10
 
@@ -115,11 +119,12 @@ def _rotate_log_if_needed(incoming_bytes: int) -> None:
 
 def log(message: str) -> None:
     line = f"{datetime.now(CN_TZ).isoformat()} {message}\n"
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    _rotate_log_if_needed(len(line.encode("utf-8")))
-    with LOG_PATH.open("a", encoding="utf-8") as f:
-        f.write(line)
-        f.flush()
+    with _LOG_LOCK:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_needed(len(line.encode("utf-8")))
+        with LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(line)
+            f.flush()
 
 
 def handle_stop(signum: int, _frame: object) -> None:
@@ -152,6 +157,9 @@ def read_int_setting(env_values: dict[str, str], name: str, default: int, *, min
 
 
 def job_enabled(job: Job, env_values: dict[str, str]) -> bool:
+    if job.env_name == "DASHBOARD_US_MARKET_SUMMARY_CRON":
+        raw = env_values.get("DASHBOARD_US_MARKET_SUMMARY_ENABLED", "1")
+        return str(raw).strip().lower() not in {"0", "false", "no", "off"}
     if job.env_name == "IWENCAI_DRAGON_TIGER_CRON":
         # Callers pass the fully resolved dashboard.env mapping. Do not leak a
         # separately inherited process value into explicit test/runtime snapshots.
@@ -228,6 +236,25 @@ def save_state(state: dict[str, object]) -> None:
             pass
 
 
+def job_timeout_seconds(job: Job, env_values: dict[str, str]) -> int:
+    """Keep report process limits outside the configured model deadline."""
+    if job.env_name not in {
+        "DASHBOARD_MARKET_AUCTION_CRON",
+        "DASHBOARD_MARKET_MIDDAY_CRON",
+        "DASHBOARD_MARKET_CLOSE_CRON",
+    }:
+        return job.timeout_seconds
+    if str(env_values.get("A_SHARE_MODEL_SUMMARY_ENABLED", "1")).strip().lower() in {
+        "0", "false", "no", "off",
+    }:
+        return job.timeout_seconds
+    deadline = read_int_setting(
+        env_values, "A_SHARE_MODEL_SUMMARY_DEADLINE_SECONDS", 60,
+        min_value=15, max_value=1800,
+    )
+    return max(job.timeout_seconds, min(1800, deadline + 180))
+
+
 def run_job_once(job: Job, run_time: datetime, *, attempt: int = 1, max_attempts: int = 1) -> JobRunResult:
     env = os.environ.copy()
     env.update(parse_env_file())
@@ -237,6 +264,7 @@ def run_job_once(job: Job, run_time: datetime, *, attempt: int = 1, max_attempts
     env["NIUONE_CRON_RUN_KEY"] = f"{job.job_id}:{run_time.strftime('%Y%m%d%H%M')}"
     env["NIUONE_CRON_JOB_ENV"] = job.env_name
     env["NIUONE_CRON_SCHEDULED_AT"] = run_time.astimezone(CN_TZ).isoformat()
+    timeout_seconds = job_timeout_seconds(job, env)
     command = [sys.executable, str(SCRIPT_DIR / "entrypoints" / job.command[0]), *job.command[1:]]
     start = time.monotonic()
     log(f"start job={job.job_id} title={job.title} attempt={attempt}/{max_attempts} command={command}")
@@ -248,7 +276,7 @@ def run_job_once(job: Job, run_time: datetime, *, attempt: int = 1, max_attempts
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=job.timeout_seconds,
+            timeout=timeout_seconds,
         )
         elapsed = time.monotonic() - start
         status = "ok" if proc.returncode == 0 else "script failed"
@@ -268,7 +296,7 @@ def run_job_once(job: Job, run_time: datetime, *, attempt: int = 1, max_attempts
             error=error_detail,
         )
     except subprocess.TimeoutExpired as exc:
-        error = f"timeout after {job.timeout_seconds}s"
+        error = f"timeout after {timeout_seconds}s"
         log(f"timeout job={job.job_id} attempt={attempt}/{max_attempts} error={error}")
         return JobRunResult(False, "script failed", None, time.monotonic() - start, error)
     except Exception as exc:
@@ -278,9 +306,13 @@ def run_job_once(job: Job, run_time: datetime, *, attempt: int = 1, max_attempts
 
 
 def run_job(job: Job, run_time: datetime) -> JobRunResult:
+    from app.messaging.runtime import report_operation_safely
     env_values = parse_env_file()
     max_attempts, retry_delay = retry_settings(job, env_values)
     result = run_job_once(job, run_time, attempt=1, max_attempts=max_attempts)
+    if not result.success:
+        report_operation_safely(job.env_name, job.title, ok=False, error=result.error,
+                                env={**env_values, **os.environ}, final_attempt=False)
     attempt = 1
     while not result.success and attempt < max_attempts and not STOP:
         attempt += 1
@@ -294,6 +326,8 @@ def run_job(job: Job, run_time: datetime) -> JobRunResult:
         result = run_job_once(job, run_time, attempt=attempt, max_attempts=max_attempts)
     if not result.success and max_attempts > 1:
         log(f"retry exhausted job={job.job_id} attempts={max_attempts} final_status={result.status}")
+    report_operation_safely(job.env_name, job.title, ok=result.success, error=result.error,
+                            env={**env_values, **os.environ})
     return result
 
 
@@ -341,12 +375,92 @@ def record_job_result(
     }
 
 
+_ACCOUNT_JOBS = frozenset({
+    "DASHBOARD_NIUONE_FORWARD_PREFLIGHT_CRON", "DASHBOARD_B3_EXIT_TIME",
+    "DASHBOARD_TIME_EXIT_TIME", "DASHBOARD_NIUONE_EQUITY_SNAPSHOT_CRON",
+    "DASHBOARD_NIUONE_FORWARD_CRON",
+})
+_EXIT_JOBS = frozenset({"DASHBOARD_B3_EXIT_TIME", "DASHBOARD_TIME_EXIT_TIME"})
+
+
+class _CronDispatch:
+    """Two serial lanes: market reports and ordered account/evaluation jobs."""
+    def __init__(self, state: dict[str, object]) -> None:
+        self.state = state
+        self.keys = list(state.get("run_keys") or [])[-500:]
+        self.pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="niuone-cron")
+        self.waiting: dict[bool, deque[tuple[Job, datetime]]] = {True: deque(), False: deque()}
+        self.running: dict[bool, tuple[Job, datetime, Future]] = {}
+        self.aux: Future | None = None
+
+    def record(self, job: Job, at: datetime, result: JobRunResult, when: datetime) -> None:
+        record_job_result(self.state, job, at, result, completed_at=when)
+        save_state(self.state)
+
+    def claim(self, job: Job, at: datetime) -> None:
+        key = f"{job.job_id}:{at.strftime('%Y%m%d%H%M')}"
+        if key in self.keys:
+            return
+        self.keys = (self.keys + [key])[-500:]
+        self.state["run_keys"] = self.keys
+        save_state(self.state)
+        account = job.env_name in _ACCOUNT_JOBS
+        busy = self.running.get(account)
+        if (busy and busy[0].job_id == job.job_id) or any(j.job_id == job.job_id for j, _ in self.waiting[account]):
+            self.record(job, at, JobRunResult(False, "overlapping job", None, 0), at)
+            return
+        self.waiting[account].append((job, at))
+
+    @staticmethod
+    def execute(job: Job, at: datetime) -> tuple[JobRunResult, datetime]:
+        try:
+            result = run_job(job, at)
+        except Exception as exc:
+            log(f"worker exception job={job.job_id} error_type={type(exc).__name__}")
+            result = JobRunResult(False, "worker failed", None, 0, type(exc).__name__)
+        return result, datetime.now(CN_TZ)
+
+    def collect(self) -> None:
+        # A single writer publishes each result before dispatching the next
+        # account job; the evaluator can then read the completed equity snapshot.
+        for lane, (job, at, future) in list(self.running.items()):
+            if future.done():
+                result, completed = future.result()
+                self.record(job, at, result, completed)
+                del self.running[lane]
+
+    def start_ready(self, now: datetime) -> None:
+        for lane in (True, False):
+            while lane not in self.running and self.waiting[lane]:
+                job, at = self.waiting[lane].popleft()
+                if now.date() != at.date() or (job.env_name in _EXIT_JOBS and (now-at).total_seconds() >= 60):
+                    self.record(job, at, JobRunResult(False, "missed execution window", None, 0), now)
+                    continue
+                self.running[lane] = (job, at, self.pool.submit(self.execute, job, at))
+
+    def auxiliary(self, func, *args) -> None:
+        if self.aux is None or self.aux.done():
+            if self.aux is not None:
+                exc = self.aux.exception()
+                if exc is not None:
+                    log(f"auxiliary task failed error_type={type(exc).__name__}")
+            self.aux = self.pool.submit(func, *args)
+
+    def close(self) -> None:
+        self.pool.shutdown(wait=True)
+        self.collect()
+        now = datetime.now(CN_TZ)
+        for queue in self.waiting.values():
+            for job, at in queue:
+                self.record(job, at, JobRunResult(False, "scheduler stopped", None, 0), now)
+
+
 def main() -> None:
     signal.signal(signal.SIGTERM, handle_stop)
     signal.signal(signal.SIGINT, handle_stop)
     log(f"scheduler started pid={os.getpid()}")
     state = load_state()
-    run_keys = list(state.get("run_keys") or [])[-500:]
+    dispatch = _CronDispatch(state)
     startup_values = parse_env_file()
     startup_preflight_at = datetime.now(CN_TZ).replace(second=0, microsecond=0)
     startup_preflight_result = run_startup_protocol_preflight(
@@ -359,31 +473,34 @@ def main() -> None:
         startup_preflight_result,
     )
     save_state(state)
-    run_startup_catch_up(datetime.now(CN_TZ).replace(second=0, microsecond=0), startup_values)
+    if job_enabled(IWENCAI_STARTUP_CATCH_UP_JOB, startup_values):
+        dispatch.claim(IWENCAI_STARTUP_CATCH_UP_JOB, datetime.now(CN_TZ).replace(second=0, microsecond=0))
     try:
+        last_summary_minute = ""
         while not STOP:
             env_values = parse_env_file()
             now = datetime.now(CN_TZ).replace(second=0, microsecond=0)
+            dispatch.collect()
+            summary_minute = now.isoformat()
+            if summary_minute != last_summary_minute:
+                from app.messaging.runtime import maybe_notify_daily_summary
+                dispatch.auxiliary(maybe_notify_daily_summary, {**env_values, **os.environ}, now)
+                last_summary_minute = summary_minute
             for job in JOBS:
                 if not job_enabled(job, env_values):
                     continue
-                expr = normalize_job_expr(job, job_expr_value(job, env_values))
                 try:
+                    expr = normalize_job_expr(job, job_expr_value(job, env_values))
                     due = cron_matches(expr, now)
                 except Exception as exc:
-                    log(f"invalid cron job={job.job_id} env={job.env_name} expr={expr!r} error={exc}")
+                    log(f"invalid cron job={job.job_id} env={job.env_name} error={exc}")
                     continue
-                run_key = f"{job.job_id}:{now.strftime('%Y%m%d%H%M')}"
-                if due and run_key not in run_keys:
-                    run_keys.append(run_key)
-                    state["run_keys"] = run_keys[-500:]
-                    save_state(state)
-                    result = run_job(job, now)
-                    record_job_result(state, job, now, result)
-                    save_state(state)
+                if due:
+                    dispatch.claim(job, now)
+            dispatch.start_ready(datetime.now(CN_TZ))
             time.sleep(10)
     finally:
-        state["run_keys"] = run_keys[-500:]
+        dispatch.close()
         save_state(state)
         log("scheduler stopped")
 

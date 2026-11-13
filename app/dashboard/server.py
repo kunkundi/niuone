@@ -805,11 +805,13 @@ ENV_CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"name": "NEWSNOW_MAX_CONCURRENCY", "label": "最大并发来源数", "group": "财经快讯", "kind": "int", "default": "3", "effect": "runtime", "min": "1", "max": "3"},
 
     {"name": "DASHBOARD_B1_SCHEDULE_ENABLED", "label": "启用实战定时运行", "group": "任务调度", "kind": "bool", "default": "1", "effect": "restart"},
+    {"name": "DASHBOARD_PRACTICE_FEE_PROFILE", "label": "新账户手续费方案", "group": "交易规则与风控", "kind": "text", "default": "legacy", "effect": "next_run", "help_title": "只在创建新账户时冻结", "help_summary": "legacy：万一免五；retail_025_min5：万2.5、每笔最低5元。两者均另计卖出印花税0.05%和双向过户费0.001%。", "help_footer": "保存设置不会重置账户，也不会修改既有账户、成交记录或历史回测的费率。新方案需归档旧账户并创建新账户后生效。"},
     {"name": PRACTICE_SCHEDULE_TIMES_ENV, "label": "实战盘面总结、选股及交易时间点", "group": "选股与买卖设置", "kind": "time_list", "default": DEFAULT_PRACTICE_SCHEDULE_TIMES, "effect": "runtime"},
     {"name": PRACTICE_FAST_CYCLE_ENABLED_ENV, "label": "启用持仓快周期", "group": "选股与买卖设置", "kind": "bool", "default": "0", "effect": "runtime", "help_title": "同策略持仓快周期", "help_summary": "仅缩小到当前持仓并提高触发频率，评分、模型决策、退出优先和成交风控与完整选股周期共用。", "help_footer": "快周期 BUY 只表示已有持仓加仓，不发现或首次买入新股票；默认关闭。"},
     {"name": PRACTICE_FAST_CYCLE_INTERVAL_ENV, "label": "持仓快周期间隔（秒）", "group": "选股与买卖设置", "kind": "int", "default": str(DEFAULT_PRACTICE_FAST_CYCLE_INTERVAL_SECONDS), "effect": "runtime", "min": str(MIN_PRACTICE_FAST_CYCLE_INTERVAL_SECONDS), "max": str(MAX_PRACTICE_FAST_CYCLE_INTERVAL_SECONDS), "help_title": "持仓重评频率", "help_summary": "在A股可成交时段按该间隔重新评判当前持仓，默认300秒。", "help_footer": "设置越短，行情与模型调用越频繁；同一时刻仍只允许一个账户决策事务。"},
     {"name": STOCK_UNIVERSE_ENV, "label": "选股范围（限制最终候选与新买入）", "group": "选股与买卖设置", "kind": "stock_universe", "default": DEFAULT_STOCK_UNIVERSE, "effect": "runtime"},
     {"name": "DASHBOARD_DISPLAY_CANDIDATE_LIMIT", "label": "候选池展示数量", "group": "选股与买卖设置", "kind": "int", "default": "10", "effect": "runtime"},
+    {"name": "DASHBOARD_EXECUTION_PREFLIGHT_ENABLED", "label": "模型前提供牛牛风险数量预检", "group": "选股与买卖设置", "kind": "bool", "default": "0", "effect": "runtime", "help_title": "小资金整手与费用预检", "help_summary": "向模型提供按扫描价、当前现金和既有风险预算算出的独立订单数量上限及限制原因。", "help_footer": "不改候选排序、不放宽风控；预检不是成交承诺，加仓阶段、T+1、换仓及实时价格仍在执行时复核。"},
     {"name": "DASHBOARD_TRADE_CANDIDATE_LIMIT", "label": "买卖决策候选数量", "group": "选股与买卖设置", "kind": "int", "default": "10", "effect": "runtime"},
     {"name": "DASHBOARD_PRESET_STRATEGY_CANDIDATE_LIMIT", "label": "文字策略中性候选数量", "group": "选股与交易策略", "kind": "int", "default": "60", "effect": "runtime", "min": "10", "max": "100"},
     {"name": "DASHBOARD_B3_EXIT_TIME", "label": "B3开盘离场检查时间", "group": "选股与买卖设置", "kind": "time", "default": "09:37", "effect": "runtime"},
@@ -870,7 +872,9 @@ ENV_CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"name": "DASHBOARD_EXIT_FEEDBACK_MIN_MONTHS", "label": "自动调参最少覆盖月份", "group": "交易规则与风控", "kind": "int", "default": "3", "effect": "next_run", "min": "2", "max": "12"},
     {"name": "DASHBOARD_EXIT_FEEDBACK_COOLDOWN_SAMPLES", "label": "每轮评估新增证据冷却", "group": "交易规则与风控", "kind": "int", "default": "10", "effect": "next_run", "min": "5", "max": "100"},
 
-    {"name": "DASHBOARD_NOTIFICATION_ENABLED", "label": "启用模拟成交通知", "group": "交易通知", "kind": "bool", "default": "0", "effect": "runtime"},
+    {"name": "DASHBOARD_NOTIFICATION_ENABLED", "label": "启用消息通知总开关", "group": "交易通知", "kind": "bool", "default": "0", "effect": "runtime"},
+    {"name": "DASHBOARD_OPERATIONAL_NOTIFICATION_ENABLED", "label": "运行故障与恢复通知", "group": "交易通知", "kind": "bool", "default": "0", "effect": "runtime", "help_summary": "关键故障立即通知；普通故障在本轮有限重试结束后通知，同任务30分钟内去重，恢复通知一次。"},
+    {"name": "DASHBOARD_DAILY_SUMMARY_NOTIFICATION_ENABLED", "label": "模拟账户盘后总结通知", "group": "交易通知", "kind": "bool", "default": "0", "effect": "next_run", "help_summary": "15:00后等待当日净值及A股盘后报告，两者齐备后推送账户盈亏、持仓、成交和费用；复用现有报告，不额外调用模型。"},
     {"name": "DASHBOARD_NOTIFICATION_TIMEOUT_SECONDS", "label": "单次推送超时秒数", "group": "交易通知", "kind": "int", "default": "5", "effect": "runtime"},
     {"name": "DASHBOARD_FEISHU_NOTIFICATION_ENABLED", "label": "启用飞书通知", "group": "交易通知", "kind": "bool", "default": "0", "effect": "runtime"},
     {"name": "DASHBOARD_FEISHU_WEBHOOK_URL", "label": "飞书机器人 Webhook", "group": "交易通知", "kind": "secret", "default": "", "effect": "runtime"},
@@ -892,6 +896,7 @@ ENV_CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"name": "DASHBOARD_DECISION_CONTEXT_LENGTH", "label": "上下文长度", "group": "模型配置", "kind": "context_length", "default": DEFAULT_MODEL_CONTEXT_LENGTH, "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_BASE_URL", "label": "API 地址", "group": "模型配置", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_API_KEY", "label": "API 密钥", "group": "模型配置", "kind": "secret", "default": "", "effect": "next_run"},
+    {"name": "DASHBOARD_US_MARKET_SUMMARY_ENABLED", "label": "启用独立隔夜美股总结", "group": "盘面监控生产时间点", "kind": "bool", "default": "1", "effect": "next_run"},
     {"name": "DASHBOARD_US_MARKET_SUMMARY_CRON", "label": "隔夜美股盘面总结时间", "group": "盘面监控生产时间点", "kind": "cron_time", "default": "0 8 * * 1-5", "effect": "next_run"},
     {"name": "US_MARKET_SUMMARY_MAX_TOKENS", "label": "隔夜美股总结最大输出长度", "group": "盘面监控生产时间点", "kind": "max_tokens", "default": DEFAULT_MODEL_MAX_TOKENS, "effect": "next_run"},
     {"name": "DASHBOARD_MARKET_AUCTION_CRON", "label": "盘前竞价监控时间", "group": "盘面监控生产时间点", "kind": "cron_time", "default": "25 9 * * 1-5", "effect": "next_run"},
@@ -984,7 +989,11 @@ ADMIN_VISIBLE_ENV_NAMES = [
     "DASHBOARD_EXIT_FEEDBACK_MIN_SAMPLES",
     "DASHBOARD_EXIT_FEEDBACK_MIN_MONTHS",
     "DASHBOARD_EXIT_FEEDBACK_COOLDOWN_SAMPLES",
+    "DASHBOARD_PRACTICE_FEE_PROFILE",
+    "DASHBOARD_EXECUTION_PREFLIGHT_ENABLED",
     "DASHBOARD_NOTIFICATION_ENABLED",
+    "DASHBOARD_OPERATIONAL_NOTIFICATION_ENABLED",
+    "DASHBOARD_DAILY_SUMMARY_NOTIFICATION_ENABLED",
     "DASHBOARD_NOTIFICATION_TIMEOUT_SECONDS",
     "DASHBOARD_FEISHU_NOTIFICATION_ENABLED",
     "DASHBOARD_FEISHU_WEBHOOK_URL",
@@ -1012,6 +1021,7 @@ ADMIN_VISIBLE_ENV_NAMES = [
     NIUONE_FORWARD_COHORT_START_ENV,
     ACTIVE_STRATEGY_ENV,
     PRESET_STRATEGY_TEXT_ENV,
+    "DASHBOARD_US_MARKET_SUMMARY_ENABLED",
     "DASHBOARD_US_MARKET_SUMMARY_CRON",
     "DASHBOARD_MARKET_AUCTION_CRON",
     "DASHBOARD_MARKET_MIDDAY_CRON",
@@ -2470,9 +2480,19 @@ def run_practice_decision_logged(
             f"选股后买卖决策开始{slot_note}：候选池{observed_count}只，决策池{item_count}只",
         )
     try:
-        return run_practice_decision(payload, blocking=decision_blocking)
+        result = run_practice_decision(payload, blocking=decision_blocking)
+        from app.messaging.runtime import report_operation_safely
+        if isinstance(result, dict) and not result.get("skipped"):
+            decision_data = result.get("decision")
+            decision_error = result.get("error") or (decision_data.get("error") if isinstance(decision_data, dict) else None)
+            if not decision_error and result.get("durable_evidence_persisted") is not True:
+                decision_error = "practice_decision_evidence_not_persisted"
+            report_operation_safely("practice_decision", "模拟交易决策", ok=not bool(decision_error), error=decision_error)
+        return result
     except Exception as exc:
         err = f"{type(exc).__name__}: {exc}"
+        from app.messaging.runtime import report_operation_safely
+        report_operation_safely("practice_decision", "模拟交易决策", ok=False, error=err)
         record_practice_decision_event(
             payload,
             f"选股完成但买卖决策失败：{err}",
@@ -4472,6 +4492,8 @@ def run_scheduled_b1_scan(slot_key: str) -> None:
                 failure_stage=str(cache.get("stage") or "screening")[:80],
             )
             print(f"[Practice schedule] {slot_key} failed: {cache.get('error')}", flush=True)
+            from app.messaging.runtime import report_operation_safely
+            report_operation_safely("screening", "完整选股扫描", ok=False, error=cache.get("error"))
         else:
             if isinstance(summary, dict):
                 cache["market_summary"] = summary
@@ -4527,9 +4549,13 @@ def run_scheduled_b1_scan(slot_key: str) -> None:
                 run_kind=run_kind,
             )
             print(f"[Practice schedule] {slot_key} done: {cache.get('count', 0)} candidates", flush=True)
+            from app.messaging.runtime import report_operation_safely
+            report_operation_safely("screening", "完整选股扫描", ok=True)
     except Exception as exc:
         _mark_b1_schedule_slot(slot_key, "error", error=f"{type(exc).__name__}: {exc}")
         print(f"[Practice schedule] {slot_key} error: {type(exc).__name__}: {exc}", flush=True)
+        from app.messaging.runtime import report_operation_safely
+        report_operation_safely("screening", "完整选股扫描", ok=False, error=f"{type(exc).__name__}: {exc}")
 
 
 def b1_schedule_loop() -> None:
@@ -4587,10 +4613,12 @@ def run_practice_fast_cycle_once(
     *,
     trader: Any | None = None,
     payload_builder: Callable[..., dict[str, Any]] = build_holding_cycle_payload,
+    clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Run one holdings-only decision cycle without widening the symbol set."""
 
-    current = now or current_cn_datetime()
+    clock = clock or current_cn_datetime
+    current = now or clock()
     if not PRACTICE_FAST_CYCLE_ENABLED:
         return {"skipped": True, "reason": "practice_fast_cycle_disabled"}
     trader = trader or get_trader_module()
@@ -4601,26 +4629,45 @@ def run_practice_fast_cycle_once(
             "reason": "outside_a_share_execution_time",
             "trade_reason": trade_reason,
         }
-    state = trader.load_state()
-    holdings: list[dict[str, Any]] = []
-    for code, position in (state.get("positions") or {}).items():
-        if not isinstance(position, dict):
-            continue
-        quantity = (
-            trader.position_qty(position)
-            if hasattr(trader, "position_qty")
-            else int(position.get("qty") or position.get("quantity") or 0)
-        )
-        if quantity <= 0:
-            continue
-        holdings.append({
-            **position,
-            "code": str(position.get("code") or code),
-            "qty": quantity,
-        })
-    if not holdings:
+    def current_holdings() -> list[dict[str, Any]]:
+        state = trader.load_state()
+        holdings: list[dict[str, Any]] = []
+        for code, position in (state.get("positions") or {}).items():
+            if not isinstance(position, dict):
+                continue
+            quantity = (
+                trader.position_qty(position)
+                if hasattr(trader, "position_qty")
+                else int(position.get("qty") or position.get("quantity") or 0)
+            )
+            if quantity > 0:
+                holdings.append({
+                    **position,
+                    "code": str(position.get("code") or code),
+                    "qty": quantity,
+                })
+        return holdings
+
+    if not current_holdings():
         return {"skipped": True, "reason": "no_open_positions"}
 
+    # Summarization can be slow. Generate the actual quote/score signal only
+    # afterwards, rather than spending its freshness budget waiting for a model.
+    summary = refresh_practice_market_summary_for_decision(HOLDING_CYCLE_KIND)
+    current = clock()
+    if not PRACTICE_FAST_CYCLE_ENABLED:
+        return {"skipped": True, "reason": "practice_fast_cycle_disabled"}
+    trade_allowed, trade_reason = trader.is_a_share_execution_time(current)
+    if not trade_allowed:
+        return {
+            "skipped": True,
+            "reason": "outside_a_share_execution_time",
+            "trade_reason": trade_reason,
+        }
+    # Another decision or a hard exit may have changed positions while waiting.
+    holdings = current_holdings()
+    if not holdings:
+        return {"skipped": True, "reason": "no_open_positions"}
     payload = payload_builder(
         holdings,
         practice_fast_cycle_context_payload(),
@@ -4628,6 +4675,8 @@ def run_practice_fast_cycle_once(
     )
     if not isinstance(payload, dict):
         raise TypeError("持仓快周期评分结果必须为字典")
+    if isinstance(summary, dict):
+        payload["market_summary"] = summary
     payload["holding_cycle_only"] = True
     payload["holding_cycle_codes"] = sorted(
         str(holding.get("code") or "")
@@ -4640,7 +4689,7 @@ def run_practice_fast_cycle_once(
     result = run_practice_decision_logged(
         payload,
         record_start=True,
-        refresh_market_summary=True,
+        refresh_market_summary=False,
         decision_blocking=False,
     )
     if result.get("reason") != "practice_decision_busy":
@@ -6737,6 +6786,10 @@ def normalize_context_length_update(value: str) -> str:
 
 def normalize_env_update(name: str, value: str, kind: str) -> str:
     value = str(value or "").strip()
+    if name == "DASHBOARD_PRACTICE_FEE_PROFILE":
+        from trading.fees import fee_schedule_for_profile
+        fee_schedule_for_profile(value)
+        return value or "legacy"
     if kind == "bool":
         return "1" if value.lower() in {"1", "true", "yes", "on"} else "0"
     if kind == "int" and value:
@@ -7108,6 +7161,8 @@ ADMIN_SETTING_GROUP_BY_NAME = {
 NOTIFICATION_GENERAL_CONFIG_NAMES = (
     "DASHBOARD_NOTIFICATION_ENABLED",
     "DASHBOARD_NOTIFICATION_TIMEOUT_SECONDS",
+    "DASHBOARD_OPERATIONAL_NOTIFICATION_ENABLED",
+    "DASHBOARD_DAILY_SUMMARY_NOTIFICATION_ENABLED",
 )
 NOTIFICATION_CHANNEL_SETTINGS: tuple[dict[str, Any], ...] = (
     {

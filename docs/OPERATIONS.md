@@ -8,6 +8,22 @@
 
 卖出通知在标题突出本次卖出占该股卖前全部持仓的比例；全部卖出时标注“清仓 · 卖出100%持仓”。通知同时高亮“卖出仓位（占总资产）”，并列出卖后持股数。清仓以成交股数、卖前/卖后股数及明确的成交清仓标记核验，不根据四舍五入后的账户仓位比例推断；数量信息缺失或矛盾时，卖出比例显示暂不可用。
 
+### 账户重启、手续费与运行通知
+
+已有账本或已冻结账户基线时，若账户快照缺失，请先恢复同一账户的已验证快照。读取权限错误、损坏的 JSON 和无效余额会保留原文件并报告错误。决策记录中的 `timing` 区分信号生成时间、剩余模型预算及实际请求耗时，便于定位超时出现在准备阶段还是请求阶段。
+
+提前准备的新账户可在空账户快照中声明首个收益归属日 `performance_start_date`（`YYYY-MM-DD`）。当日盘后总结优先使用真实的前一日净值；缺少前一日净值时，仅在声明的首日使用初始本金。旧账户继续使用创建日规则。
+
+`DASHBOARD_PRACTICE_FEE_PROFILE` 在创建新账户时冻结到 `fee_schedule`：默认 `legacy` 沿用万一免五；可选模拟档位 `retail_025_min5` 使用佣金万2.5、每笔最低5元，另计卖出印花税0.05%与双向过户费0.001%。既有账户缺少该字段时沿用旧费率，历史成交和管理员回测保留原口径。更换账户假设时，先归档账户及数据库学习样本，再创建新账户。模型提示词读取账户实际初始本金。
+
+`DASHBOARD_EXECUTION_PREFLIGHT_ENABLED=1` 向模型提供牛牛候选按扫描价计算的单股风险数量上限、最低整手含费现金与受限原因。预检复用执行数量算法和现有风险预算；各股独立计算，共享现金需在实际组合中分配。候选与评分保持原流程，加仓阶段、资格、换仓、T+1及实时价格在成交时复核。默认关闭，运行时生效。
+
+通知总开关及所选渠道开启后，可另开 `DASHBOARD_OPERATIONAL_NOTIFICATION_ENABLED`：授权、权限和账户记录等关键故障立即提醒，普通任务在本轮有界重试结束后提醒，同任务同类故障30分钟内去重，恢复通知一次。`DASHBOARD_DAILY_SUMMARY_NOTIFICATION_ENABLED` 在北京时间15:00–19:00等待当天盘后净值及已保存的A股盘后报告，齐备后按账户及日期推送盈亏、持仓、成交费用和报告节选。总结复用已有报告，两项默认关闭。投递状态保存在 `notifications/delivery.sqlite3`，通过跨进程租约协调发送；失败至少间隔60秒重试，网络结果不确定或部分渠道成功时，重试可能重复投递。账户成交独立提交。
+
+### NewsNow 跨区域连接
+
+Compose 为 NewsNow 加载 `scripts/newsnow-network.cjs`，将 Node 地址族自动选择的单地址连接等待时间提高到至少 2000 毫秒，保留 IPv4/IPv6 回退。部分跨区域来源的连接耗时超过 Node 默认的 250 毫秒，会提前触发地址切换；当下一个地址不可达时，NewsNow 返回 HTTP 500。可通过“主机请求成功、容器日志出现 `internalConnectMultiple` / `ETIMEDOUT`”定位这类问题。修改预加载脚本或挂载后，重新创建 NewsNow 服务即可生效。
+
 ## 1. 目录约定
 
 ```text
@@ -102,10 +118,11 @@ NiuOne 需要大模型驱动完整交易决策工作流。设置页的“模型�
 
 ### 常见模型思考强度表
 
-以下能力核对于 **2026-08-13**。其中“允许填写”表示官方接口接受的输入，“实际级别/映射”用于说明兼容值不一定按字面生效。
+除 GPT-6.1 Sol 于 **2026-11-05** 核对外，下列既有能力记录核对日期为 **2026-08-13**。其中“允许填写”表示官方接口接受的输入，“实际级别/映射”用于说明兼容值不一定按字面生效。
 
 | 模型 | 允许填写 | 实际级别/兼容映射 | 默认值 |
 |---|---|---|---|
+| OpenAI `gpt-6.1-sol` | `low`、`medium`、`high`、`xhigh`、`max` | 同填写值；不支持 `none/minimal` | `medium` |
 | Qwen `qwen3.8-max` | `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` | Responses 原生 7 档；Chat 原生 `low/medium/xhigh`，并映射 `minimal → low`、`high/max → xhigh`、`none → 关闭` | `xhigh` |
 | Qwen 3.5–3.7、Qwen3 Max、Qwen Plus/Flash/Coder 常用 Responses 型号 | `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` | `auto` 使用 Responses 保留 7 档；强制 Chat 时 `none` 关闭、其他值均为开启；`xhigh/max` 仅北京和新加坡地域支持 | `xhigh` |
 | Qwen 其他混合思考 Chat 型号 | `disabled`、`enabled` | 自动转换为顶层 `enable_thinking` 开关，不支持多档强度 | 依型号为关闭或开启 |
@@ -129,7 +146,11 @@ NiuOne 需要大模型驱动完整交易决策工作流。设置页的“模型�
 | OpenAI `gpt-5` | `minimal`、`low`、`medium`、`high` | 同填写值 | 官方模型页未注明 |
 
 来源：[Qwen Responses](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses)、[Qwen Chat](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)、[Qwen 深度思考](https://help.aliyun.com/zh/model-studio/deep-thinking)、[MiniMax Responses](https://platform.minimax.io/docs/api-reference/responses-create)、[MiniMax Chat](https://platform.minimax.io/docs/api-reference/text-chat-openai)、[DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)、[智谱深度思考](https://docs.bigmodel.cn/cn/guide/capabilities/thinking)、[小米 MiMo Responses](https://mimo.mi.com/docs/zh-CN/api/chat/responses)、[xAI Grok 4.3](https://docs.x.ai/developers/models/grok-4.3)、[xAI Reasoning](https://docs.x.ai/developers/model-capabilities/text/reasoning)、[OpenAI GPT-5.6](https://developers.openai.com/api/docs/models/gpt-5.6-sol) 及各型号官方模型页。Claude、Gemini 等原生 API 使用不同的思考控制字段，不在这个 OpenAI 兼容表中；如果兼容网关提供同名字段，作为表外自定义值处理。
-`*_CONTEXT_LENGTH` 仅表示模型上下文窗口，默认 `128000`；`*_MAX_TOKENS` 表示期望的最大输出长度，调用层会按接口映射为 `max_tokens` 或 `max_output_tokens`。已知不接受 Responses 输出长度参数的 GPT-5.6 网关别名会省略该参数，其他网关若明确返回不支持也会自动去参重试一次。模型响应同时兼容 JSON 和 SSE，即使网关在 `stream=false` 时仍强制返回 SSE。
+官方 [GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol) 精确模型名自动使用 Responses，保留所选思考强度；默认发送 `service_tier=default`（Standard）及 `store=false`，采样参数按模型能力过滤。强制 Chat 时使用 `max_completion_tokens`。输出上限包含推理 tokens；遇到参数错误时保留配置的输出额度和思考强度，并返回具体错误。
+
+访问 `api.openai.com` 时始终校验 TLS 证书和主机名：沿用已启用这两项验证的自定义 CA 上下文，其余情况使用系统信任配置。
+
+`*_CONTEXT_LENGTH` 仅表示上下文窗口，默认 `128000`；`*_MAX_TOKENS` 表示期望最大输出长度，调用层按接口映射兼容参数。旧 GPT-5.6 网关别名的输出上限兼容行为保持不变；其他旧网关可在明确不支持时去参重试，但上述 Sol 官方模型不允许该退路。JSON 与 SSE 返回均受支持。
 买卖决策模型因输出长度耗尽而返回空正文或截断 JSON 时，会从当前输出长度开始逐级翻倍重试，自动上限为 `65536`；显式配置高于该值时，重试不会反向降低用户配置。到达上限后不再增加额度，JSON 仍不可解析时只允许一次同额度补救。已知支持原生 JSON 输出的 DeepSeek V4 决策型号会同时发送 `response_format=json_object`，其他自定义网关不强制携带该参数。
 `IWENCAI_NEWS_PRECHECK_ENABLED` 默认关闭，并位于“问财数据源”设置分组。开启后复用 `IWENCAI_*` 检索配置和 `DASHBOARD_DECISION_*` 买卖决策模型配置。问财官方 `announcement-search`、`news-search` 和 `hithink-event-query` 负责检索，公告、新闻和带日期的事件结果限制在最近 3 天并跨来源去重。存在有效证据时由买卖决策模型输出结构化利好、利空或中性判断；没有证据时直接记为中性。模型未配置、超时或输出不可解析时标记判断不可用，不回退关键词规则。每个问财技能独立记录状态，行情或资金流永远不能替代消息。旧 `DASHBOARD_NEWS_*` 配置不再读取。
 
@@ -246,7 +267,15 @@ Dashboard 内置的 B1 调度器在每个计划时间先使用实时指数、行
 
 每轮 B1 定时或手动决策都会先刷新全部已有持仓，并按各持仓保存的 `strategy_mark` 检查原策略退出规则；当前激活策略只控制新候选和 BUY。候选为零或日内亏损预算触发时，SELL/HOLD 检查仍会继续，日内亏损预算只暂停新开仓。
 
-开启持仓快周期后，Dashboard 在 A 股可成交时段按配置间隔只加载当前持仓，使用最新有效题材/市场上下文和持仓实时行情重新运行完整扫描所用的同一组评分器，再进入相同的盘面总结、模型决策、退出优先和成交复核链路。快周期不会发现新代码；其中 BUY 只表示对决策开始及执行时都仍持有的股票加仓，首次建仓和同轮卖出后回补会在执行层失败关闭。行情或日 K 不完整的持仓仍可进入正常 SELL/HOLD 检查，但不会获得快周期 BUY 资格。完整扫描与快周期共享账户决策锁，重叠时快周期跳过，不等待或并发写账户。
+开启持仓快周期后，Dashboard 在 A 股可成交时段按配置间隔只加载当前持仓，使用最新有效题材/市场上下文和持仓实时行情重新运行完整扫描所用的同一组评分器，进入相同的模型决策、退出优先和成交复核链路；盘面总结在上述刷新与评分之前完成。快周期不会发现新代码；其中 BUY 只表示对决策开始及执行时都仍持有的股票加仓，首次建仓和同轮卖出后回补会在执行层失败关闭。行情或日 K 不完整的持仓仍可进入正常 SELL/HOLD 检查，但不会获得快周期 BUY 资格。完整扫描与快周期共享账户决策锁，重叠时快周期跳过，不等待或并发写账户。
+
+持仓快周期先生成盘面总结，再重新确认交易时段并读取当前持仓、行情和评分；决策有效期从新信号生成时开始，仍为180秒。总结期间清仓或越过午休/收盘边界时跳过本轮。配置间隔从上一轮结束后计算。
+
+A 股竞价、午盘、盘后报告的调度总超时取原有时限与“模型总结总时限 + 120 秒数据准备余量”的较大值，最高1800秒；关闭模型总结时保留原时限。例如总结总时限300秒时，外层报告进程最多420秒。交易信号有效期与自动退出任务使用各自原有时限。
+
+市场报告与账户任务分别串行执行。报告仍在等待接口或重试时，自动退出和盘后净值照常调度；评估在前一个账户任务结果落盘后启动。同一任务按计划分钟去重，错过执行窗口的自动退出记为失败。
+
+`DASHBOARD_US_MARKET_SUMMARY_ENABLED` 默认为 `1`。在设置页“盘面监控生产时间点”关闭“启用独立隔夜美股总结”（设为 `0`）后，下一调度周期起跳过独立美股报告，继续运行 A 股报告和交易盘面分析。
 
 本地自动退出也由独立 Cron Scheduler 进程在专用时间点调用。结构止损、板块潮汐退潮、策略时间窗、2R 和 2ATR 等仍是离散检查，不是实时逐笔监控；要覆盖完整生命周期，Dashboard 和 Cron Scheduler 两个进程都必须运行。
 

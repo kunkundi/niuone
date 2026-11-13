@@ -187,7 +187,10 @@ class ModelReasoningCapabilityTests(unittest.TestCase):
         self.assertGreaterEqual(len(catalog), 10)
         self.assertTrue(all(row["source_url"].startswith("https://") for row in catalog))
         self.assertTrue(
-            all(row["verified_on"] == REASONING_EFFORT_CAPABILITIES_VERIFIED_ON for row in catalog)
+            all(row["verified_on"] == (
+                "2026-11-05" if row["key"] == "gpt-6.1-sol"
+                else REASONING_EFFORT_CAPABILITIES_VERIFIED_ON
+            ) for row in catalog)
         )
         self.assertTrue(all(row["model_pattern"].startswith("^") for row in catalog))
 

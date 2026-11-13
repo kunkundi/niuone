@@ -48,11 +48,13 @@ services:
       HOST: 0.0.0.0
       PORT: "4444"
       NODE_ENV: production
+      NODE_OPTIONS: --require=/etc/niuone/newsnow-network.cjs
       INIT_TABLE: "true"
       ENABLE_CACHE: "true"
       TZ: Asia/Shanghai
     volumes:
       - newsnow-data:/usr/app/.data
+      - ./scripts/newsnow-network.cjs:/etc/niuone/newsnow-network.cjs:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4444/"]
       interval: 30s
