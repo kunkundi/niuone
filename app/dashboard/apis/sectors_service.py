@@ -12,6 +12,7 @@ from pathlib import Path
 
 from dashboard_json_cache import read_json_cache, write_json_cache
 from niuone_paths import get_dashboard_home
+from dashboard.apis.bounded_fetch import run_bounded_market_fetch
 
 if __package__ == "app":
     from .dashboard.apis.cache import load_cached_payload
@@ -46,6 +47,10 @@ def _row(name, price, pct, source=""):
 
 
 def _ak_rows():
+    return run_bounded_market_fetch("sector_rows", cache_path=CACHE_PATH)
+
+
+def _ak_rows_in_process():
     import akshare as ak
     rows = []
     for source, func in [("行业", ak.stock_fund_flow_industry), ("概念", ak.stock_fund_flow_concept)]:
@@ -87,14 +92,21 @@ def _fallback_rows():
 
 
 def _compute():
-    rows = _ak_rows()
+    source_warning = ""
+    try:
+        rows = _ak_rows()
+    except (OSError, RuntimeError, ValueError) as exc:
+        rows = []
+        source_warning = f"{type(exc).__name__}: {exc}"
     if not rows:
         rows = _fallback_rows()
+    if not rows:
+        raise RuntimeError(source_warning or "sector providers returned no usable rows")
     gain_top = sorted(rows, key=lambda x: x.get('pct', 0), reverse=True)[:10]
     loss_top = sorted(rows, key=lambda x: x.get('pct', 0))[:10]
     industry_rows = [row for row in rows if row.get("source") in {"行业", "指数"}]
     concept_rows = [row for row in rows if row.get("source") == "概念"]
-    return {
+    payload = {
         "generated_at": time.strftime('%Y-%m-%d %H:%M:%S'),
         "count": len(rows),
         "gain_top": gain_top,
@@ -118,6 +130,9 @@ def _compute():
         "sectors": gain_top,
         "items": gain_top,
     }
+    if source_warning:
+        payload["source_warning"] = source_warning
+    return payload
 
 
 def fetch_sector_data(force_refresh=False):

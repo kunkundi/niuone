@@ -107,7 +107,11 @@ def write_json_cache(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
     try:
-        tmp.write_text(json.dumps(data, ensure_ascii=False) + "\n", encoding="utf-8")
+        # Large research snapshots must not coexist with a second complete
+        # Unicode serialization and its UTF-8 byte copy in memory.
+        with tmp.open("w", encoding="utf-8") as stream:
+            json.dump(data, stream, ensure_ascii=False)
+            stream.write("\n")
         tmp.replace(path)
     finally:
         try:

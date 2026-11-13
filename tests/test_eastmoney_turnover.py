@@ -3,6 +3,7 @@ import datetime as dt
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from app.market_data import eastmoney_turnover
@@ -48,6 +49,26 @@ def profile_bodies(day_count: int = 21) -> dict[str, str]:
 
 
 class EastmoneyTurnoverTests(unittest.TestCase):
+    def test_previous_close_recovery_requires_exact_day_and_every_interval(self):
+        from app.market_data import tencent_market_breadth as breadth
+        before = dt.date(2026, 6, 22)
+        profile = eastmoney_turnover.build_turnover_profile(profile_series(), before)
+        prior = profile['profile_end']
+        with patch.dict(eastmoney_turnover._PROFILE_CACHE, {before.isoformat(): {'value': profile}}, clear=True), patch.dict(breadth._PREVIOUS_TURNOVER_CACHE, {}, clear=True), patch('app.reports.a_share.calendar.trading_day_status') as calendar:
+            calendar.return_value = {'calendar_cached': True, 'previous_trading_day': prior}
+            def offline(*args):
+                raise TimeoutError('daily feed unavailable')
+            recovered = breadth.fetch_previous_market_turnover(before, downloader=offline)
+            self.assertEqual((recovered['date'], recovered['turnover_yi']), (prior, 96))
+            self.assertIn('5分钟', recovered['source'])
+            calendar.return_value['calendar_cached'] = False
+            self.assertIsNone(eastmoney_turnover.previous_close_from_cached_profile(before))
+            calendar.return_value = {'calendar_cached': True, 'previous_trading_day': '2026-06-20'}
+            self.assertIsNone(eastmoney_turnover.previous_close_from_cached_profile(before))
+            calendar.return_value['previous_trading_day'] = prior
+            profile['daily_profiles'][-1]['fractions'].pop(5)
+            self.assertIsNone(eastmoney_turnover.previous_close_from_cached_profile(before))
+
     def test_parses_minute_amount_field_and_trading_progress(self):
         body = kline_body("1.000001", [
             "2026-07-23 09:31,1,1,1,1,10,120000000.00,0.1",

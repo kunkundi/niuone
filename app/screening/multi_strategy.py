@@ -39,8 +39,10 @@ import json
 import os
 import re
 import shlex
+import shutil
 import statistics
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -66,6 +68,7 @@ from market_data.tencent_kline_cache import (
     fetch_a_share_daily_klines,
     kline_cache_path,
     load_kline_series_map,
+    load_cached_kline_symbols,
     merge_live_quote,
     prewarm_kline_cache,
     store_kline_series,
@@ -1120,17 +1123,30 @@ def niuone_news_shortlist(
     return candidates[:max(0, int(limit))]
 
 
+class IncompleteListingError(RuntimeError):
+    """One or more requested exchange/board listings are missing."""
+
+
 def load_a_share_code_pool(stock_universe: object | None = None):
     """Load the configured沪深 A-share pool without pulling Beijing-board data."""
     import akshare as ak
     candidates = []
     selected = selected_stock_universe(stock_universe)
+    seen_segments = set()
+    required = set()
+    if 'main_board' in selected or 'st' in selected:
+        required.update(('sh_main_board', 'sz_main_board'))
+    if 'star_market' in selected or 'st' in selected:
+        required.add('sh_star_market')
+    if 'chi_next' in selected or 'st' in selected:
+        required.add('sz_chi_next')
 
     def add(code, name):
         code = str(code or "").strip().split(".")[0].zfill(6)
         name = str(name or "").strip()
-        if not code or not name:
+        if not re.fullmatch(r'\d{6}', code) or not name or not stock_board(code):
             return
+        seen_segments.add(('sh_' if code.startswith('6') else 'sz_') + stock_board(code))
         if "退" in name or not stock_in_universe(code, name, selected):
             return
         candidates.append((code, name))
@@ -1156,22 +1172,37 @@ def load_a_share_code_pool(stock_universe: object | None = None):
     except Exception as exc:
         errors.append(f"SZ:{type(exc).__name__}")
 
-    if not candidates:
-        df = ak.stock_info_a_code_name()
-        for _, row in df.iterrows():
-            add(row.get("code"), row.get("name"))
+    if required - seen_segments:
+        try:
+            df = ak.stock_info_a_code_name()
+            for _, row in df.iterrows():
+                add(row.get('code'), row.get('name'))
+        except Exception as exc:
+            errors.append(f'combined:{type(exc).__name__}')
+    if required - seen_segments:
+        raise IncompleteListingError('incomplete listed universe: ' + ', '.join(sorted(required - seen_segments)))
 
     deduped = {}
     for code, name in candidates:
         deduped[code] = name
     if errors:
-        print("  Code pool partial fallback: " + ", ".join(errors), file=sys.stderr)
+        print("  Code pool recovered via combined listing: " + ", ".join(errors), file=sys.stderr)
     return sorted(deduped.items())
 
 
 def load_main_board_code_pool():
     """Backward-compatible legacy pool helper."""
     return load_a_share_code_pool(DEFAULT_STOCK_UNIVERSE)
+
+
+def load_daily_scan_pool(universe: object) -> list[tuple[str, str]]:
+    """Share one complete, same-day exchange catalog between warmup and scans."""
+    from app.market_data.listing_cache import ListingCacheError, load_current_listing
+    try:
+        rows = load_current_listing(B1_OUTPUT_DIR / 'a_share_listing_latest.json', datetime.now().strftime('%Y-%m-%d'))
+    except ListingCacheError as exc:
+        raise IncompleteListingError(str(exc)) from exc
+    return [(code,name) for code,name in rows if '退' not in name and stock_in_universe(code,name,universe)]
 
 
 def get_margin_signal(code: str) -> dict | None:
@@ -1676,18 +1707,6 @@ def write_outputs(
 ) -> None:
     """Write latest caches and one bounded multi-strategy history."""
     B1_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    serialized = json_str or json.dumps(payload, ensure_ascii=False, indent=2)
-
-    # Multi-strategy cache (primary)
-    tmp_ms = MULTI_STRATEGY_CACHE.with_suffix(MULTI_STRATEGY_CACHE.suffix + ".new")
-    tmp_ms.write_text(serialized + "\n", encoding="utf-8")
-    tmp_ms.replace(MULTI_STRATEGY_CACHE)
-
-    # B1 cache (backward compat for dashboard/现有pipeline)
-    tmp_b1 = B1_CACHE_FILE.with_suffix(B1_CACHE_FILE.suffix + ".new")
-    tmp_b1.write_text(serialized + "\n", encoding="utf-8")
-    tmp_b1.replace(B1_CACHE_FILE)
-
     # Primary archive. The former B1 history was an identical compatibility
     # copy and is removed by the bounded cleanup below.
     safe_ts = str(generated_at).replace(":", "-").replace(" ", "_")
@@ -1695,9 +1714,27 @@ def write_outputs(
     d = MULTI_STRATEGY_HISTORY / date_part
     d.mkdir(parents=True, exist_ok=True)
     f = d / f"{safe_ts}.json"
-    ft = f.with_suffix(f.suffix + ".new")
-    ft.write_text(serialized + "\n", encoding="utf-8")
-    ft.replace(f)
+    from app.screening.scan_artifact import PROTOCOL, write_managed_scan
+    if os.environ.get('NIUONE_SCAN_TRANSPORT') == PROTOCOL and json_str is None:
+        write_managed_scan(payload, f, (MULTI_STRATEGY_CACHE, B1_CACHE_FILE))
+    else:
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as serialized:
+            if json_str is not None:
+                serialized.write(json_str)
+            else:
+                json.dump(payload, serialized, ensure_ascii=False, indent=2)
+            serialized.write("\n")
+            for target in (MULTI_STRATEGY_CACHE, B1_CACHE_FILE, f):
+                temporary = target.with_name(
+                    f".{target.name}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+                )
+                try:
+                    serialized.seek(0)
+                    with temporary.open("w", encoding="utf-8") as stream:
+                        shutil.copyfileobj(serialized, stream, length=1024 * 1024)
+                    temporary.replace(target)
+                finally:
+                    temporary.unlink(missing_ok=True)
 
     # The Dashboard polls this bounded read model instead of the full scan.
     write_practice_candidates_cache(
@@ -1727,11 +1764,26 @@ def prewarm_full_market_klines(
         or os.environ.get("DASHBOARD_KLINE_PREWARM_TARGET_DATE")
         or datetime.now().strftime("%Y-%m-%d")
     )[:10]
-    candidates = load_a_share_code_pool(FULL_SUPPORTED_NON_ST_UNIVERSE)
-    symbols = [
-        ("sh" if code.startswith(("6", "9")) else "sz") + code
-        for code, _name in candidates
-    ]
+    try:
+        candidates = load_daily_scan_pool(FULL_SUPPORTED_NON_ST_UNIVERSE)
+        symbols = [("sh" if code.startswith(("6", "9")) else "sz") + code for code, _name in candidates]
+    except IncompleteListingError as exc:
+        print(f'[WARN] Exchange listing refresh failed during warmup: {exc}', file=sys.stderr)
+        # This fallback supplies warming targets only. Selection still requires
+        # the complete exchange listing and applies its normal universe rules.
+        from app.market_data.tencent_market_breadth import fetch_tencent_market_breadth
+        warm_targets = set(load_cached_kline_symbols(path=kline_cache_path()))
+        live_targets = set()
+        def collect(snapshot):
+            for symbol, row in snapshot['quotes'].items():
+                if stock_in_universe(row['code'], row['name'], FULL_SUPPORTED_NON_ST_UNIVERSE):
+                    live_targets.add(symbol)
+        fetch_tencent_market_breadth(quote_snapshot_consumer=collect,
+                                     previous_turnover_fetcher=lambda _: None,
+                                     turnover_estimate_fetcher=lambda *_: {})
+        if not any(s.startswith('sh') for s in live_targets) or not any(s.startswith('sz') for s in live_targets):
+            raise IncompleteListingError('complete dual-exchange warming targets unavailable')
+        symbols = sorted(warm_targets | live_targets)
     if workers is None:
         try:
             workers = int(
@@ -1756,11 +1808,11 @@ def prewarm_full_market_klines(
         )
 
     accepted_last_dates: set[str] = set()
-    if dashboard_env_enabled("DASHBOARD_KLINE_PREWARM_RESUME", False):
-        try:
-            from a_share_calendar import trading_day_status
+    try:
+        from a_share_calendar import trading_day_status
 
-            calendar = trading_day_status(resolved_target_date, allow_refresh=False)
+        calendar = trading_day_status(resolved_target_date, allow_refresh=False)
+        if calendar.get('calendar_cached'):
             accepted_last_dates = {
                 str(calendar.get("date") or "")[:10],
                 str(calendar.get("previous_trading_day") or "")[:10],
@@ -1770,8 +1822,8 @@ def prewarm_full_market_klines(
                 for value in accepted_last_dates
                 if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
             }
-        except Exception:
-            accepted_last_dates = set()
+    except (OSError, ValueError):
+        accepted_last_dates = set()
 
     return prewarm_kline_cache(
         symbols,
@@ -1785,6 +1837,21 @@ def prewarm_full_market_klines(
 
 
 def main():
+    if '--listed-codes-json' in sys.argv[1:]:
+        from a_share_calendar import trading_day_status
+        from app.market_data.exchange_listing import fetch_exchange_listing, listing_error_summary
+        day = datetime.now().strftime('%Y-%m-%d')
+        calendar = trading_day_status(day, allow_refresh=False)
+        accepted = {day, str(calendar.get('previous_trading_day') or '')[:10]}
+        try:
+            rows = [(code, name) for code, name in fetch_exchange_listing(accepted,
+                    cache_path=B1_OUTPUT_DIR / 'a_share_listing_parts.json', cache_day=day)
+                    if stock_board(code) and '退' not in name]
+        except Exception as exc:
+            json.dump({'error_code':'exchange_listing_unavailable', 'diagnostic':listing_error_summary(exc)}, sys.stdout)
+            raise SystemExit(2)
+        json.dump({'schema_version':1,'date':day,'rows':rows},sys.stdout,ensure_ascii=False)
+        return
     if kline_prewarm_only_mode():
         report_scan_progress(
             "kline_prewarm",
@@ -1870,11 +1937,11 @@ def main():
         print("  Independent theme-strength research mode; trading suite is ignored", file=sys.stderr)
     configured_universe = configured_stock_universe()
     stock_universe, reference_stock_universe = scan_stock_universes(scorers, configured_universe)
-    candidates = load_a_share_code_pool(stock_universe)
+    candidates = load_daily_scan_pool(stock_universe)
     if reference_stock_universe == stock_universe:
         reference_candidates = candidates
     else:
-        reference_candidates = load_a_share_code_pool(reference_stock_universe)
+        reference_candidates = load_daily_scan_pool(reference_stock_universe)
     scan_candidates = merge_stock_code_pools(candidates, reference_candidates)
 
     print(
@@ -2341,7 +2408,8 @@ def main():
             NIUONE_MAINLINE_SUMMARY_CACHE,
             output,
         )
-        print(json.dumps(output, ensure_ascii=False, indent=2))
+        json.dump(output, sys.stdout, ensure_ascii=False, indent=2)
+        sys.stdout.write("\n")
         print(
             "  Independent theme-strength cache updated: "
             f"generated_at={generated_at} themes={niuone_context.get('theme_count')} "
@@ -2849,16 +2917,20 @@ def main():
         output["zettaranc_context"] = {
             "industry_money_flow": sector_tide_flow_rows,
         }
-    json_str = json.dumps(output, ensure_ascii=False, indent=2)
+    from app.screening.scan_artifact import PROTOCOL, child_metadata
+    managed = child_metadata(os.environ, time.strftime('%Y-%m-%d %H:%M:%S'))
+    output.update(managed)
     report_scan_progress("persisting", stage_label="正在保存本轮候选结果")
-    print(json_str)
     if niuone_context is not None:
         write_niuone_mainline_cache(NIUONE_MAINLINE_CACHE, output)
         write_niuone_mainline_summary_cache(
             NIUONE_MAINLINE_SUMMARY_CACHE,
             output,
         )
-    write_outputs(output, generated_at, json_str=json_str)
+    write_outputs(output, generated_at)
+    returned = {'transport': PROTOCOL, 'job_id': managed['job_id'], 'generated_at': generated_at} if managed else output
+    json.dump(returned, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
     report_scan_progress(
         "completed",
         stage_label="选股扫描已完成",

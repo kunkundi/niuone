@@ -9,6 +9,7 @@ import threading
 import time
 import types
 import unittest
+from unittest.mock import patch
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
@@ -50,6 +51,18 @@ def complete_preset_interpretation() -> dict[str, list[str]]:
 
 
 class SellStrategyRuleTests(unittest.TestCase):
+    def setUp(self):
+        model = patch.object(trader, "MODEL", "deepseek-v4-flash")
+        model.start()
+        self.addCleanup(model.stop)
+        # Prompt/risk-rule tests must not fetch live dashboard channels. Their
+        # source transport and context integration have independent test suites.
+        sources = patch.object(trader, "fetch_global_decision_sources", return_value={
+            "enabled": True, "generated_at": "2026-06-24 10:00:00", "sources": {},
+        })
+        sources.start()
+        self.addCleanup(sources.stop)
+
     def test_trading_time_tracks_auction_and_static_period(self):
         allowed, reason = trader.is_a_share_trading_time(datetime(2026, 6, 24, 9, 15))
         self.assertTrue(allowed)

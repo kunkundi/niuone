@@ -318,6 +318,102 @@ class MoneyFlowServiceTests(unittest.TestCase):
         self.assertEqual(money_flow_service.CACHE_PATH.name, "industry_main_money_flow_cache.json")
         self.assertNotEqual(money_flow_service.CACHE_PATH.name, "money_flow_dashboard_cache.json")
 
+    def test_official_chart_returns_complete_timestamped_f62_without_extra_page(self):
+        now = datetime(2026, 7, 23, 11, tzinfo=money_flow_service.BEIJING_TZ)
+        rows = [eastmoney_row(f'BK{i:04d}', f'行业{i}', (i-59)*1e8, timestamp=int(now.timestamp())) for i in range(128)]
+        calls = []
+        def download(url, *, validate_payload, attempts):
+            from urllib.parse import parse_qs, urlsplit
+            calls.append(url)
+            self.assertEqual(attempts, 1)
+            params = parse_qs(urlsplit(url).query)
+            self.assertEqual(params['code'], ['m:90+s:4'])
+            self.assertIn('f124', params['key'][0].split(','))
+            payload = {'data': {'diff': rows, 'total': len(rows)}}
+            validate_payload(payload)
+            return payload
+        with patch.object(money_flow_service, '_beijing_now', return_value=now), patch.object(money_flow_service, '_download_json', side_effect=download):
+            result = money_flow_service._compute_once()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result['count'], 127)  # zero-net board is excluded from rankings
+        self.assertEqual(result['generated_at'], '2026-07-23 11:00:00')
+        self.assertEqual(result['inflow'][0]['net_flow_yi'], 68)
+        self.assertEqual(result['outflow'][0]['net_flow_yi'], -59)
+
+    def test_invalid_chart_falls_back_to_quote_pages(self):
+        now = datetime(2026, 7, 23, 11, tzinfo=money_flow_service.BEIJING_TZ)
+        rows = [eastmoney_row(f'BK{i:04d}', f'行业{i}', (i-9)*1e8, timestamp=int(now.timestamp())) for i in range(20)]
+        cases = [({'total': 21, 'diff': rows}), ({'total': 20, 'diff': rows[:-1] + [rows[0]]})]
+        cases += [{'total': 20, 'diff': [{**rows[0], **bad}, *rows[1:]]} for bad in (
+            {'f124': None}, {'f124': int(now.timestamp())-86400}, {'f124': int(now.timestamp())+3600}, {'f62': '-'}, {'f12': ''})]
+        for bad in cases:
+            calls = []
+            def download(url, *, validate_payload, **kwargs):
+                calls.append(url)
+                data = bad if 'getbkzj' in url else {'total': 20, 'diff': rows}
+                validate_payload({'data': data})
+                return {'data': data}
+            with patch.object(money_flow_service, '_beijing_now', return_value=now), patch.object(money_flow_service, '_download_json', side_effect=download):
+                self.assertEqual(money_flow_service._fetch_page(1), (rows, 20))
+            self.assertEqual(len(calls), 2)
+
+    def test_missing_source_clock_cannot_create_a_fresh_snapshot(self):
+        with self.assertRaisesRegex(RuntimeError, 'source time is missing'):
+            money_flow_service._source_time([{'f124': '-'}])
+
+    def test_midday_freshness_uses_session_close_and_preserves_valid_cache(self):
+        tz = money_flow_service.BEIJING_TZ
+        now = datetime(2026, 7, 23, 12, 20, tzinfo=tz)
+        self.assertTrue(money_flow_service._source_clock_usable(now.replace(hour=11, minute=30), now))
+        self.assertFalse(money_flow_service._source_clock_usable(now.replace(hour=9, minute=30), now))
+        saved = {'generated_at': '2026-07-23 11:30:00', 'inflow': [{'name':'A'}], 'outflow': [{'name':'B'}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'cache.json'
+            path.write_text(json.dumps(saved), encoding='utf-8')
+            with patch.object(money_flow_service, 'CACHE_PATH', path), patch.object(money_flow_service, '_beijing_now', return_value=now), patch.object(money_flow_service, '_compute', return_value={**saved, 'generated_at':'2026-07-22 15:00:00'}):
+                result = money_flow_service.fetch_money_flow(force_refresh=True)
+            self.assertTrue(result['stale_cache'])
+            self.assertEqual(json.loads(path.read_text(encoding='utf-8')), saved)
+
+    def test_download_switches_to_same_source_fallback_after_failure(self):
+        urls = []
+        def runner(command, **kwargs):
+            urls.append(command[-1])
+            if len(urls) == 1:
+                return SimpleNamespace(returncode=22, stdout=b"", stderr=b"HTTP 502")
+            return SimpleNamespace(returncode=0, stdout=b'{"data":{"total":20}}', stderr=b"")
+        result = money_flow_service._download_json(
+            "https://primary.test/data", fallback_urls=("https://fallback.test/data",),
+            runner=runner, curl_path="curl", sleep=lambda _: None,
+        )
+        self.assertEqual(urls, ["https://primary.test/data", "https://fallback.test/data"])
+        self.assertEqual(result["data"]["total"], 20)
+
+    def test_snapshot_budget_is_shared_across_page_retries(self):
+        clock = [0.0]
+        calls = []
+        def runner(command, **kwargs):
+            calls.append(kwargs["timeout"])
+            clock[0] += 8
+            return SimpleNamespace(returncode=28, stdout=b"", stderr=b"timeout")
+        token = money_flow_service._SNAPSHOT_DEADLINE.set(10.0)
+        try:
+            with patch.object(money_flow_service.time, "monotonic", side_effect=lambda: clock[0]):
+                with self.assertRaisesRegex(TimeoutError, "snapshot deadline"):
+                    money_flow_service._download_json(
+                        "https://example.test/data", runner=runner, curl_path="curl",
+                        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                    )
+            self.assertEqual(calls, [10, 3.5])
+        finally:
+            money_flow_service._SNAPSHOT_DEADLINE.reset(token)
+
+    def test_compute_resets_budget_after_failure(self):
+        with patch.object(money_flow_service, "_compute_once", side_effect=RuntimeError("source down")):
+            with self.assertRaises(RuntimeError):
+                money_flow_service._compute()
+        self.assertIsNone(money_flow_service._SNAPSHOT_DEADLINE.get())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,7 @@ import os
 import re
 import ssl
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -72,6 +73,8 @@ NY_TZ = ZoneInfo("America/New_York")
 CN_TZ = ZoneInfo("Asia/Shanghai")
 
 _CACHE = {"ts": 0, "data": None}
+_QUOTE_CACHE = {"ts": 0, "data": None}
+_QUOTE_LOCK = threading.Lock()
 CACHE_TTL = 45
 
 
@@ -487,6 +490,45 @@ def _fetch_kline(qt_code, count=45):
         return [float(k[2]) for k in day[-count:] if len(k) > 2]
     except Exception:
         return []
+
+
+def fetch_indices_quote_data(force_refresh=False):
+    """Read the same index quotes without downloading unused chart series."""
+    with _QUOTE_LOCK:
+        now = time.time()
+        for cache in (_CACHE, _QUOTE_CACHE):
+            if not force_refresh and cache['data'] is not None and now - cache['ts'] < CACHE_TTL:
+                return cache['data']
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            qt = pool.submit(_qt_query, [code for _, code, _, _, _ in INDEX_DEFS])
+            us = pool.submit(_sina_us_index_query)
+            sina = pool.submit(_sina_query, [row[1] for row in SINA_DEFS])
+            qt_data = _parse_qt(qt.result())
+            us_data = _parse_sina_us_indices(us.result())
+            sina_data = _parse_sina(sina.result())
+        items = []
+        for key, code, name, group, market_type in INDEX_DEFS:
+            quote = qt_data.get(code, {})
+            if market_type == 'us_index' and not quote:
+                quote = _fetch_minute_quote(code) or us_data.get(code, {})
+            items.append({
+                'key': key, 'code': code, 'name': name, 'group': group, 'market_type': market_type,
+                'price': quote.get('price', 0), 'prev_close': quote.get('prev_close', 0),
+                'change': quote.get('change', 0), 'change_pct': quote.get('change_pct', 0),
+                'high': quote.get('high'), 'low': quote.get('low'),
+                'time': quote.get('time') or time.strftime('%Y-%m-%d %H:%M:%S'),
+            })
+        for key, code, name, group, market_type, _ in SINA_DEFS:
+            quote = sina_data.get(code, {})
+            items.append({
+                'key': key, 'code': code, 'name': name, 'group': group, 'market_type': market_type,
+                'price': quote.get('price', 0), 'prev_close': quote.get('prev_close', 0),
+                'change': quote.get('change', 0), 'change_pct': quote.get('change_pct', 0),
+                'time': quote.get('time') or time.strftime('%Y-%m-%d %H:%M:%S'),
+            })
+        data = {'items': items, 'generated_at': time.strftime('%Y-%m-%d %H:%M:%S')}
+        _QUOTE_CACHE.update(ts=now, data=data)
+        return data
 
 
 def fetch_indices_data(force_refresh=False):
