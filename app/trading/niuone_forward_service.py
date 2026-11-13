@@ -91,6 +91,7 @@ PROTOCOL_SOURCE_PATHS = (
     "app/trading/decision_freshness.py",
     "app/core/model_api.py",
     "app/core/model_request_guard.py",
+    "app/dashboard/apis/bounded_fetch.py",
 )
 PROTOCOL_RUNTIME_SETTING_DEFAULTS = {
     FORWARD_COHORT_START_ENV: DEFAULT_COHORT_START,
