@@ -494,37 +494,13 @@ def check_market_sentiment() -> dict[str, Any]:
         return dict(MARKET_SENTIMENT_CACHE)
     
     try:
-        import akshare as ak
-        today_str = datetime.now().strftime("%Y%m%d")
-        df = ak.stock_zt_pool_em(date=today_str)
-        zt_count = len(df) if df is not None else 0
-        
-        if zt_count >= 80:
-            sentiment = "hot"
-            detail = f"涨停{zt_count}家→市场🔥活跃，可积极建仓"
-        elif zt_count >= 30:
-            sentiment = "neutral"
-            detail = f"涨停{zt_count}家→市场正常，正常建仓"
-        else:
-            sentiment = "cold"
-            detail = f"涨停{zt_count}家→市场🥶冷清，谨慎建仓"
-        
-        # 统计热门板块（从涨停股中提取行业）
-        hot_sectors = []
-        if df is not None and not df.empty:
-            from collections import Counter
-            sector_counts = Counter()
-            for _, row in df.iterrows():
-                sector = str(row.get("所属行业", "")).strip()
-                if sector and sector != "nan":
-                    sector_counts[sector] += 1
-            hot_sectors = [f"{s}({c}只)" for s, c in sector_counts.most_common(5)]
-        
-        MARKET_SENTIMENT_CACHE = {
-            "ts": now_ts_val, "limit_up_count": zt_count,
-            "sentiment": sentiment, "detail": detail,
-            "hot_sectors": hot_sectors,
-        }
+        from market_data.market_sentiment import read_current_market_sentiment
+        payload = read_current_market_sentiment(DASHBOARD_HOME / 'cron/output/market_sentiment.json')
+        if (payload.get('sentiment') not in {'hot', 'neutral', 'cold'}
+                or not isinstance(payload.get('limit_up_count'), int)
+                or payload['limit_up_count'] < 0):
+            raise ValueError('invalid market sentiment response')
+        MARKET_SENTIMENT_CACHE = {'ts': now_ts_val, **payload}
     except Exception as e:
         MARKET_SENTIMENT_CACHE = {
             "ts": now_ts_val, "limit_up_count": 0,
@@ -3907,6 +3883,7 @@ DECISION_INTELLIGENCE_ENABLED = env_bool("DASHBOARD_DECISION_INTELLIGENCE_ENABLE
 DECISION_INTELLIGENCE_TTL_SECONDS = max(15, env_int("DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS", 75))
 DECISION_INTELLIGENCE_MAX_ITEMS = max(1, min(8, env_int("DASHBOARD_DECISION_INTELLIGENCE_MAX_ITEMS", 5)))
 DECISION_INTELLIGENCE_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
+DECISION_INTELLIGENCE_LOCK = threading.Lock()
 NEWSNOW_DECISION_ENABLED = env_bool("NEWSNOW_DECISION_ENABLED", True)
 
 
@@ -4966,53 +4943,43 @@ def fetch_global_decision_sources(force: bool = False) -> dict[str, Any]:
     """
     if not DECISION_INTELLIGENCE_ENABLED:
         return {"enabled": False, "generated_at": now_ts(), "sources": {}}
-    now_value = time.time()
-    cached = DECISION_INTELLIGENCE_CACHE.get("data")
-    if (
-        not force
-        and isinstance(cached, dict)
-        and now_value - float(DECISION_INTELLIGENCE_CACHE.get("ts") or 0) < DECISION_INTELLIGENCE_TTL_SECONDS
-    ):
-        return cached
+    observed = DECISION_INTELLIGENCE_CACHE.get('data')
+    with DECISION_INTELLIGENCE_LOCK:
+        now_value = time.time()
+        cached = DECISION_INTELLIGENCE_CACHE.get('data')
+        if (isinstance(cached, dict)
+                and (not force or cached is not observed)
+                and now_value - float(DECISION_INTELLIGENCE_CACHE.get('ts') or 0) < DECISION_INTELLIGENCE_TTL_SECONDS):
+            return cached
+        data = _collect_global_decision_sources()
+        DECISION_INTELLIGENCE_CACHE.update(ts=now_value, data=data)
+        return data
 
-    data: dict[str, Any] = {"enabled": True, "generated_at": now_ts(), "sources": {}}
+
+def _collect_global_decision_sources() -> dict[str, Any]:
+    data: dict[str, Any] = {'enabled': True, 'generated_at': now_ts(), 'sources': {}, 'source_timings_s': {}}
+    jobs = {}
     try:
-        from indices_dashboard_api import fetch_indices_data
-        data["sources"]["indices"] = _fetch_decision_source(
-            "indices",
-            fetch_indices_data,
-            {"items": []},
-        )
+        import indices_dashboard_api as indices_api
+        jobs['indices'] = (getattr(indices_api, 'fetch_indices_quote_data', indices_api.fetch_indices_data), {'items': []})
     except Exception as exc:
         data["sources"]["indices"] = {"items": [], "error": f"{type(exc).__name__}: {exc}"}
 
     try:
         from sectors_dashboard_api import fetch_sector_data
-        data["sources"]["sectors"] = _fetch_decision_source(
-            "sectors",
-            fetch_sector_data,
-            {"gain_top": [], "loss_top": [], "items": []},
-        )
+        jobs['sectors'] = (fetch_sector_data, {'gain_top': [], 'loss_top': [], 'items': []})
     except Exception as exc:
         data["sources"]["sectors"] = {"gain_top": [], "loss_top": [], "items": [], "error": f"{type(exc).__name__}: {exc}"}
 
     try:
         from money_flow_dashboard_api import fetch_money_flow
-        data["sources"]["money_flow"] = _fetch_decision_source(
-            "money_flow",
-            fetch_money_flow,
-            {"inflow": [], "outflow": []},
-        )
+        jobs['money_flow'] = (fetch_money_flow, {'inflow': [], 'outflow': []})
     except Exception as exc:
         data["sources"]["money_flow"] = {"inflow": [], "outflow": [], "error": f"{type(exc).__name__}: {exc}"}
 
     try:
         from hot_stocks_dashboard_api import fetch_hot_stocks
-        data["sources"]["hot_stocks"] = _fetch_decision_source(
-            "hot_stocks",
-            lambda: fetch_hot_stocks("amount"),
-            {"items": [], "amount_top": [], "turnover_top": [], "gain_top": []},
-        )
+        jobs['hot_stocks'] = (lambda: fetch_hot_stocks('amount'), {'items': [], 'amount_top': [], 'turnover_top': [], 'gain_top': []})
     except Exception as exc:
         data["sources"]["hot_stocks"] = {
             "items": [],
@@ -5024,11 +4991,7 @@ def fetch_global_decision_sources(force: bool = False) -> dict[str, Any]:
 
     try:
         from market_flow_dashboard_api import fetch_market_flow
-        data["sources"]["market_flow"] = _fetch_decision_source(
-            "market_flow",
-            fetch_market_flow,
-            {"total_inflow_yi": None, "total_outflow_yi": None, "net_flow_yi": None},
-        )
+        jobs['market_flow'] = (fetch_market_flow, {'total_inflow_yi': None, 'total_outflow_yi': None, 'net_flow_yi': None})
     except Exception as exc:
         data["sources"]["market_flow"] = {
             "total_inflow_yi": None,
@@ -5037,7 +5000,17 @@ def fetch_global_decision_sources(force: bool = False) -> dict[str, Any]:
             "error": f"{type(exc).__name__}: {exc}",
         }
 
-    DECISION_INTELLIGENCE_CACHE.update({"ts": now_value, "data": data})
+    def collect(label, fetcher, empty):
+        started = time.monotonic()
+        value = _fetch_decision_source(label, fetcher, empty)
+        return value, round(time.monotonic() - started, 3)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {label: pool.submit(collect, label, *job) for label, job in jobs.items()}
+        for label, future in futures.items():
+            value, elapsed = future.result()
+            data['sources'][label] = value
+            data['source_timings_s'][label] = elapsed
     return data
 
 
@@ -5252,6 +5225,7 @@ def build_decision_intelligence_context(
     ctx = {
         "enabled": True,
         "generated_at": raw.get("generated_at") if isinstance(raw, dict) else now_ts(),
+        "source_timings_s": raw.get("source_timings_s", {}) if isinstance(raw, dict) else {},
         "source_status": source_status,
         "portfolio": compact_portfolio_exposure_for_decision(portfolio),
         "market_guidance": compact_market_strategy_context(market_strategy_ctx),
@@ -10440,15 +10414,17 @@ def call_model_decision(
         )
     held_candidates_section = "\n".join(held_candidate_lines) if held_candidate_lines else "（无当前持仓进入本轮候选池）"
     decision_portfolio = compact_portfolio_for_decision(portfolio)
+    attempt = portfolio.get('_decision_attempt')
+    intelligence_started = time.monotonic()
     decision_intelligence_ctx = safe_decision_intelligence_context(
         portfolio,
         compact_candidates,
         market_strategy_ctx,
         news_context,
     )
-    attempt = portfolio.get('_decision_attempt')
     if isinstance(attempt, dict):
         attempt['intelligence'] = decision_intelligence_ctx
+        attempt['timing']['intelligence_elapsed_s'] = round(time.monotonic() - intelligence_started, 3)
     if news_precheck_error:
         precheck_audit = decision_intelligence_ctx.setdefault(
             "news_precheck",
@@ -10569,7 +10545,11 @@ execution_preflight 是按扫描价、当前账户独立计算的风险数量上
     transport_started = time.monotonic()
     if isinstance(attempt, dict):
         attempt['timing']['transport_started_at'] = now_ts()
+        attempt['timing']['request_budget_s'] = 0.0
     try:
+        request_budget = remaining_model_seconds(DECISION_REQUEST_TIMEOUT)
+        if isinstance(attempt, dict):
+            attempt['timing']['request_budget_s'] = round(request_budget, 3)
         result = request_chat_json_object(
             base_url, api_key, payload, MODEL,
             max_parse_attempts=DECISION_JSON_MAX_PARSE_ATTEMPTS, timeout=DECISION_REQUEST_TIMEOUT,
