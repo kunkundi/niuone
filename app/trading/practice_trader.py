@@ -5410,10 +5410,13 @@ def get_volatility_adjustment(code: str) -> float:
 
 def get_adaptive_params() -> dict[str, float]:
     """根据市场情绪自适应调整仓位参考。"""
-    sent = check_market_sentiment()
-    if sent["sentiment"] == "hot":
+    return adaptive_params_for_sentiment(check_market_sentiment())
+
+
+def adaptive_params_for_sentiment(sent: Mapping[str, Any]) -> dict[str, Any]:
+    if sent.get("sentiment") == "hot":
         return {"position_mult": 1.0, "label": "热-只排序不放宽风控"}
-    elif sent["sentiment"] == "cold":
+    elif sent.get("sentiment") == "cold":
         return {"position_mult": 0.5, "label": "冷-减半观察"}
     else:
         return {"position_mult": 1.0, "label": "中性"}
@@ -10236,8 +10239,6 @@ def call_model_decision(
     prompt_replacement_margin = float(
         prompt_feedback_parameters["replacement_priority_margin"]
     )
-    market_env = check_market_environment()
-    market_sent = check_market_sentiment()
     market_strategy_ctx = market_strategy_ctx or current_market_strategy_context()
     strategy_suite = current_strategy_suite()
     active_strategy_ids = active_strategy_ids_for_decision()
@@ -10248,9 +10249,6 @@ def call_model_decision(
         market_strategy_ctx,
         niuone_only=niuone_only,
     )
-    sentiment_note = ""
-    if market_sent.get("sentiment") == "cold":
-        sentiment_note = f"⚠️市场情绪偏冷({market_sent.get('detail','')})，建议仓位减半"
     
     # === 实时消息面预检（top5候选） ===
     news_context = ""
@@ -10266,9 +10264,29 @@ def call_model_decision(
         news_precheck_error = f"precheck_{type(exc).__name__}"
         news_context = ""
     
-    compact_candidates = candidates[:100] if strategy_suite == STRATEGY_SOURCE_PRESET_TEXT else candidates[:8]
-    # 自适应参数（市场情绪驱动）
-    adaptive = get_adaptive_params()
+    if strategy_suite == STRATEGY_SOURCE_PRESET_TEXT:
+        compact_candidates = candidates[:100]
+    elif niuone_only:
+        compact_candidates = candidates
+    else:
+        compact_candidates = candidates[:8]
+    inputs_started = time.monotonic()
+    # Independent read-only feeds share a critical path; model and order calls
+    # remain on the decision thread with its original absolute deadline.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        env_future = pool.submit(check_market_environment)
+        sentiment_future = pool.submit(check_market_sentiment)
+        intelligence_started = time.monotonic()
+        decision_intelligence_ctx = safe_decision_intelligence_context(
+            portfolio, compact_candidates, market_strategy_ctx, news_context,
+        )
+        intelligence_elapsed = time.monotonic() - intelligence_started
+        market_env, market_sent = env_future.result(), sentiment_future.result()
+    inputs_elapsed = time.monotonic() - inputs_started
+    adaptive = adaptive_params_for_sentiment(market_sent)
+    sentiment_note = ""
+    if market_sent.get("sentiment") == "cold":
+        sentiment_note = f"⚠️市场情绪偏冷({market_sent.get('detail','')})，建议仓位减半"
     # 多战法上下文：统计战法分布，给每个候选标注最优战法
     preset_strategy_text = current_preset_strategy_text()
     portfolio_positions = [p for p in (portfolio.get("positions") or []) if isinstance(p, dict)]
@@ -10426,16 +10444,10 @@ def call_model_decision(
     held_candidates_section = "\n".join(held_candidate_lines) if held_candidate_lines else "（无当前持仓进入本轮候选池）"
     decision_portfolio = compact_portfolio_for_decision(portfolio)
     attempt = portfolio.get('_decision_attempt')
-    intelligence_started = time.monotonic()
-    decision_intelligence_ctx = safe_decision_intelligence_context(
-        portfolio,
-        compact_candidates,
-        market_strategy_ctx,
-        news_context,
-    )
     if isinstance(attempt, dict):
         attempt['intelligence'] = decision_intelligence_ctx
-        attempt['timing']['intelligence_elapsed_s'] = round(time.monotonic() - intelligence_started, 3)
+        attempt['timing']['intelligence_elapsed_s'] = round(intelligence_elapsed, 3)
+        attempt['timing']['market_inputs_elapsed_s'] = round(inputs_elapsed, 3)
     if news_precheck_error:
         precheck_audit = decision_intelligence_ctx.setdefault(
             "news_precheck",
@@ -14082,9 +14094,6 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
     state["market_decision_context"] = compact_market_ctx
     frozen_prompt_version = active_frozen_prompt_strategy()
 
-    # 自适应参数
-    adaptive = get_adaptive_params()
-    
     raw_candidates = decision_candidate_rows(b1_payload)
     observed_candidates = observed_candidate_rows(b1_payload)
     candidates = [
@@ -14149,12 +14158,6 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
     if buy_budget_exceeded:
         trade_reason = f"{trade_reason}；日内亏损预算触发，仅允许SELL/HOLD"
     deferred_due_at = "" if trade_allowed else deferred_execution_due_at(schedule_slot)
-    market_env = check_market_environment()
-    market_sent = check_market_sentiment()
-    # 市场情绪过冷时降低仓位上限（模型自行判断，此处仅提示）
-    sentiment_note = ""
-    if market_sent["sentiment"] == "cold" and trade_allowed:
-        sentiment_note = f"⚠️市场情绪偏冷({market_sent['detail']})，建议仓位减半或不建仓"
     portfolio = enrich_portfolio(state)
     portfolio["_preset_position_policy_context"] = preset_position_policy_context(state)
     if env_bool("DASHBOARD_EXECUTION_PREFLIGHT_ENABLED", False):

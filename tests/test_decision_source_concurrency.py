@@ -1,4 +1,5 @@
 import concurrent.futures
+import json
 import sys
 import threading
 import tempfile
@@ -17,6 +18,52 @@ from market_data.market_sentiment import fetch_market_sentiment
 
 
 class DecisionSourceConcurrencyTests(unittest.TestCase):
+    def test_complete_model_inputs_overlap_and_retain_selected_candidate_facts(self):
+        gate = threading.Barrier(3)
+        def reader(result):
+            def collect(*args):
+                gate.wait(timeout=3)
+                return result
+            return collect
+
+        score = {"turnover": 3.456789, "stock_market_amount_percentile": 88.7654321,
+                 "stock_theme_amount_percentile": 0, "stock_activity_confirmed": False,
+                 "entry_setup": "pullback", "atr": 0.54321, "entry_extension_atr": 0.1234}
+        candidates = [{"code": f"60000{i}", "best_strategy": "niu_leader",
+                       "strategies": {"niu_leader": score, "niu_emerging": {"entry_setup": "wrong-route"}}}
+                      for i in range(9)]
+        portfolio = {"cash": 25000, "total_equity": 25000, "positions": [],
+                     "_decision_attempt": {"timing": {}}}
+        with ExitStack() as stack:
+            for name, value in {"check_market_environment": {"detail": "指数样本"},
+                                "check_market_sentiment": {"sentiment": "cold", "detail": "情绪样本"},
+                                "safe_decision_intelligence_context": {"enabled": False}}.items():
+                stack.enter_context(patch.object(trader, name, side_effect=reader(value)))
+            for name, value in {"load_decision_model_config": ("https://example.test", "test"),
+                                "check_candidate_news_precheck": "", "current_preset_strategy_text": "",
+                                "current_strategy_suite": "niuone", "active_strategy_ids_for_decision": ["niu_leader"]}.items():
+                stack.enter_context(patch.object(trader, name, return_value=value))
+            stack.enter_context(patch.object(trader, "DECISION_REASONING_EFFORT", "max"))
+            request = stack.enter_context(patch.object(trader, "request_chat_json_object",
+                                                       return_value={"summary": "观察", "actions": []}))
+            with trader.model_request_budget(180):
+                trader.call_model_decision(candidates, portfolio, True, "test", {"enabled": False})
+        payload = request.call_args.args[2]
+        prompt = payload["messages"][0]["content"]
+        self.assertEqual(payload["reasoning_effort"], "max")
+        self.assertIn("指数样本", prompt)
+        self.assertIn("情绪样本", prompt)
+        self.assertNotIn("wrong-route", prompt)
+        for candidate in candidates:
+            line = next(line for line in prompt.splitlines() if candidate["code"] in line and "买点核验" in line)
+            facts, _ = json.JSONDecoder().raw_decode(line[line.index("）：{") + 2:])
+            self.assertEqual({key: facts[key] for key in score}, score)
+            self.assertIsNone(facts["max_stop_atr"])
+        timing = portfolio["_decision_attempt"]["timing"]
+        self.assertLessEqual(timing["intelligence_elapsed_s"], timing["market_inputs_elapsed_s"])
+        self.assertGreater(timing["request_budget_s"], 0)
+        self.assertLessEqual(timing["request_budget_s"], 180)
+
     def test_sources_are_parallel_and_concurrent_readers_share_one_collection(self):
         barrier = threading.Barrier(5)
         calls = []
