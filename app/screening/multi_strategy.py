@@ -51,6 +51,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from core.json_cache import write_json_cache
+from strategies.niuone_risk import NIUONE_ENTRY_GEOMETRY_FIELDS
 from niuone_paths import get_dashboard_env_file, get_dashboard_home
 from market_data.news_precheck import (
     NewsPrecheckConfig,
@@ -2518,6 +2519,7 @@ def main():
             "theme_basis": best.get("theme_basis"),
             "mainline_state": best.get("mainline_state"),
             **niuone_lifecycle_candidate_metadata(best),
+            **({key: best.get(key) for key in NIUONE_ENTRY_GEOMETRY_FIELDS} if niuone_best else {}),
             "mainline_raw_state": best.get("mainline_raw_state"),
             "mainline_intraday_state": best.get("mainline_intraday_state"),
             "mainline_score": best.get("mainline_score"),

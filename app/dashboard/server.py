@@ -2182,6 +2182,8 @@ def refresh_b1_candidate_cache_from_current_pool() -> dict[str, Any]:
                 "sector_score": best.get("sector_score"),
                 "theme_basis": best.get("theme_basis"),
                 "mainline_state": best.get("mainline_state"),
+                **scanner.niuone_lifecycle_candidate_metadata(best),
+                **{key: best.get(key) for key in scanner.NIUONE_ENTRY_GEOMETRY_FIELDS},
                 "mainline_raw_state": best.get("mainline_raw_state"),
                 "mainline_intraday_state": best.get("mainline_intraday_state"),
                 "mainline_score": best.get("mainline_score"),

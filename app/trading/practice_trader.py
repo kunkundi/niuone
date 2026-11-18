@@ -224,6 +224,10 @@ from strategies.niuone_risk import (
     NIUONE_MARKUP_UPGRADE_POSITION_CAP_PCT,
     NIUONE_REPLACEMENT_PRIORITY_MARGIN,
     NIUONE_DEFAULT_MAX_OPEN_POSITIONS,
+    NIUONE_ENTRY_GEOMETRY_FIELDS,
+    NIUONE_MODEL_ENTRY_FIELDS,
+    complete_niuone_entry_fields,
+    niuone_opening_position_cap,
     niuone_add_signal_score_audit,
     niuone_buy_signal_score,
     niuone_portfolio_priority,
@@ -3210,6 +3214,7 @@ def preview_niuone_buy_capacity(
         strategy = str(candidate.get("best_strategy") or "")
         if not is_niuone_strategy(strategy):
             continue
+        candidate = complete_niuone_entry_fields(candidate)
         code = normalize_code(candidate.get("code") or "")
         price = _safe_float(candidate.get("price"), 0.0)
         position = positions.get(code) or {}
@@ -3224,9 +3229,7 @@ def preview_niuone_buy_capacity(
             results.append(row)
             continue
         budget = niuone_risk_budget(regime, strategy)
-        cap = float(NIUONE_ABSOLUTE_POSITION_CAP_PCT[strategy])
-        if position_qty(position) <= 0 and subroute == NIUONE_MARKUP_MOMENTUM_PROBE_SUBROUTE:
-            cap = min(cap, NIUONE_MARKUP_MOMENTUM_PROBE_POSITION_CAP_PCT)
+        cap = niuone_opening_position_cap(strategy, candidate, opening=position_qty(position) <= 0)
         stop = max(_safe_float(candidate.get("stop_price"), 0.0),
                    _safe_float(position.get("entry_stop_price"), 0.0))
         stop_distance = structural_stop_distance_pct(price, stop)
@@ -3357,7 +3360,8 @@ def decision_candidate_rows(b1_payload: dict[str, Any]) -> list[Any]:
     for key in ("trade_items", "items", "candidates"):
         if key in b1_payload:
             value = b1_payload.get(key)
-            return value if isinstance(value, list) else []
+            return [complete_niuone_entry_fields(c) if isinstance(c, dict) else c
+                    for c in value] if isinstance(value, list) else []
     return []
 
 
@@ -3366,7 +3370,8 @@ def observed_candidate_rows(b1_payload: dict[str, Any]) -> list[Any]:
     for key in ("observed_items", "items", "candidates", "trade_items"):
         if key in b1_payload:
             value = b1_payload.get(key)
-            return value if isinstance(value, list) else []
+            return [complete_niuone_entry_fields(c) if isinstance(c, dict) else c
+                    for c in value] if isinstance(value, list) else []
     return []
 
 
@@ -6164,6 +6169,9 @@ PRACTICE_CANDIDATE_EVIDENCE_FIELDS = (
     "selection_same_stage_candidate_count",
     "selection_same_stage_candidate_rank",
     "selection_same_stage_top_score_gap",
+    "gap_buffer_pct", "stop_atr", "max_stop_atr", "atr_period",
+    "max_entry_extension_atr", "absolute_position_cap_pct", "max_position_pct_by_risk",
+    *NIUONE_ENTRY_GEOMETRY_FIELDS,
 )
 
 
@@ -10347,6 +10355,7 @@ def call_model_decision(
                 f"外部确认调整:{c.get('external_context_adjustment','-')} "
             )
         elif is_niuone_strategy(strat):
+            c = complete_niuone_entry_fields(c)
             candidate_priority = niuone_portfolio_priority(c, strat)["score"]
             tide_detail = (
                 f"市场:{c.get('market_regime','-')}/{c.get('market_score','-')} "
@@ -10365,6 +10374,8 @@ def call_model_decision(
                 f"单笔预算:{c.get('per_trade_risk_budget_pct','-')}% "
                 f"动态仓位上限:{c.get('max_position_pct_by_risk','-')}% "
                 f"组合优先级:{candidate_priority} "
+                f"买点核验（turnover为换手率%，成交额分位为0–100，扩张和止损距离以ATR计）："
+                f"{json.dumps({key: c.get(key) for key in NIUONE_MODEL_ENTRY_FIELDS}, ensure_ascii=False, separators=(',', ':'))} "
                 f"消息面:{candidate_news_tone_for_decision(c)} "
             )
         cand_lines.append(
@@ -11894,6 +11905,7 @@ def execute_actions(
                 exposure_label = "主题" if niuone_buy else "行业"
                 risk_persona = "niuone" if niuone_buy else "sector_tide"
                 if niuone_buy:
+                    candidate = complete_niuone_entry_fields(candidate)
                     niuone_entry_subroute = str(
                         candidate.get("niuone_entry_subroute") or ""
                     )
@@ -11993,20 +12005,10 @@ def execute_actions(
                     else sector_tide_risk_budget(regime)
                 )
                 single_limit_pct = (
-                    float(NIUONE_ABSOLUTE_POSITION_CAP_PCT[buy_strategy])
+                    niuone_opening_position_cap(buy_strategy, candidate, opening=old_qty <= 0)
                     if niuone_buy
                     else strategy_position_limit_pct(buy_strategy)
                 )
-                if (
-                    niuone_buy
-                    and old_qty <= 0
-                    and niuone_entry_subroute
-                    == NIUONE_MARKUP_MOMENTUM_PROBE_SUBROUTE
-                ):
-                    single_limit_pct = min(
-                        single_limit_pct,
-                        NIUONE_MARKUP_MOMENTUM_PROBE_POSITION_CAP_PCT,
-                    )
                 if niuone_buy and niuone_markup_scale_add:
                     if buy_strategy == "niu_emerging":
                         markup_stage_cap_pct = (

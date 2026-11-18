@@ -17,6 +17,7 @@ from .niuone_risk import (
     NIUONE_MARKUP_REBALANCE_STALL_SESSIONS,
     NIUONE_MARKUP_UPGRADE_MAX_PNL_PCT,
     NIUONE_MARKUP_UPGRADE_MIN_PNL_PCT,
+    complete_niuone_entry_fields,
     niuone_markup_momentum_probe_eligible,
 )
 from .registry import STRATEGY_DEFINITIONS, STRATEGY_POSITION_LIMIT_PCT
@@ -468,6 +469,7 @@ def candidate_buy_blockers(
 ) -> list[str]:
     if not candidate:
         return ["买入标的不在本轮交易候选池"]
+    candidate = complete_niuone_entry_fields(candidate)
     strategy_id = str(
         candidate.get("best_strategy")
         or candidate.get("buy_strategy")

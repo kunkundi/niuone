@@ -95,6 +95,20 @@ class AccountFeeTests(unittest.TestCase):
         self.assertEqual(result["maximum_permitted_shares"], 0)
         self.assertIn("cash_after_fees", result["binding_constraints"])
 
+    def test_preview_uses_selected_legacy_probe_score_at_board_lot_boundary(self):
+        state = {"initial_cash": 20000., "cash": 20000., "positions": {}}
+        route = trader.NIUONE_MARKUP_MOMENTUM_PROBE_SUBROUTE
+        candidate = {"code": "600000", "best_strategy": "niu_emerging", "atr": .20,
+                     "signal_theme": "测试题材", "market_regime": "offensive", "market_allows_buys": True}
+        for price, expected in ((8.01, 0), (8., 100), (6.4, 100)):
+            row = {**candidate, "price": price, "stop_price": price - .20,
+                   "strategies": {"niu_emerging": {"niuone_entry_subroute": route}}}
+            self.assertEqual(trader.preview_niuone_buy_capacity(state, [row], {})[0]["maximum_permitted_shares"], expected)
+        row["strategies"] = {"niu_leader": {"niuone_entry_subroute": route}}
+        self.assertGreater(trader.preview_niuone_buy_capacity(state, [row], {})[0]["maximum_permitted_shares"], 100)
+        row["absolute_position_cap_pct"] = 2.
+        self.assertEqual(trader.preview_niuone_buy_capacity(state, [row], {})[0]["maximum_permitted_shares"], 0)
+
     def test_capacity_preview_is_read_only_and_preserves_risk_limits(self):
         state = {"initial_cash": 10000, "cash": 10000, "positions": {},
                  "fee_schedule": RETAIL_FEE_SCHEDULE.to_dict()}
