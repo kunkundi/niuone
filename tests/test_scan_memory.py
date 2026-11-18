@@ -1,4 +1,5 @@
 """Lossless, disk-backed scan transport and completed-result retention."""
+import io
 import json
 import os
 import subprocess
@@ -18,6 +19,50 @@ import multi_strategy_screen as scanner
 
 
 class ScanMemoryTests(unittest.TestCase):
+    def test_native_row_encoder_matches_the_original_bytes_without_encoding_a_whole_market_map(self):
+        from app.screening.scan_artifact import dump_scan_rows
+        row = {"label": "行业\"样本", "pct": -0.01234567890123456,
+               "flags": [False, None, 0, True], "turnover": 1.2e-10}
+        stocks = {str(i): {**row, "id": i} for i in range(350)}
+        data = {"niuone_context": {"stocks": stocks, "themes": {}, "extra": [[row]]},
+                "sector_tide_context": {"stocks": {}, "sectors": {"行业": row}},
+                "items": [row], "candidates": [row], "trade_items": [], "meta": {1: "数值键"}}
+        calls = []
+        original = json.JSONEncoder.encode
+        def checked(encoder, item):
+            if item is data or item is stocks:
+                self.fail("whole market encoded at once")
+            if isinstance(item, dict) and "id" in item:
+                calls.append(item["id"])
+            return original(encoder, item)
+        output = io.StringIO()
+        with patch.object(json.JSONEncoder, "encode", checked):
+            dump_scan_rows(data, output)
+        self.assertEqual(calls, list(range(350)))
+        self.assertEqual(output.getvalue(), json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+
+    def test_display_enrichment_fetches_independent_tables_together_and_keeps_partial_results(self):
+        gate = threading.Barrier(2)
+        def reader(label):
+            def load(code):
+                if code == "0":
+                    gate.wait(timeout=3)
+                if label == "margin" and code == "1":
+                    raise TimeoutError("fixture")
+                return {"value": label + code}
+            return load
+        rows = [{"code": str(i)} for i in range(11)]
+        with patch.object(scanner, "get_margin_signal", side_effect=reader("margin")), patch.object(
+            scanner, "get_block_trade_signal", side_effect=reader("block")
+        ):
+            scanner.enrich_display_market_signals(rows)
+        for i, row in enumerate(rows[:10]):
+            self.assertEqual(row["block_trade_signal"]["value"], "block" + str(i))
+            if i != 1:
+                self.assertEqual(row["margin_signal"]["value"], "margin" + str(i))
+        self.assertNotIn("margin_signal", rows[1])
+        self.assertEqual(rows[-1], {"code": "10"})
+
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
@@ -161,11 +206,11 @@ class ScanMemoryTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob('*.tmp')),[])
 
     def test_managed_writer_publishes_every_alias_from_one_serialization(self):
-        from app.screening.scan_artifact import write_managed_scan
+        from app.screening.scan_artifact import dump_scan_rows, write_managed_scan
         archive = self.root / "archive.json"
         first, second = self.root / "first.json", self.root / "second.json"
         payload = {"name": "行业", "value": 1.23456789012345, "rows": list(range(600))}
-        with patch("app.screening.scan_artifact.json.dump", wraps=json.dump) as encoder:
+        with patch("app.screening.scan_artifact.dump_scan_rows", wraps=dump_scan_rows) as encoder:
             write_managed_scan(payload, archive, (first, second))
         encoder.assert_called_once()
         self.assertEqual(json.loads(first.read_bytes()), payload)

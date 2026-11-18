@@ -4521,6 +4521,13 @@ def claim_due_b1_schedule_slot(now: datetime | None = None) -> str | None:
         return selected_key
 
 
+def _schedule_mainline_research(slot_key: str) -> None:
+    try:
+        start_independent_niuone_mainline_scan(slot_key)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"[Practice research] {slot_key}: {type(exc).__name__}: {exc}", flush=True)
+
+
 def run_scheduled_b1_scan(slot_key: str) -> None:
     try:
         lag_seconds = _b1_schedule_slot_lag_seconds(slot_key)
@@ -4555,7 +4562,7 @@ def run_scheduled_b1_scan(slot_key: str) -> None:
             return
         summary = refresh_practice_market_summary_for_decision("scheduled")
         if b1_cache_generated_for_slot(slot_key):
-            start_independent_niuone_mainline_scan(slot_key)
+            _schedule_mainline_research(slot_key)
             _mark_b1_schedule_slot(
                 slot_key,
                 "skipped",
@@ -4598,8 +4605,8 @@ def run_scheduled_b1_scan(slot_key: str) -> None:
             API_RESPONSE_CACHE.pop(PRACTICE_CANDIDATES_CACHE_KEY, None)
             API_RESPONSE_CACHE.pop(TODAY_CANDIDATES_CACHE_KEY, None)
             API_RESPONSE_CACHE.pop(TODAY_CANDIDATE_INTRADAY_CACHE_KEY, None)
-        start_independent_niuone_mainline_scan(slot_key)
         if cache.get("error"):
+            _schedule_mainline_research(slot_key)
             _mark_b1_schedule_slot(
                 slot_key,
                 "error",
@@ -4611,11 +4618,15 @@ def run_scheduled_b1_scan(slot_key: str) -> None:
         else:
             if isinstance(summary, dict):
                 cache["market_summary"] = summary
-            decision_result = run_practice_decision_logged(
-                cache,
-                record_start=True,
-                refresh_market_summary=False,
-            )
+            try:
+                decision_result = run_practice_decision_logged(
+                    cache,
+                    record_start=True,
+                    refresh_market_summary=False,
+                )
+            finally:
+                # Even the research freshness check reads a full market cache.
+                _schedule_mainline_research(slot_key)
             cache["decision_result"] = decision_result
             if (isinstance(decision_result, dict) and decision_result.get('skipped') is True
                     and decision_result.get('reason') == 'already_decided_for_this_b1'

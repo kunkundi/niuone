@@ -8,7 +8,7 @@ import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, TextIO
 
 PROTOCOL = 'niuone-scan-archive-v1'
 
@@ -54,13 +54,46 @@ class ArchivedScan(dict):
             tmp.unlink(missing_ok=True)
 
 
+def dump_scan_rows(payload: Mapping[str, Any], stream: TextIO) -> None:
+    """Encode large stock maps one row at a time using the native JSON encoder."""
+    encoder = json.JSONEncoder(ensure_ascii=False, separators=(',', ':'))
+
+    def write(value, path):
+        row_map = path in {('niuone_context', 'stocks'), ('niuone_context', 'themes'),
+                           ('sector_tide_context', 'stocks'), ('sector_tide_context', 'sectors')}
+        if isinstance(value, dict) and (not path or row_map or path in {
+                ('niuone_context',), ('sector_tide_context',)}) and all(isinstance(k, str) for k in value):
+            stream.write('{')
+            for i, (key, item) in enumerate(value.items()):
+                if i:
+                    stream.write(',')
+                stream.write(encoder.encode(key))
+                stream.write(':')
+                if row_map:
+                    stream.write(encoder.encode(item))
+                else:
+                    write(item, (*path, key))
+            stream.write('}')
+        elif path in {('items',), ('candidates',), ('trade_items',)} and isinstance(value, list):
+            stream.write('[')
+            for i, row in enumerate(value):
+                if i:
+                    stream.write(',')
+                stream.write(encoder.encode(row))
+            stream.write(']')
+        else:
+            stream.writelines(encoder.iterencode(value))
+
+    write(payload, ())
+
+
 def write_managed_scan(payload: Mapping[str, Any], archive: Path, targets: tuple[Path, ...]) -> None:
     """Publish all aliases from the exact inode written by this scan."""
     tmp = archive.with_name(f'.{archive.name}.{uuid.uuid4().hex}.tmp')
     try:
         scan = ArchivedScan()
         with tmp.open('x', encoding='utf-8') as out:
-            json.dump(payload, out, ensure_ascii=False, separators=(',', ':'))
+            dump_scan_rows(payload, out)
             out.write('\n')
             out.flush()
             scan.version = _identity(os.fstat(out.fileno()))

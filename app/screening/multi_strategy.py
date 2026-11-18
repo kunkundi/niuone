@@ -1205,6 +1205,31 @@ def load_daily_scan_pool(universe: object) -> list[tuple[str, str]]:
     return [(code,name) for code,name in rows if '退' not in name and stock_in_universe(code,name,universe)]
 
 
+def enrich_display_market_signals(candidates: list[dict[str, Any]]) -> None:
+    """Read the two independent market tables concurrently, once per provider lane."""
+    rows = candidates[:10]
+    if not rows:
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        def fetch(reader):
+            values = []
+            for row in rows:
+                try:
+                    values.append(reader(row["code"]))
+                except Exception as exc:
+                    print(f"[WARN] display enrichment: {type(exc).__name__}", file=sys.stderr)
+                    values.append(None)
+            return values
+
+        jobs = [(field, pool.submit(fetch, reader)) for field, reader in (
+            ("margin_signal", get_margin_signal), ("block_trade_signal", get_block_trade_signal),
+        )]
+        for field, job in jobs:
+            for row, value in zip(rows, job.result()):
+                if value:
+                    row[field] = value
+
+
 def get_margin_signal(code: str) -> dict | None:
     """获取个股融资融券信号。返回 {net_buy_ratio, signal, detail} 或 None。"""
     try:
@@ -2864,15 +2889,7 @@ def main():
     generated_at = time.strftime("%Y-%m-%d %H:%M:%S")
     
     # 融资 + 大宗交易信号（优先展示候选）
-    for item in display_candidates[:10]:
-        try:
-            ms = get_margin_signal(item["code"])
-            if ms: item["margin_signal"] = ms
-        except Exception: pass
-        try:
-            bt = get_block_trade_signal(item["code"])
-            if bt: item["block_trade_signal"] = bt
-        except Exception: pass
+    enrich_display_market_signals(display_candidates)
     
     output = {
         "generated_at": generated_at,

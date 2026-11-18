@@ -23,6 +23,26 @@ class Rows(list):
 
 
 class RuntimeSlotIsolationTests(unittest.TestCase):
+    def test_research_cache_is_checked_after_decision_including_failed_decisions(self):
+        for failure in (False, True):
+            events = []
+            def decide(*args, **kwargs):
+                events.append("decision")
+                if failure:
+                    raise RuntimeError("test decision failed")
+                return {"decision": {}, "durable_evidence_persisted": True}
+            with self.subTest(failure=failure), ExitStack() as stack:
+                for name, value in {"market_data_readiness": {"ready": True}, "b1_cache_generated_for_slot": False,
+                                    "refresh_practice_market_summary_for_decision": {}, "_b1_schedule_slot_lag_seconds": 0,
+                                    "trigger_b1_scan": {"items": [], "generated_at": "2025-03-03 10:01:00"}}.items():
+                    stack.enter_context(patch.object(dashboard, name, return_value=value))
+                stack.enter_context(patch.object(dashboard, "_mark_b1_schedule_slot"))
+                stack.enter_context(patch.object(dashboard, "run_practice_decision_logged", side_effect=decide))
+                stack.enter_context(patch.object(dashboard, "start_independent_niuone_mainline_scan",
+                                                side_effect=lambda slot: events.append("research")))
+                dashboard.run_scheduled_b1_scan("2025-03-03 10:00")
+            self.assertEqual(events, ["decision", "research"])
+
     def test_another_scan_finishing_in_the_due_minute_does_not_suppress_the_slot(self):
         at = "2025-03-03 10:30"
         for owner, kind, expected in (("2025-03-03 10:00", "catchup", False),
