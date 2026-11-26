@@ -431,9 +431,9 @@ onBeforeUnmount(() => {
         <div class="overview-chart-wrap">
           <MarketBreadthChart v-if="indicesState.marketBreadth?.timeline?.length" :payload="indicesState.marketBreadth" terminal />
           <div
-            v-else-if="breadth.available"
+            v-else-if="breadth.advancingPct != null"
             class="overview-breadth-unavailable"
-            :style="{ '--breadth-reference-position': `${100 - Math.max(0, Math.min(100, breadth.advancingPct || 0))}%` }"
+            :style="{ '--breadth-reference-position': `${100 - Math.max(0, Math.min(100, breadth.advancingPct))}%` }"
             role="status"
           >
             <div class="overview-breadth-reference-line" aria-hidden="true"><span></span></div>
@@ -442,7 +442,7 @@ onBeforeUnmount(() => {
               <span>收盘市场宽度 {{ formatOverviewPercent(breadth.advancingPct, 0) }}，已用于上方指标</span>
             </div>
           </div>
-          <div v-else class="overview-empty compact">尚无可用的市场宽度数据</div>
+          <div v-else class="overview-empty compact">等待交易时段首个有效采样</div>
         </div>
       </section>
 

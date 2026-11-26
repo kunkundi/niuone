@@ -346,7 +346,7 @@ onBeforeUnmount(() => {
             <article class="mainline-summary-card">
               <span>市场状态</span>
               <strong>{{ marketLabel(market.state) }} · {{ numeric(market.score, 0) }}分</strong>
-              <small>涨停 {{ market.limit_up || 0 }} · 跌停 {{ market.limit_down || 0 }} · 中位涨幅 {{ signed(market.median_change_pct, '%') }}</small>
+              <small>涨停 {{ numeric(market.limit_up, 0) }} · 跌停 {{ numeric(market.limit_down, 0) }} · 中位涨幅 {{ signed(market.median_change_pct, '%') }}</small>
             </article>
             <article class="mainline-summary-card coverage-card">
               <div class="coverage-label-row">

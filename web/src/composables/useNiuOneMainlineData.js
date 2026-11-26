@@ -3,7 +3,7 @@ import { subscribePublicProjection } from './usePublicProjection.js'
 
 const CACHE_TTL_MS = 30 * 1000
 const REQUEST_TIMEOUT_MS = 15 * 1000
-const CACHE_KEY = 'niuniu-dashboard-mainline-v2'
+const CACHE_KEY = 'niuniu-dashboard-mainline-v3'
 const PROJECTION_SECTION = 'niuone_mainline'
 
 const state = reactive({

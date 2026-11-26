@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover - standalone entrypoints add app/ to sys
     )
 
 
-NIUONE_MAINLINE_VIEW_SCHEMA_VERSION = 13
+NIUONE_MAINLINE_VIEW_SCHEMA_VERSION = 14
 NIUONE_MAINLINE_THEME_LIMIT = 5
 
 
@@ -33,6 +33,11 @@ def _number(value: Any) -> float | int | None:
 def _integer(value: Any) -> int:
     number = _number(value)
     return max(0, int(number or 0))
+
+
+def _observed_count(value: Any) -> int | None:
+    number = _number(value)
+    return number if isinstance(number, int) and number >= 0 else None
 
 
 def _text(value: Any, limit: int = 160) -> str:
@@ -422,8 +427,8 @@ def build_niuone_mainline_view(payload: Mapping[str, Any] | None) -> dict[str, A
             "hard_stop": market.get("hard_stop") is True,
             "breadth_score": _number(market.get("breadth_score")),
             "median_change_pct": _number(market.get("median_change_pct")),
-            "limit_up": _integer(market.get("limit_up")),
-            "limit_down": _integer(market.get("limit_down")),
+            "limit_up": _observed_count(market.get("limit_up")),
+            "limit_down": _observed_count(market.get("limit_down")),
         },
         "mainline": {
             "mode": _text(mainline.get("mode"), 20) or "none",
