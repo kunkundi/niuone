@@ -13,6 +13,22 @@ from dashboard.apis import sectors_service  # noqa: E402
 
 
 class SectorsServiceTests(unittest.TestCase):
+    def test_timeout_uses_existing_index_fallback_with_diagnostic(self):
+        rows = [{"name": "中证能源", "price": 12.3456, "pct": 1.23, "source": "指数"}]
+        with patch.object(sectors_service, "_ak_rows", side_effect=TimeoutError("bounded timeout")), patch.object(
+            sectors_service, "_fallback_rows", return_value=rows,
+        ):
+            result = sectors_service._compute()
+        self.assertEqual(result["industry_gain_top"], rows)
+        self.assertIn("TimeoutError", result["source_warning"])
+
+    def test_empty_providers_do_not_publish_an_empty_fresh_snapshot(self):
+        with patch.object(sectors_service, "_ak_rows", return_value=[]), patch.object(
+            sectors_service, "_fallback_rows", return_value=[],
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no usable rows"):
+                sectors_service._compute()
+
     def test_compute_keeps_industry_and_concept_rankings_separate(self):
         rows = [
             {"name": "国家大基金持股", "pct": 10.78, "source": "概念"},

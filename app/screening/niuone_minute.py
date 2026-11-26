@@ -243,6 +243,7 @@ class NiuOneMinuteEngine:
         trading_day_status_loader: Callable[..., Mapping[str, Any]] = default_trading_day_status,
         minimum_coverage: float = DEFAULT_MINIMUM_COVERAGE,
         max_quote_age_seconds: float = DEFAULT_MAX_QUOTE_AGE_SECONDS,
+        history_batch_size: int | None = None,
     ) -> None:
         self.kline_cache_path = Path(kline_cache_path)
         self.industry_cache_path = Path(industry_cache_path)
@@ -251,6 +252,7 @@ class NiuOneMinuteEngine:
         self.trading_day_status_loader = trading_day_status_loader
         self.minimum_coverage = max(0.0, min(1.0, float(minimum_coverage)))
         self.max_quote_age_seconds = max(30.0, float(max_quote_age_seconds))
+        self.history_batch_size = max(1, history_batch_size) if history_batch_size is not None else None
         self._lock = threading.Lock()
         self._history_date = ""
         self._histories: dict[str, list[dict[str, Any]]] = {}
@@ -389,44 +391,41 @@ class NiuOneMinuteEngine:
             )
             if value
         }
-        histories, industries, live_ema_seeds = self._load_slow_inputs(
-            quotes,
-            quote_date=quote_date,
-            accepted_last_dates=accepted_dates,
-        )
-
-        prepared_items: list[dict[str, Any]] = []
-        for symbol, quote in quotes.items():
-            rows = merge_live_quote(histories.get(symbol, []), quote)
-            if len(rows) < 30:
-                continue
-            ema_values = _ema_values_for_live_rows(
-                rows,
-                quote_date=quote_date,
-                seed=live_ema_seeds.get(symbol),
-            )
-            if ema_values is None:
-                continue
-            rows[-1]["ema20"], rows[-1]["ema50"] = ema_values
-            code = str(quote.get("code") or "")
-            classification = industries.get(code) or {}
-            prepared_items.append({
-                "code": code,
-                "name": str(quote.get("name") or ""),
-                "industry": str(classification.get("industry") or ""),
-                "themes": list(classification.get("themes") or ()),
-                "quote": quote,
-                "rows": rows,
-            })
-
         previous_pool_count = int(previous_payload.get("reference_pool_count") or 0)
         reference_pool_count = max(previous_pool_count, len(quotes))
-        prepared_coverage = len(prepared_items) / reference_pool_count if reference_pool_count else 0.0
-        if prepared_coverage < self.minimum_coverage:
-            raise ValueError(
-                f"minute K-line coverage {prepared_coverage:.1%} is below "
-                f"{self.minimum_coverage:.0%}"
-            )
+
+        def prepared_items():
+            symbols = list(quotes)
+            size = self.history_batch_size or len(symbols)
+            count = 0
+            for start in range(0, len(symbols), size):
+                batch = symbols[start:start + size]
+                histories, industries, seeds = self._load_slow_inputs(
+                    batch, quote_date=quote_date, accepted_last_dates=accepted_dates,
+                )
+                if self.history_batch_size:
+                    # An isolated one-shot worker retains only the current batch.
+                    with self._lock:
+                        self._histories.clear()
+                        self._live_ema_seeds.clear()
+                for symbol in batch:
+                    quote = quotes[symbol]
+                    rows = merge_live_quote(histories.get(symbol, []), quote)
+                    if len(rows) < 30:
+                        continue
+                    ema_values = _ema_values_for_live_rows(rows, quote_date=quote_date, seed=seeds.get(symbol))
+                    if ema_values is None:
+                        continue
+                    rows[-1]["ema20"], rows[-1]["ema50"] = ema_values
+                    code = str(quote.get("code") or "")
+                    classification = industries.get(code) or {}
+                    count += 1
+                    yield {"code": code, "name": str(quote.get("name") or ""),
+                           "industry": str(classification.get("industry") or ""),
+                           "themes": list(classification.get("themes") or ()), "quote": quote, "rows": rows}
+            coverage = count / reference_pool_count
+            if coverage < self.minimum_coverage:
+                raise ValueError(f"minute K-line coverage {coverage:.1%} is below {self.minimum_coverage:.0%}")
 
         market_snapshot = (
             dict(quote_snapshot.get("market_snapshot") or {})
@@ -434,7 +433,7 @@ class NiuOneMinuteEngine:
             else {}
         )
         context = build_niuone_context(
-            prepared_items,
+            prepared_items(),
             reference_pool_count=reference_pool_count,
             market_snapshot=market_snapshot,
             flow_rows=flow_rows,

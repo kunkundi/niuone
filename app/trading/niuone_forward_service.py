@@ -58,6 +58,10 @@ PROTOCOL_SOURCE_PATHS = (
     "app/dashboard/server.py",
     "app/entrypoints/evaluate_niuone_forward.py",
     "app/market_data/cn_stock_tools.py",
+    "app/market_data/tencent_kline_cache.py",
+    "app/market_data/exchange_listing.py",
+    "app/market_data/listing_cache.py",
+    "app/screening/niuone_minute.py",
     "app/storage/practice_db.py",
     "app/strategies/attribution.py",
     "app/strategies/display.py",
@@ -73,7 +77,9 @@ PROTOCOL_SOURCE_PATHS = (
     "app/strategies/scoring/niuone.py",
     "app/strategies/selection.py",
     "app/screening/holding_cycle.py",
+    "app/screening/scan_artifact.py",
     "app/screening/multi_strategy.py",
+    "app/screening/stock_universe.py",
     "app/trading/fees.py",
     "app/trading/lifecycles.py",
     "app/strategies/performance.py",
@@ -85,6 +91,7 @@ PROTOCOL_SOURCE_PATHS = (
     "app/trading/decision_freshness.py",
     "app/core/model_api.py",
     "app/core/model_request_guard.py",
+    "app/dashboard/apis/bounded_fetch.py",
 )
 PROTOCOL_RUNTIME_SETTING_DEFAULTS = {
     FORWARD_COHORT_START_ENV: DEFAULT_COHORT_START,

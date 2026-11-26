@@ -9,6 +9,10 @@ from unittest import mock
 from app.market_data import tencent_kline_cache as cache
 
 
+def patch_factor(value):
+    return mock.patch.object(cache, "_fetch_unit_factor_dates", return_value=value)
+
+
 def sample_rows(last_day: str = "2026-07-28", count: int = 60) -> list[dict]:
     year, month, day = [int(value) for value in last_day.split("-")]
     rows = []
@@ -104,6 +108,41 @@ class TencentKlineCacheTests(unittest.TestCase):
         self.assertIn("secid=1.600519", urlopen.call_args.args[0].full_url)
         self.assertIn("fqt=1", urlopen.call_args.args[0].full_url)
 
+    def test_unit_factor_certificate_requires_identity_complete_counts_and_exact_ones(self):
+        records=[{"d":"2025-01-02","f":"1.0000000000000000"},{"d":"1900-01-01","f":"1"}]
+        def body(rows, total=None, symbol="sh600001", tail="/* provider */"):
+            return ("var "+symbol+"qfq="+json.dumps({"total":len(rows) if total is None else total,"data":rows})+"; "+tail).encode()
+        verify=lambda b:cache._unit_factor_dates(b,"sh600001")
+        self.assertEqual(verify(body(records)),("2025-01-02","1900-01-01"))
+        for blob in (body(records,symbol="sz000001"),body(records,3),body(records[:1]),body(records[::-1]),
+                     body([{**records[0],"offset":"2"},records[1]]),
+                     body([records[0],records[0]]),body([records[0],{"d":"1900-01-01","f":"1.00000000000000000001"}]),
+                     body(records,tail="/* x */ invalid()"),b'var sh600001qfq={',b'x'*262145):
+            with self.subTest(raw=blob[:35]):
+                self.assertEqual(verify(blob),())
+
+    def test_generic_tencent_prices_require_an_independent_matching_factor_window(self):
+        import io
+        row=["2025-02-04","10","10.12","10.25","9.75","2345"]
+        payload=json.dumps({"code":0,"data":{"sh600001":{"day":[row]}}}).encode()
+        for factors,valid in [(("2025-01-02","1900-01-01"),True),((),False),
+                              (("2025-03-01","1900-01-01"),False)]:
+            with self.subTest(factors=factors), patch_factor(factors) as check_factor, (
+                mock.patch.object(cache.urllib.request,"urlopen",side_effect=lambda *_a,**_k:io.BytesIO(payload))
+            ):
+                bars=cache.fetch_tencent_daily_klines("sh600001")
+                self.assertEqual(bool(bars),valid)
+                if valid:self.assertEqual((bars[0]["close"],bars[0]["volume"]),(10.12,2345))
+                check_factor.assert_called_once()
+
+    def test_later_named_qfq_series_has_priority_when_generic_cannot_be_verified(self):
+        import io
+        def reply(key,close):
+            return io.BytesIO(json.dumps({"data":{"sh600001":{key:[["2025-02-04","10",close,"11","9","100"]]}}}).encode())
+        with mock.patch.object(cache.urllib.request,"urlopen",side_effect=[reply("day","10.25"),reply("qfqday","10.10")]),patch_factor(()) as proof:
+            self.assertEqual(cache.fetch_tencent_daily_klines("sh600001")[0]["close"],10.10)
+            proof.assert_called_once()
+
     def test_multi_source_fetch_falls_back_from_tencent_to_eastmoney(self):
         expected = sample_rows()
         with (
@@ -132,6 +171,32 @@ class TencentKlineCacheTests(unittest.TestCase):
 
         self.assertEqual(result["success_count"], 1)
         fetcher.assert_called_once_with("sh600519", cache.DEFAULT_KLINE_COUNT)
+
+    def test_warmup_continues_to_same_adjustment_backup_for_stale_or_short_primary(self):
+        valid = sample_rows("2026-07-28")
+        for first in (sample_rows("2026-07-27"), valid[-5:]):
+            with (
+                self.subTest(primary_end=first[-1]["date"]),
+                mock.patch.object(cache, "fetch_tencent_daily_klines", return_value=first),
+                mock.patch.object(cache, "fetch_eastmoney_daily_klines", return_value=valid) as backup,
+            ):
+                result = cache.fetch_a_share_daily_klines("sh600519", 120, accepted_last_dates={"2026-07-28"})
+                self.assertEqual(result, valid)
+                backup.assert_called_once_with("sh600519", 120)
+
+    def test_prewarm_preserves_previous_series_when_both_sources_are_stale(self):
+        previous = sample_rows("2026-07-27")
+        cache.store_kline_series({"sh600519": previous}, path=self.path)
+        with (
+            mock.patch.object(cache, "fetch_tencent_daily_klines", return_value=previous),
+            mock.patch.object(cache, "fetch_eastmoney_daily_klines", return_value=previous[-5:]) as backup,
+        ):
+            result = cache.prewarm_kline_cache(["sh600519"], path=self.path, workers=1, max_attempts=1,
+                        accepted_last_dates={"2026-07-28"}, target_date="2026-07-29")
+        self.assertEqual((result["success_count"],result["failure_count"]),(0,1))
+        backup.assert_called_once()
+        kept = cache.load_kline_series_map(["sh600519"], path=self.path, accepted_last_dates={"2026-07-27"})
+        self.assertEqual(kept["sh600519"][-1]["close"], previous[-1]["close"])
 
     def test_store_and_bulk_load_only_accept_fresh_completed_history(self):
         stored = cache.store_kline_series(
@@ -292,6 +357,31 @@ class TencentKlineCacheTests(unittest.TestCase):
         self.assertEqual(result["reused_count"], 1)
         self.assertEqual(result["success_count"], 2)
 
+    def test_coverage_counts_only_expected_symbols_and_rejects_legacy_partial_run(self):
+        import sqlite3
+        from contextlib import closing
+        day='2026-07-29'
+        cache.prewarm_kline_cache(['sh600001','sz000001'],path=self.path,target_date=day,workers=1,
+                                 max_attempts=1,fetcher=lambda s,_: sample_rows() if s.startswith('sh') else [])
+        cache.store_kline_series({'sh600002':sample_rows()},path=self.path)
+        result=cache.kline_cache_readiness(accepted_last_dates={'2026-07-28'},path=self.path)
+        self.assertFalse(result['ready'])
+        self.assertEqual((result['fresh_count'],result['coverage']), (1,0.5))
+        with closing(sqlite3.connect(self.path)) as conn:
+            conn.execute('DELETE FROM prewarm_targets');conn.execute('UPDATE prewarm_runs SET requested_count=1,success_count=1');conn.commit()
+        self.assertFalse(cache.prewarm_completed_for_date(day,path=self.path))
+        self.assertFalse(cache.kline_cache_readiness(accepted_last_dates={'2026-07-28'},path=self.path)['ready'])
+
+    def test_resume_refetches_previous_session_intraday_bar_and_rejects_stale_provider(self):
+        cache.store_kline_series({'sh600001':sample_rows('2026-07-28')},path=self.path,fetched_at='2026-07-28 10:00:00')
+        calls=[]
+        result=cache.prewarm_kline_cache(['sh600001'],path=self.path,target_date='2026-07-29',workers=1,
+                                        accepted_last_dates={'2026-07-28'},max_attempts=1,
+                                        fetcher=lambda s,_: calls.append(s) or sample_rows('2026-07-27'))
+        self.assertEqual(calls,['sh600001'])
+        self.assertEqual((result['success_count'],result['failure_count']), (0,1))
+        self.assertFalse(cache.prewarm_completed_for_date('2026-07-29',path=self.path))
+        self.assertFalse(cache.kline_cache_readiness(accepted_last_dates={'2026-07-28'},path=self.path)['ready'])
     def test_aggregate_failure_is_visible_without_deleting_cache(self):
         cache.prewarm_kline_cache(
             ["sh600001"],
