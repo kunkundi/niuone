@@ -158,7 +158,8 @@ def read_int_setting(env_values: dict[str, str], name: str, default: int, *, min
 
 def job_enabled(job: Job, env_values: dict[str, str]) -> bool:
     if job.env_name == "DASHBOARD_US_MARKET_SUMMARY_CRON":
-        raw = env_values.get("DASHBOARD_US_MARKET_SUMMARY_ENABLED", "1")
+        name = "DASHBOARD_US_MARKET_SUMMARY_ENABLED"
+        raw = os.environ.get(name, env_values.get(name, "1"))
         return str(raw).strip().lower() not in {"0", "false", "no", "off"}
     if job.env_name == "IWENCAI_DRAGON_TIGER_CRON":
         # Callers pass the fully resolved dashboard.env mapping. Do not leak a
