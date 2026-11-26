@@ -8,7 +8,7 @@ import time
 from typing import Any, Callable, Mapping
 import uuid
 
-from .dispatcher import dispatch
+from .dispatcher import dispatch, restrict_delivery_channels
 from .models import DeliveryResult, Notification, TRUTHY_VALUES
 from app.trading.accounting import trade_counts_for_account
 
@@ -46,12 +46,24 @@ def _deliver_guarded(
     token = uuid.uuid4().hex
     with closing(sqlite3.connect(path, timeout=2)) as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS deliveries (key TEXT PRIMARY KEY, event TEXT NOT NULL, delivered REAL NOT NULL DEFAULT 0, attempted REAL NOT NULL DEFAULT 0, lease REAL NOT NULL DEFAULT 0, token TEXT NOT NULL DEFAULT '')")
+        conn.execute("""CREATE TABLE IF NOT EXISTS delivery_receipts (
+            key TEXT NOT NULL, channel TEXT NOT NULL, event TEXT NOT NULL,
+            delivered REAL NOT NULL, PRIMARY KEY (key, channel))""")
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT event, delivered, attempted, lease FROM deliveries WHERE key=?", (key,)).fetchone()
         if row and row[3] > now:
             conn.rollback()
             return []
-        if recovery and (not row or (row[0] == "recovered" and row[1] > 0) or (row[0].startswith("failed") and row[1] <= 0)):
+        receipts = conn.execute(
+            "SELECT channel, event, delivered FROM delivery_receipts WHERE key=?", (key,)
+        ).fetchall()
+        outstanding = {channel for channel, prior, _ in receipts if prior.startswith("failed:")}
+        # A successful pre-upgrade fault has only an aggregate receipt.
+        legacy_recovery = recovery and not receipts and row and (
+            (row[0].startswith("failed:") and row[1] > 0) or
+            (row[0] == "recovered" and row[1] == 0)
+        )
+        if recovery and not outstanding and not legacy_recovery:
             # Do not announce recovery for an incident the user never received.
             conn.execute("INSERT OR REPLACE INTO deliveries(key,event,delivered) VALUES (?, 'recovered', ?)", (key, now))
             conn.commit()
@@ -61,17 +73,30 @@ def _deliver_guarded(
                 conn.rollback()
                 return []
         prior_delivery = row[1] if row and row[0] == event else 0
+        recent = {channel for channel, prior, stamp in receipts
+                  if prior == event and now - stamp < repeat_after}
+        recipients = outstanding if recovery and not legacy_recovery else None
         conn.execute("INSERT OR REPLACE INTO deliveries VALUES (?, ?, ?, ?, ?, ?)",
                      (key, event, prior_delivery, now, now + LEASE_SECONDS, token))
         conn.commit()
     try:
-        results = deliver(notification, env=env)
+        results = deliver(notification, env=restrict_delivery_channels(env, recipients, recent))
     except Exception:
         results = [DeliveryResult("notification", False, "dispatch failed")]
-    delivered = now if results and all(result.ok for result in results) else prior_delivery
+    successful = {result.channel for result in results if result.ok}
+    complete = bool(results) and all(result.ok for result in results)
+    if recovery:
+        complete = complete and outstanding.issubset(successful)
+    delivered = now if complete else prior_delivery
     with closing(sqlite3.connect(path, timeout=2)) as conn:
-        conn.execute("UPDATE deliveries SET delivered=?, lease=0, token='' WHERE key=? AND token=?",
-                     (delivered, key, token))
+        owned = conn.execute("UPDATE deliveries SET delivered=?, lease=0, token='' WHERE key=? AND token=?",
+                             (delivered, key, token))
+        if owned.rowcount:
+            conn.executemany("INSERT OR REPLACE INTO delivery_receipts VALUES (?, ?, ?, ?)",
+                             [(key, channel, event, now) for channel in successful])
+            if legacy_recovery and successful:
+                conn.executemany("INSERT OR IGNORE INTO delivery_receipts VALUES (?, ?, 'failed:legacy', 0)",
+                                 [(key, result.channel) for result in results if not result.ok])
         conn.commit()
     return results
 
