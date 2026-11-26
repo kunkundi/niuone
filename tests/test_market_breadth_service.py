@@ -1352,6 +1352,8 @@ class MarketBreadthHistoryTests(unittest.TestCase):
         )
 
     def test_minute_theme_worker_waits_and_keeps_latest_pending_snapshot(self):
+        self.enterContext(patch.object(dashboard, "current_cn_datetime",
+                           side_effect=lambda: datetime(2026,8,4,10,30) + timedelta(seconds=clock["now"])))
         original_pending = dashboard.NIUONE_MAINLINE_MINUTE_PENDING
         original_thread = dashboard.NIUONE_MAINLINE_MINUTE_THREAD
         original_next_allowed = (
@@ -1413,6 +1415,8 @@ class MarketBreadthHistoryTests(unittest.TestCase):
             )
 
     def test_minute_theme_worker_defers_while_complete_scan_is_running(self):
+        self.enterContext(patch.object(dashboard, "current_cn_datetime",
+                           side_effect=lambda: datetime(2026,8,4,10,30) + timedelta(seconds=clock["now"])))
         original_pending = dashboard.NIUONE_MAINLINE_MINUTE_PENDING
         original_thread = dashboard.NIUONE_MAINLINE_MINUTE_THREAD
         original_next_allowed = (
@@ -1465,6 +1469,17 @@ class MarketBreadthHistoryTests(unittest.TestCase):
             dashboard.NIUONE_MAINLINE_MINUTE_NEXT_ALLOWED_MONOTONIC = (
                 original_next_allowed
             )
+
+    def test_expired_waiting_snapshot_does_not_start_another_process(self):
+        with patch.object(dashboard, "NIUONE_MAINLINE_MINUTE_PENDING", {"generated_at":"2026-08-04 10:00:00"}), \
+             patch.object(dashboard, "NIUONE_MAINLINE_MINUTE_THREAD", object()), \
+             patch.object(dashboard, "NIUONE_MAINLINE_MINUTE_NEXT_ALLOWED_MONOTONIC", 0.0), \
+             patch.object(dashboard, "niuone_mainline_heavy_scan_in_progress", return_value=False), \
+             patch.object(dashboard, "current_cn_datetime", return_value=datetime(2026,8,4,10,30)), \
+             patch.object(dashboard, "run_niuone_mainline_minute_refresh_isolated") as refresh:
+            dashboard._niuone_mainline_minute_worker()
+            refresh.assert_not_called()
+            self.assertIsNone(dashboard.NIUONE_MAINLINE_MINUTE_PENDING)
 
     def test_isolated_minute_theme_refresh_is_spawned_and_bounded(self):
         class FakeProcess:

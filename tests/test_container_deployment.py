@@ -97,7 +97,14 @@ class ContainerDeploymentTests(unittest.TestCase):
             "${NEWSNOW_IMAGE:-ghcr.io/ourongxing/newsnow:latest}",
         )
         self.assertNotIn("ports", newsnow)
-        self.assertEqual(newsnow["volumes"], ["newsnow-data:/usr/app/.data"])
+        self.assertEqual(newsnow["volumes"], [
+            "newsnow-data:/usr/app/.data",
+            "./scripts/newsnow-network.cjs:/etc/niuone/newsnow-network.cjs:ro",
+        ])
+        self.assertEqual(
+            newsnow["environment"]["NODE_OPTIONS"],
+            "--require=/etc/niuone/newsnow-network.cjs",
+        )
         self.assertEqual(newsnow["environment"]["HOST"], "0.0.0.0")
         self.assertEqual(newsnow["environment"]["PORT"], "4444")
         self.assertEqual(newsnow["environment"]["INIT_TABLE"], "true")
@@ -117,6 +124,33 @@ class ContainerDeploymentTests(unittest.TestCase):
             {"newsnow": {"condition": "service_started"}},
         )
         self.assertEqual(set(config["volumes"]), {"niuone-data", "newsnow-data"})
+
+    def test_newsnow_network_preload_keeps_family_fallback_and_longer_limits(self):
+        script = ROOT / "scripts" / "newsnow-network.cjs"
+        program = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const results = [];
+for (const initial of [250, 2000, 5000, null]) {
+  const calls = [];
+  const net = initial === null ? {} : {
+    getDefaultAutoSelectFamilyAttemptTimeout: () => initial,
+    setDefaultAutoSelectFamilyAttemptTimeout: value => calls.push(value),
+    setDefaultAutoSelectFamily: () => { throw new Error('family fallback changed'); },
+  };
+  vm.runInNewContext(source, {require: name => {
+    if (name !== 'node:net') throw new Error(name);
+    return net;
+  }});
+  results.push(calls);
+}
+console.log(JSON.stringify(results));
+"""
+        output = subprocess.check_output(
+            ["node", "-e", program, str(script)], text=True,
+        )
+        self.assertEqual(json.loads(output), [[2000], [2000], [5000], []])
 
     def test_entrypoint_keeps_container_paths_and_listener_invariants(self):
         with tempfile.TemporaryDirectory() as tmp:

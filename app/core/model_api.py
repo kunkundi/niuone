@@ -11,8 +11,10 @@ from __future__ import annotations
 import io
 import json
 import re
+import ssl
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -29,6 +31,7 @@ from .model_request_guard import (
     ModelAdmissionError,
     ModelRequestExpired,
     budgeted_model_call,
+    rate_limit_scope,
     remaining_model_seconds,
     request_scope,
     shared_model_coordinator,
@@ -85,7 +88,13 @@ class _DeadlineResponse:
 
 @contextmanager
 def _model_response(req: urllib.request.Request, api_key: str, opener: UrlOpen,
-                    **kwargs: Any) -> Iterator[Any]:
+                    *, model: str | None = None, **kwargs: Any) -> Iterator[Any]:
+    context = kwargs.get("context")
+    if (urlsplit(req.full_url).hostname == "api.openai.com" and context is not None
+            and (context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname)):
+        # Some legacy report callers supply a gateway-only unverified context.
+        # It must never disable server identity checks for the official API.
+        kwargs["context"] = ssl.create_default_context()
     # Custom transports retain the historical injection/monkeypatch contract.
     # The production urllib transport shares admission across every consumer.
     if opener is not _STANDARD_OPENER:
@@ -96,15 +105,27 @@ def _model_response(req: urllib.request.Request, api_key: str, opener: UrlOpen,
     deadline = time.monotonic() + timeout
     coordinator = shared_model_coordinator()
     scope = request_scope(req.full_url, api_key)
+    # Admission and spacing stay credential-wide; a provider 429 only cools
+    # down the model that returned it.
+    model_scope = rate_limit_scope(scope, model) if model else None
+    # Bound queueing by both the caller's deadline and the shared queue limit.
     queue_deadline = min(deadline, time.monotonic() + MAX_QUEUE_SECONDS)
     while True:
         try:
-            lease = coordinator.acquire(scope, duration=max(0.001, deadline - time.monotonic()))
+            lease = coordinator.acquire(
+                scope,
+                duration=max(0.001, deadline - time.monotonic()),
+                rate_scope=model_scope,
+            )
             break
         except ModelAdmissionError as exc:
             if exc.reason not in {"spacing", "busy"} or time.monotonic() >= queue_deadline:
                 raise
-            time.sleep(min(0.1, max(0.0, queue_deadline - time.monotonic())))
+            now = time.monotonic()
+            # Spacing has a fixed end. A busy lease can be released at any time.
+            if exc.reason == "spacing" and now + exc.retry_after >= queue_deadline:
+                raise
+            time.sleep(min(0.1, max(0.0, queue_deadline - now)))
     success = False
     try:
         remaining = deadline - time.monotonic()
@@ -115,12 +136,17 @@ def _model_response(req: urllib.request.Request, api_key: str, opener: UrlOpen,
             success = True
     except urllib.error.HTTPError as exc:
         if exc.code == 429:
-            delay = coordinator.rate_limited(scope, lease, exc.headers.get("Retry-After") if exc.headers else None)
+            delay = coordinator.rate_limited(
+                scope,
+                lease,
+                exc.headers.get("Retry-After") if exc.headers else None,
+                rate_scope=model_scope,
+            )
             exc.close()
             raise ModelAdmissionError("upstream_http_429", delay) from exc
         raise
     finally:
-        coordinator.release(scope, lease, success=success)
+        coordinator.release(scope, lease, success=success, rate_scope=model_scope)
 
 
 class ModelResponseParseError(ValueError):
@@ -197,7 +223,9 @@ def uses_responses_api(
         model_name.startswith(("grok-4.3", "grok-4.5"))
         or model_name == "grok-latest"
         or model_name in {"mimo-v2.5", "mimo-v2.5-pro"}
-        or (capability is not None and capability.key in {"qwen-3.8-max", "qwen-responses"})
+        or (capability is not None and capability.key in {
+            "qwen-3.8-max", "qwen-responses", "gpt-6.1-sol",
+        })
     ):
         return True
     # OpenAI-compatible GPT-5 search tools are exposed through Responses.  Do
@@ -223,6 +251,7 @@ def _uses_chat_completion_output_limit(model: str) -> bool:
     model_name = str(model or "").strip().lower()
     return (
         model_name in {"mimo-v2.5", "mimo-v2.5-pro"}
+        or model_name == "gpt-6.1-sol"
         or re.fullmatch(r"minimax-m(?:3|2(?:\.(?:1|5|7)(?:-highspeed)?)?)", model_name)
         is not None
     )
@@ -255,6 +284,14 @@ def build_model_request(
     )
     payload = dict(extra_payload or {})
     payload["model"] = model
+    if str(model).strip().lower() == "gpt-6.1-sol":
+        # Sol always reasons, including when effort is omitted. Sampling knobs
+        # are not supported; never let a project-level Fast default change the
+        # price of this newly supported model without an explicit override.
+        for key in ("temperature", "top_p", "logprobs", "top_logprobs"):
+            payload.pop(key, None)
+        payload.setdefault("service_tier", "default")
+        payload.setdefault("store", False)
 
     if use_responses:
         for legacy_key in ("messages", "max_tokens", "max_completion_tokens"):
@@ -518,7 +555,9 @@ def _request_once(
     kwargs: dict[str, Any] = {"timeout": timeout}
     if ssl_context is not None:
         kwargs["context"] = ssl_context
-    with _model_response(req, api_key, opener, **kwargs) as response:
+    with _model_response(
+        req, api_key, opener, model=str(request.payload.get("model") or ""), **kwargs
+    ) as response:
         content_type = _response_content_type(response)
         raw = response.read().decode("utf-8", "ignore")
     return parse_model_response(raw, content_type)
@@ -605,7 +644,9 @@ def _stream_once(
     kwargs: dict[str, Any] = {"timeout": timeout}
     if ssl_context is not None:
         kwargs["context"] = ssl_context
-    with _model_response(req, api_key, opener, **kwargs) as response:
+    with _model_response(
+        req, api_key, opener, model=str(request.payload.get("model") or ""), **kwargs
+    ) as response:
         yield from _stream_response_text(response)
 
 
@@ -646,6 +687,10 @@ def request_model(
             ssl_context=ssl_context,
         )
     except urllib.error.HTTPError as exc:
+        if str(request.payload.get("model") or "").strip().lower() == "gpt-6.1-sol":
+            # The official model supports a reasoning-inclusive output limit.
+            # A failed request must not silently retry with an unbounded bill.
+            raise
         if exc.code != 400 or "max_output_tokens" not in request.payload:
             raise
         try:
@@ -695,6 +740,8 @@ def stream_model_response(
             ssl_context=ssl_context,
         )
     except urllib.error.HTTPError as exc:
+        if str(request.payload.get("model") or "").strip().lower() == "gpt-6.1-sol":
+            raise
         if exc.code != 400 or "max_output_tokens" not in request.payload:
             raise
         try:

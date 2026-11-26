@@ -14,7 +14,7 @@ from urllib.request import Request, urlopen
 if __package__ == "app":
     from .reports.a_share import common as report_common
 else:
-    from reports.a_share import common as report_common
+    from . import common as report_common
 
 CN_TZ = dt.timezone(dt.timedelta(hours=8))
 
@@ -27,18 +27,14 @@ def _normalize_code(value: Any) -> str:
     return report_common.normalize_code(value)
 
 
-def _is_normal_a_share(code: str, name: str) -> bool:
-    return report_common.is_normal_a_share(code, name, code_normalizer=_normalize_code)
+def _is_full_market_a_share(code: str, name: str) -> bool:
+    return report_common.is_full_market_a_share(code, name, code_normalizer=_normalize_code)
 
 
 def _symbols() -> list[str]:
-    # Querying invalid codes is harmless; Tencent only returns listed symbols.
-    return (
-        [f"sz{i:06d}" for i in range(1, 4000)]
-        + [f"sz{i:06d}" for i in range(300001, 302000)]
-        + [f"sh{i:06d}" for i in range(600000, 606000)]
-        + [f"sh{i:06d}" for i in range(688000, 690000)]
-    )
+    # Shanghai/Shenzhen come from the official catalog. BSE uses active 920xxx codes.
+    # https://www.bse.cn/service/code_mapping.html
+    return [f"bj{i:06d}" for i in range(920000, 921000)]
 
 
 def _industry_map(dashboard_home: Path) -> dict[str, str]:
@@ -57,20 +53,33 @@ def fetch_tencent_spot_snapshot(
     *,
     env_prefix: str = "A_SHARE_SUMMARY_TENCENT",
     min_rows: int = 4000,
+    listed_codes: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Fetch and validate a current full-market A-share snapshot from Tencent."""
+    if listed_codes is None:
+        from app.market_data.listing_cache import ListingCacheError, load_current_listing
+        day = dt.datetime.now(CN_TZ).date().isoformat()
+        try:
+            listed_codes = {code for code, _ in load_current_listing(
+                Path(dashboard_home) / 'cron/output/a_share_listing_latest.json', day
+            )}
+        except ListingCacheError as exc:
+            return [], f'腾讯报告所需的当日完整股票名录不可用：{exc}'
     deadline_seconds = max(5, int(os.getenv(f"{env_prefix}_DEADLINE", "25")))
     workers = max(1, min(12, int(os.getenv(f"{env_prefix}_WORKERS", "10"))))
     chunk_size = max(50, min(300, int(os.getenv(f"{env_prefix}_CHUNK", "200"))))
     deadline = time.monotonic() + deadline_seconds
-    symbols = _symbols()
+    symbols = list(dict.fromkeys([
+        *(('sh' if code.startswith('6') else 'sz') + code for code in sorted(listed_codes)),
+        *_symbols(),
+    ]))
     chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
     industry_map = _industry_map(Path(dashboard_home))
 
-    def fetch_chunk(chunk: list[str]) -> list[dict[str, Any]]:
+    def fetch_chunk(chunk: list[str]) -> tuple[list[dict[str, Any]], set[str]]:
         remaining = deadline - time.monotonic()
         if remaining <= 1:
-            return []
+            raise TimeoutError("腾讯行情总时限已用尽")
         url = "https://qt.gtimg.cn/q=" + ",".join(chunk)
         req = Request(
             url,
@@ -83,19 +92,30 @@ def fetch_tencent_spot_snapshot(
         with urlopen(req, timeout=min(6, max(1, remaining))) as response:
             body = response.read().decode("gb18030", errors="ignore")
         output: list[dict[str, Any]] = []
+        requested = set(chunk)
+        observed: set[str] = set()
         for raw in body.split(";"):
-            match = re.search(r'="(.*)"', raw, re.S)
+            match = re.fullmatch(r'\s*v_((?:sh|sz|bj)\d{6})="([^"]*)"\s*', raw)
             if not match:
                 continue
-            parts = match.group(1).split("~")
+            symbol, quote = match.groups()
+            parts = quote.split("~")
             if len(parts) < 38:
                 continue
             code, name = _normalize_code(parts[2]), parts[1].strip()
-            if not _is_normal_a_share(code, name):
+            if symbol not in requested or symbol[2:] != code or not name or not _is_full_market_a_share(code, name):
                 continue
-            price = _safe_float(parts[3])
+            if not report_common.is_bse_a_share(code) and code not in listed_codes:
+                continue
+            price = _safe_float(parts[3], -1.0)
             prev_close = _safe_float(parts[4])
-            if price <= 0 or prev_close <= 0:
+            # A suspended listing may explicitly report zero and a valid previous close.
+            if price < 0 or prev_close <= 0:
+                continue
+            if code in observed:
+                raise ValueError("重复的腾讯证券报价")
+            observed.add(code)
+            if price == 0:
                 continue
             quote_time = parts[30] if re.fullmatch(r"\d{14}", parts[30]) else ""
             quote_ts = 0
@@ -122,9 +142,10 @@ def fetch_tencent_spot_snapshot(
                 "industry": industry_map.get(code) or "所属方向待复核",
                 "quote_ts": quote_ts,
             })
-        return output
+        return output, observed
 
     rows: list[dict[str, Any]] = []
+    observed_codes: set[str] = set()
     errors: list[str] = []
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
@@ -132,7 +153,9 @@ def fetch_tencent_spot_snapshot(
         try:
             for future in as_completed(futures, timeout=max(1, deadline - time.monotonic())):
                 try:
-                    rows.extend(future.result())
+                    batch_rows, batch_codes = future.result()
+                    rows.extend(batch_rows)
+                    observed_codes.update(batch_codes)
                 except Exception as exc:
                     errors.append(f"{type(exc).__name__}: {exc}")
         except FuturesTimeoutError:
@@ -141,12 +164,14 @@ def fetch_tencent_spot_snapshot(
         pool.shutdown(wait=False, cancel_futures=True)
 
     result = sorted({row["code"]: row for row in rows}.values(), key=lambda row: row["code"])
+    if errors:
+        return [], f"腾讯全市场行情部分请求失败 {len(errors)} 组，等待完整快照"
     if len(result) < min_rows:
         detail = f"腾讯全市场行情仅取到 {len(result)} 只，低于完整性下限 {min_rows} 只"
         if errors:
             detail += f"；{errors[0]}"
         return [], detail
-    notes: list[str] = []
-    if errors:
-        notes.append(f"腾讯备用行情部分请求失败 {len(errors)} 组")
-    return result, "；".join(notes) or None
+    missing = listed_codes - observed_codes
+    if missing:
+        return [], f"腾讯全市场行情缺少 {len(missing)} 只沪深在市证券，等待完整快照"
+    return result, None

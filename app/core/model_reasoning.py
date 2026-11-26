@@ -30,6 +30,7 @@ class ReasoningEffortCapability:
     mappings: tuple[tuple[str, str], ...] = ()
     note: str = ""
     source_url: str = ""
+    verified_on: str = REASONING_EFFORT_CAPABILITIES_VERIFIED_ON
 
     def effective_effort(self, effort: str) -> str:
         return dict(self.mappings).get(effort, effort)
@@ -39,6 +40,18 @@ class ReasoningEffortCapability:
 # official date-stamped aliases but deliberately avoid arbitrary gateway
 # suffixes; an unrecognized alias falls back to free-form compatibility.
 REASONING_EFFORT_CAPABILITIES: tuple[ReasoningEffortCapability, ...] = (
+    ReasoningEffortCapability(
+        key="gpt-6.1-sol",
+        provider="OpenAI",
+        models="gpt-6.1-sol",
+        model_pattern=r"^gpt-6\.1-sol$",
+        accepted_efforts=("low", "medium", "high", "xhigh", "max"),
+        effective_efforts=("low", "medium", "high", "xhigh", "max"),
+        default_effort="medium",
+        note="不支持 none/minimal；自动使用 Responses，输出上限包含推理 tokens，默认 Standard 计费。",
+        source_url="https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+        verified_on="2026-11-05",
+    ),
     ReasoningEffortCapability(
         key="qwen-3.8-max",
         provider="阿里云 Qwen",
@@ -499,7 +512,7 @@ def reasoning_effort_capability_catalog() -> list[dict[str, Any]]:
             "mappings": dict(capability.mappings),
             "note": capability.note,
             "source_url": capability.source_url,
-            "verified_on": REASONING_EFFORT_CAPABILITIES_VERIFIED_ON,
+            "verified_on": capability.verified_on,
         }
         for capability in REASONING_EFFORT_CAPABILITIES
     ]

@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 import sys
 import urllib.parse
@@ -5880,21 +5881,28 @@ process.stdout.write(JSON.stringify({
             dashboard.API_STALE_WHILE_REFRESH_SECONDS = original_window
 
     def test_cold_api_cache_is_seeded_from_durable_snapshot_as_stale(self):
+        from functools import partial
+        from unittest.mock import patch
+
         snapshot = self.tmp_path / 'sectors.json'
         snapshot.write_text(
             json.dumps({'generated_at': '2026-07-11 09:30:00', 'items': [{'name': '银行'}]}),
             encoding='utf-8',
         )
-        before = dashboard.time.time()
-        seeded = dashboard.seed_api_cache_from_json_file('sectors', snapshot, 60)
+        clock = iter((1000.0, 1002.0, 1002.0))  # read, publish, repeat immediately
+        seed = partial(dashboard.response_cache_impl.seed_from_json_file, now=lambda: next(clock))
+        with patch.object(dashboard.response_cache_impl, "seed_from_json_file", seed):
+            seeded = dashboard.seed_api_cache_from_json_file('sectors', snapshot, 60)
+            repeated = dashboard.seed_api_cache_from_json_file('sectors', snapshot, 60)
 
         self.assertTrue(seeded)
         cached = dashboard.API_RESPONSE_CACHE['sectors']
         payload = json.loads(cached['payload'])
         self.assertTrue(payload['stale_cache'])
         self.assertEqual(payload['items'], [{'name': '银行'}])
-        self.assertLessEqual(cached['ts'], before - 60)
-        self.assertFalse(dashboard.seed_api_cache_from_json_file('sectors', snapshot, 60))
+        self.assertGreater(cached['ts'], 1000.0 - 60)
+        self.assertLess(cached['ts'], 1002.0 - 60)
+        self.assertFalse(repeated)
 
     def test_durable_snapshot_revives_cache_older_than_stale_window(self):
         snapshot = self.tmp_path / 'sectors-recovery.json'
@@ -7627,6 +7635,40 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(captured["now"], now)
         self.assertTrue(result["reference_pages"]["market_breadth"])
 
+    def test_market_snapshot_serializes_eastmoney_helpers(self):
+        original_runner = dashboard.run_dashboard_helper
+        original_builder = dashboard.practice_market_summary_impl.build_realtime_market_snapshot
+        original_breadth = dashboard.produce_market_breadth_data
+        active = 0
+        max_active = 0
+        guard = threading.Lock()
+
+        def fake_runner(script_name, fallback, timeout=90, args=()):
+            nonlocal active, max_active
+            with guard:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.05)
+            with guard:
+                active -= 1
+            return {"script": script_name}
+
+        try:
+            dashboard.run_dashboard_helper = fake_runner
+            dashboard.practice_market_summary_impl.build_realtime_market_snapshot = (
+                lambda *_args, **_kwargs: {"complete": True}
+            )
+            dashboard.produce_market_breadth_data = lambda: {"available": True}
+            dashboard.fetch_practice_realtime_market_snapshot(
+                datetime(2026, 7, 14, 12, 0, 0)
+            )
+        finally:
+            dashboard.run_dashboard_helper = original_runner
+            dashboard.practice_market_summary_impl.build_realtime_market_snapshot = original_builder
+            dashboard.produce_market_breadth_data = original_breadth
+
+        self.assertEqual(max_active, 1)
+
     def test_notification_test_api_has_dedicated_rate_limit_and_body_limit(self):
         original_sender = dashboard.send_notification_test
         original_admin_limit = dashboard.RATE_LIMIT_ADMIN
@@ -8908,6 +8950,7 @@ process.stdout.write(JSON.stringify({{
         original_context = dashboard.practice_fast_cycle_context_payload
         original_run = dashboard.run_practice_decision_logged
         original_invalidate = dashboard.invalidate_api_cache
+        original_summary = dashboard.refresh_practice_market_summary_for_decision
         calls = {'builder': None, 'decision': None}
 
         def payload_builder(holdings, context, *, now):
@@ -8929,16 +8972,19 @@ process.stdout.write(JSON.stringify({{
             }
             dashboard.run_practice_decision_logged = run_logged
             dashboard.invalidate_api_cache = lambda *_keys: None
+            dashboard.refresh_practice_market_summary_for_decision = lambda _trigger: {}
             result = dashboard.run_practice_fast_cycle_once(
                 datetime(2026, 8, 27, 10, 5, 0),
                 trader=FakeTrader(),
                 payload_builder=payload_builder,
+                clock=lambda: datetime(2026, 8, 27, 10, 5, 0),
             )
         finally:
             dashboard.PRACTICE_FAST_CYCLE_ENABLED = original_enabled
             dashboard.practice_fast_cycle_context_payload = original_context
             dashboard.run_practice_decision_logged = original_run
             dashboard.invalidate_api_cache = original_invalidate
+            dashboard.refresh_practice_market_summary_for_decision = original_summary
 
         holdings, context, current = calls['builder']
         self.assertEqual([item['code'] for item in holdings], ['600001'])
@@ -8950,6 +8996,7 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(payload['decision_cycle_kind'], 'holding_fast')
         self.assertEqual(payload['schedule_run_kind'], 'holding_fast')
         self.assertFalse(kwargs['decision_blocking'])
+        self.assertFalse(kwargs['refresh_market_summary'])
         self.assertEqual(result['decision_cycle_kind'], 'holding_fast')
 
     def test_holding_fast_cycle_context_restores_complete_stock_profiles(self):

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -86,6 +87,25 @@ class DashboardJsonCacheTests(unittest.TestCase):
 
             self.assertEqual(third, {"generation": 2})
             self.assertEqual(loads.call_count, 2)
+
+    def test_write_json_cache_streams_without_complete_serialized_copy(self):
+        cache = load_module("dashboard_json_cache")
+        payload = {"rows": [{"name": "牛牛", "value": 0.12345678901234567}] * 100}
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "cache.json"
+            with mock.patch.object(cache.json, "dumps", side_effect=AssertionError("whole payload copy")):
+                cache.write_json_cache(path, payload)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), payload)
+
+    def test_stream_write_failure_keeps_previous_atomic_cache(self):
+        cache = load_module("dashboard_json_cache")
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "cache.json"
+            cache.write_json_cache(path, {"valid": True})
+            with self.assertRaises(TypeError):
+                cache.write_json_cache(path, {"invalid": object()})
+            self.assertEqual(cache.read_json_cache(path), {"valid": True})
+            self.assertEqual(list(Path(td).glob(".*.tmp")), [])
 
     def test_dashboard_api_falls_back_to_stale_cache_on_compute_failure(self):
         stale_payload = {

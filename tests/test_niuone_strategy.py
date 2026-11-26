@@ -3078,6 +3078,35 @@ class NiuOneStrategyTests(unittest.TestCase):
             trader.is_a_share_execution_time = original_time
             trader.execution_quote = original_quote
 
+    def test_legacy_selected_score_uses_probe_gates_and_ceiling_at_execution(self):
+        subroute = NIUONE_MARKUP_MOMENTUM_PROBE_SUBROUTE
+        facts = {"niuone_entry_subroute": subroute, "entry_setup": subroute,
+                 "entry_extension_atr": 0.5, "volume_ratio": 1.0}
+        candidate = niu_candidate(best_strategy="niu_emerging", best_score=8.8, entry_threshold=8.1,
+                                  niuone_lifecycle_stage="markup", mainline_state="emerging", sector_status="emerging",
+                                  mainline_cross_day_persistent=True, price=8, recent_close=8, stop_price=7.8, atr=.2,
+                                  strategies={"niu_emerging": facts, "niu_leader": {"entry_setup": "unrelated"}})
+        market = {"allow_new_buys": True, "max_open_positions": 6, "max_new_buys_per_decision": 2,
+                  "max_total_position_pct": 80, "min_cash_reserve_pct": 20}
+        self.assertEqual(trader.decision_candidate_rows({"trade_items": [], "items": [candidate]}), [])
+        complete = trader.observed_candidate_rows({"items": [candidate]})[0]
+        self.assertEqual(complete["entry_setup"], subroute)
+        self.assertNotIn("entry_setup", candidate)
+        self.assertEqual(trader.candidate_buy_blockers(candidate), [])
+        self.assertIn("主升动量试仓身份条件不完整",
+                      trader.candidate_buy_blockers({**candidate, "stock_leader_rank": 2}))
+        for price, expected in ((8.01, 0), (8.00, 100), (6.40, 100)):
+            with self.subTest(price=price):
+                row = {**candidate, "price": price, "stop_price": price - .2, "recent_close": price}
+                state = {"cash": 20000., "initial_cash": 20000., "positions": {}, "trade_log": []}
+                decision = {"actions": [{"action": "BUY", "code": row["code"], "shares": 300, "reason": "试仓"}]}
+                with patch.object(trader, "execution_quote", return_value={
+                    "price": price, "prev_close": price, "turnover": 4.0, "name": "合成样本", "source": "test",
+                }), patch.object(trader, "is_a_share_execution_time", return_value=(True, "test")):
+                    filled = trader.execute_actions(state, decision, [row], True, "test", market)
+                self.assertEqual(sum(order["shares"] for order in filled), expected, decision.get("execution_blocks"))
+                self.assertEqual(trader.niuone_opening_position_cap("niu_emerging", complete, opening=False), 15)
+
     def test_markup_momentum_probe_execution_accepts_wide_stop_but_caps_position(self):
         original_time = trader.is_a_share_execution_time
         original_quote = trader.execution_quote

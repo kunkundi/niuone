@@ -29,6 +29,7 @@ DINGTALK_URL = "https://oapi.dingtalk.com/robot/send?access_token=dingtalk-acces
 WECOM_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=12345678-abcd-efgh-ijkl"
 TELEGRAM_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghi"
 TELEGRAM_CHAT_ID = "-1001234567890"
+SERVERCHAN_SENDKEY = "SCT123456abcdefghijklmn"
 FIXED_TIME = 1_700_000_000.25
 
 
@@ -81,6 +82,8 @@ def all_channels_env(*, signed: bool = True) -> dict[str, str]:
         notifications.TELEGRAM_ENABLED_ENV: "1",
         notifications.TELEGRAM_TOKEN_ENV: TELEGRAM_TOKEN,
         notifications.TELEGRAM_CHAT_ID_ENV: TELEGRAM_CHAT_ID,
+        notifications.SERVERCHAN_ENABLED_ENV: "1",
+        notifications.SERVERCHAN_SENDKEY_ENV: SERVERCHAN_SENDKEY,
     }
     if signed:
         env[notifications.FEISHU_SECRET_ENV] = "feishu-signing-secret"
@@ -111,6 +114,11 @@ def single_channel_env(channel: str) -> dict[str, str]:
             notifications.TELEGRAM_TOKEN_ENV: TELEGRAM_TOKEN,
             notifications.TELEGRAM_CHAT_ID_ENV: TELEGRAM_CHAT_ID,
         })
+    elif channel == "serverchan":
+        env.update({
+            notifications.SERVERCHAN_ENABLED_ENV: "1",
+            notifications.SERVERCHAN_SENDKEY_ENV: SERVERCHAN_SENDKEY,
+        })
     else:
         raise AssertionError(channel)
     return env
@@ -126,6 +134,8 @@ def channel_for_url(url: str) -> str:
         return "wecom"
     if host == "api.telegram.org":
         return "telegram"
+    if host == "sctapi.ftqq.com" or str(host or "").endswith(".push.ft07.com"):
+        return "serverchan"
     raise AssertionError(f"unexpected URL host: {host}")
 
 
@@ -134,6 +144,7 @@ SUCCESS_RESPONSES = {
     "dingtalk": {"errcode": 0, "errmsg": "ok"},
     "wecom": {"errcode": 0, "errmsg": "ok"},
     "telegram": {"ok": True, "result": {"message_id": 1}},
+    "serverchan": {"code": 0, "message": ""},
 }
 
 
@@ -163,8 +174,8 @@ class RecordingTransport:
 class NotificationTests(unittest.TestCase):
     def test_builtin_registry_has_stable_order(self):
         self.assertEqual(
-            notifications.registered_channels()[:4],
-            ("feishu", "dingtalk", "wecom", "telegram"),
+            notifications.registered_channels(),
+            ("feishu", "dingtalk", "wecom", "telegram", "serverchan"),
         )
 
     def test_trade_batch_builds_all_payloads_and_signatures(self):
@@ -177,9 +188,9 @@ class NotificationTests(unittest.TestCase):
             clock=lambda: FIXED_TIME,
         )
 
-        self.assertEqual([result.channel for result in results], ["feishu", "dingtalk", "wecom", "telegram"])
+        self.assertEqual([result.channel for result in results], ["feishu", "dingtalk", "wecom", "telegram", "serverchan"])
         self.assertTrue(all(result.ok for result in results), results)
-        self.assertEqual(len(transport.calls), 4)
+        self.assertEqual(len(transport.calls), 5)
         calls = {call["channel"]: call for call in transport.calls}
         self.assertTrue(all(call["timeout"] == 7 for call in transport.calls))
 
@@ -350,7 +361,7 @@ class NotificationTests(unittest.TestCase):
 
         self.assertEqual(
             [result.channel for result in results],
-            ["feishu", "dingtalk", "wecom", "telegram"],
+            ["feishu", "dingtalk", "wecom", "telegram", "serverchan"],
         )
         self.assertTrue(all(result.ok for result in results), results)
         calls = {call["channel"]: call for call in transport.calls}
@@ -471,7 +482,7 @@ class NotificationTests(unittest.TestCase):
                     transport=transport,
                 )
 
-                self.assertEqual([item.channel for item in results], ["feishu", "dingtalk", "wecom", "telegram"])
+                self.assertEqual([item.channel for item in results], ["feishu", "dingtalk", "wecom", "telegram", "serverchan"])
                 self.assertTrue(all(not item.ok for item in results))
                 self.assertEqual(transport.calls, [])
 
@@ -546,7 +557,7 @@ class NotificationTests(unittest.TestCase):
             transport=transport,
         )
 
-        self.assertEqual([item.channel for item in results], ["feishu", "dingtalk", "wecom", "telegram"])
+        self.assertEqual([item.channel for item in results], ["feishu", "dingtalk", "wecom", "telegram", "serverchan"])
         self.assertTrue(all(not item.ok for item in results))
         combined_errors = "\n".join(item.error for item in results)
         for secret in (
@@ -557,9 +568,9 @@ class NotificationTests(unittest.TestCase):
         ):
             self.assertNotIn(secret, combined_errors)
 
-    def test_four_channels_run_concurrently_once_and_keep_result_order(self):
-        barrier = threading.Barrier(4)
-        counts = {name: 0 for name in ("feishu", "dingtalk", "wecom", "telegram")}
+    def test_all_channels_run_concurrently_once_and_keep_result_order(self):
+        barrier = threading.Barrier(5)
+        counts = {name: 0 for name in ("feishu", "dingtalk", "wecom", "telegram", "serverchan")}
         lock = threading.Lock()
 
         def concurrent_transport(url, _payload, _timeout):
@@ -578,10 +589,13 @@ class NotificationTests(unittest.TestCase):
             clock=lambda: FIXED_TIME,
         )
 
-        self.assertEqual([item.channel for item in results], ["feishu", "dingtalk", "wecom", "telegram"])
-        self.assertEqual([item.ok for item in results], [True, False, True, True])
+        self.assertEqual([item.channel for item in results], ["feishu", "dingtalk", "wecom", "telegram", "serverchan"])
+        self.assertEqual([item.ok for item in results], [True, False, True, True, True])
         self.assertEqual(results[1].error, "RuntimeError")
-        self.assertEqual(counts, {"feishu": 1, "dingtalk": 1, "wecom": 1, "telegram": 1})
+        self.assertEqual(
+            counts,
+            {"feishu": 1, "dingtalk": 1, "wecom": 1, "telegram": 1, "serverchan": 1},
+        )
 
     def test_http_and_network_errors_do_not_expose_request_urls(self):
         env = single_channel_env("telegram")
@@ -618,6 +632,125 @@ class NotificationTests(unittest.TestCase):
         )
         self.assertEqual(results[0].error, "provider echoed [redacted]")
         self.assertNotIn(TELEGRAM_TOKEN, results[0].error)
+
+    def test_serverchan_sends_markdown_body_with_a_bounded_single_line_title(self):
+        transport = RecordingTransport()
+        trade = sample_trades()[0]
+        trade["reason"] = "第一行\n第二行 结尾"
+
+        results = notifications.notify_trade_executions(
+            [trade],
+            single_channel_env("serverchan"),
+            transport=transport,
+        )
+
+        self.assertTrue(results[0].ok, results)
+        self.assertEqual(len(transport.calls), 1)
+        call = transport.calls[0]
+        self.assertEqual(call["url"], f"https://sctapi.ftqq.com/{SERVERCHAN_SENDKEY}.send")
+        self.assertEqual(set(call["payload"]), {"title", "desp"})
+        self.assertEqual(call["payload"]["title"], "成交信息（1笔）")
+        self.assertNotIn("\n", call["payload"]["title"])
+        self.assertLessEqual(len(call["payload"]["title"]), 32)
+        self.assertIn("#### 1. 买入｜平安银行（000001）", call["payload"]["desp"])
+        self.assertIn("**理由**", call["payload"]["desp"])
+
+    def test_serverchan_truncates_an_overlong_title_to_the_provider_limit(self):
+        transport = RecordingTransport()
+        notification = notifications.Notification(
+            "notification.test",
+            "标题" * 40,
+            "正文",
+        )
+
+        result = notifications.dispatch_to_channel(
+            notification,
+            "serverchan",
+            single_channel_env("serverchan"),
+            transport=transport,
+        )
+
+        self.assertTrue(result.ok, result)
+        title = transport.calls[0]["payload"]["title"]
+        self.assertEqual(len(title), 32)
+        self.assertTrue(title.endswith("…"))
+
+    def test_serverchan_sc3_sendkey_uses_its_uid_push_host(self):
+        sendkey = "sctp1234tABCDEFGHIJ"
+        transport = RecordingTransport()
+
+        result = notifications.dispatch_to_channel(
+            notifications.Notification("notification.test", "标题", "正文"),
+            "serverchan",
+            {
+                notifications.SERVERCHAN_ENABLED_ENV: "1",
+                notifications.SERVERCHAN_SENDKEY_ENV: sendkey,
+            },
+            transport=transport,
+        )
+
+        self.assertTrue(result.ok, result)
+        self.assertEqual(
+            transport.calls[0]["url"],
+            f"https://1234.push.ft07.com/send/{sendkey}.send",
+        )
+
+    def test_serverchan_falls_back_to_plain_text_when_markdown_exceeds_the_shared_limit(self):
+        transport = RecordingTransport()
+        notification = notifications.Notification(
+            "notification.test",
+            "标题",
+            "纯文本正文" * 900,
+        )
+
+        result = notifications.dispatch_to_channel(
+            notification,
+            "serverchan",
+            single_channel_env("serverchan"),
+            transport=transport,
+        )
+
+        self.assertTrue(result.ok, result)
+        desp = transport.calls[0]["payload"]["desp"]
+        self.assertIn("纯文本正文", desp)
+        self.assertLessEqual(len(desp.encode("utf-8")), notifications.MAX_MESSAGE_BYTES)
+        desp.encode("utf-8").decode("utf-8")
+
+    def test_serverchan_business_error_and_invalid_sendkey_are_sanitized(self):
+        transport = RecordingTransport({"serverchan": {"code": 40001, "message": SERVERCHAN_SENDKEY}})
+        results = notifications.notify_trade_executions(
+            sample_trades()[:1],
+            single_channel_env("serverchan"),
+            transport=transport,
+        )
+
+        self.assertFalse(results[0].ok)
+        self.assertNotIn(SERVERCHAN_SENDKEY, results[0].error)
+        self.assertEqual(len(transport.calls), 1)
+
+        cases = [
+            ("blank", ""),
+            ("full_url", f"https://sctapi.ftqq.com/{SERVERCHAN_SENDKEY}.send"),
+            ("lowercase", SERVERCHAN_SENDKEY.lower()),
+            ("control", SERVERCHAN_SENDKEY + "\nSUPERSECRET"),
+        ]
+        for label, value in cases:
+            with self.subTest(label=label):
+                env = {
+                    notifications.GLOBAL_ENABLED_ENV: "1",
+                    notifications.SERVERCHAN_ENABLED_ENV: "1",
+                    notifications.SERVERCHAN_SENDKEY_ENV: value,
+                }
+                invalid_transport = RecordingTransport()
+                invalid = notifications.notify_trade_executions(
+                    sample_trades()[:1],
+                    env,
+                    transport=invalid_transport,
+                )
+                self.assertEqual(len(invalid), 1)
+                self.assertFalse(invalid[0].ok)
+                self.assertEqual(invalid_transport.calls, [])
+                self.assertNotIn("SUPERSECRET", invalid[0].error)
 
     def test_long_unicode_message_is_truncated_on_a_character_boundary(self):
         trade = sample_trades()[0]

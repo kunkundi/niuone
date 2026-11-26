@@ -106,7 +106,7 @@ function effortMappings(capability) {
           </tbody>
         </table>
       </div>
-      <div class="model-test-panel-note">表格核对日期：{{ reasoningCapabilities[0]?.verified_on }}。表外模型按自定义网关处理，不做固定白名单限制。</div>
+      <div class="model-test-panel-note">能力表最近更新：{{ reasoningCapabilities.map(row => row.verified_on || '').sort().at(-1) }}。各型号按其核对记录维护；表外模型按自定义网关处理，不做固定白名单限制。</div>
     </details>
   </section>
 

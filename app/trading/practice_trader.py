@@ -28,7 +28,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, time as dtime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -52,6 +52,7 @@ from app.trading.decision_freshness import decision_expiry, decision_is_expired
 from core.shared_model_config import (
     LEGACY_SUMMARY_MODEL_ENV_NAMES,
     SHARED_MODEL_ENV_NAMES,
+    model_provider_display_name,
     resolve_shared_model_config,
 )
 from market_data.news_precheck import (
@@ -159,6 +160,8 @@ from trading.fees import (
     A_SHARE_SELL_STAMP_DUTY_RATE,
     A_SHARE_TRANSFER_FEE_RATE,
     calculate_a_share_trade_fees,
+    FeeSchedule, FEE_PROFILE_ENV, LEGACY_FEE_SCHEDULE,
+    account_fee_schedule, fee_schedule_for_profile,
 )
 from trading.niuone_forward import (
     FORWARD_EXECUTION_EVIDENCE_SCHEMA_VERSION,
@@ -221,6 +224,10 @@ from strategies.niuone_risk import (
     NIUONE_MARKUP_UPGRADE_POSITION_CAP_PCT,
     NIUONE_REPLACEMENT_PRIORITY_MARGIN,
     NIUONE_DEFAULT_MAX_OPEN_POSITIONS,
+    NIUONE_ENTRY_GEOMETRY_FIELDS,
+    NIUONE_MODEL_ENTRY_FIELDS,
+    complete_niuone_entry_fields,
+    niuone_opening_position_cap,
     niuone_add_signal_score_audit,
     niuone_buy_signal_score,
     niuone_portfolio_priority,
@@ -346,6 +353,8 @@ def load_dashboard_env() -> None:
         "DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED",
         "DASHBOARD_TELEGRAM_BOT_TOKEN",
         "DASHBOARD_TELEGRAM_CHAT_ID",
+        "DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED",
+        "DASHBOARD_SERVERCHAN_SENDKEY",
         "DASHBOARD_B3_EXIT_TIME",
         "DASHBOARD_TIME_EXIT_TIME",
         "DASHBOARD_TIME_STOP_EXIT_TIME",
@@ -491,37 +500,13 @@ def check_market_sentiment() -> dict[str, Any]:
         return dict(MARKET_SENTIMENT_CACHE)
     
     try:
-        import akshare as ak
-        today_str = datetime.now().strftime("%Y%m%d")
-        df = ak.stock_zt_pool_em(date=today_str)
-        zt_count = len(df) if df is not None else 0
-        
-        if zt_count >= 80:
-            sentiment = "hot"
-            detail = f"涨停{zt_count}家→市场🔥活跃，可积极建仓"
-        elif zt_count >= 30:
-            sentiment = "neutral"
-            detail = f"涨停{zt_count}家→市场正常，正常建仓"
-        else:
-            sentiment = "cold"
-            detail = f"涨停{zt_count}家→市场🥶冷清，谨慎建仓"
-        
-        # 统计热门板块（从涨停股中提取行业）
-        hot_sectors = []
-        if df is not None and not df.empty:
-            from collections import Counter
-            sector_counts = Counter()
-            for _, row in df.iterrows():
-                sector = str(row.get("所属行业", "")).strip()
-                if sector and sector != "nan":
-                    sector_counts[sector] += 1
-            hot_sectors = [f"{s}({c}只)" for s, c in sector_counts.most_common(5)]
-        
-        MARKET_SENTIMENT_CACHE = {
-            "ts": now_ts_val, "limit_up_count": zt_count,
-            "sentiment": sentiment, "detail": detail,
-            "hot_sectors": hot_sectors,
-        }
+        from market_data.market_sentiment import read_current_market_sentiment
+        payload = read_current_market_sentiment(DASHBOARD_HOME / 'cron/output/market_sentiment.json')
+        if (payload.get('sentiment') not in {'hot', 'neutral', 'cold'}
+                or not isinstance(payload.get('limit_up_count'), int)
+                or payload['limit_up_count'] < 0):
+            raise ValueError('invalid market sentiment response')
+        MARKET_SENTIMENT_CACHE = {'ts': now_ts_val, **payload}
     except Exception as e:
         MARKET_SENTIMENT_CACHE = {
             "ts": now_ts_val, "limit_up_count": 0,
@@ -593,7 +578,7 @@ DECISION_RETRY_MAX_TOKENS = 65_536
 DECISION_JSON_SAME_LIMIT_RETRIES = 1
 DECISION_JSON_MAX_PARSE_ATTEMPTS = 6
 DECISION_REQUEST_TIMEOUT = env_int("DASHBOARD_DECISION_TIMEOUT", 180)
-PROVIDER_DISPLAY_NAME = "Crossdesk.ccwu.cc"
+PROVIDER_DISPLAY_NAME = model_provider_display_name(_SHARED_MODEL.base_url)
 CROSSDESK_PROVIDER_NAME = "Crossdesk.ccwu.cc"
 TRADE_LOG_LIMIT = 200
 EQUITY_HISTORY_LIMIT = 500
@@ -888,6 +873,7 @@ def default_state() -> dict[str, Any]:
         "updated_at": now_ts(),
         "initial_cash": INITIAL_CASH,
         "cash": INITIAL_CASH,
+        "fee_schedule": fee_schedule_for_profile(os.environ.get(FEE_PROFILE_ENV, "legacy")).to_dict(),
         "positions": {},
         "trade_log": [],
         "decision_log": [],
@@ -1285,17 +1271,68 @@ def build_strategy_performance(state: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def load_state() -> dict[str, Any]:
-    if not STATE_FILE.exists():
-        state = default_state()
-        save_state(state)
-        return state
+def _has_existing_account_boundary() -> bool:
+    """A captured account or durable ledger must be recovered, never reinitialized."""
+    protocol_path = DASHBOARD_HOME / "cron" / "state" / "niuone_forward_protocol.json"
     try:
-        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        state = default_state()
+        protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        protocol = {}
+    if (protocol.get("account_baseline") or {}).get("status") == "captured":
+        return True
+    db_path = Path(os.environ.get("DASHBOARD_NIUNIU_DB", DASHBOARD_HOME / "niuniu.db")).expanduser()
+    try:
+        db_path.stat()
+    except FileNotFoundError:
+        return False
+    tables = (
+        "daily_equity", "position_snapshots", "trades", "decisions", "account_history",
+        "probe_chase_outcomes", "post_exit_observations", "post_exit_reentry_observations",
+        "exit_feedback_policies", "exit_feedback_evaluations",
+    )
+    with closing(sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
+        existing = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        return any(db.execute(f'SELECT 1 FROM "{name}" LIMIT 1').fetchone()
+                   for name in tables if name in existing)
+
+
+def _read_account_snapshot() -> dict[str, Any]:
+    state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    if not isinstance(state, dict):
+        raise ValueError("模拟账户快照格式无效，请恢复已验证的账户快照")
+    for key in ("cash", "initial_cash"):
+        value = state.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"模拟账户快照的 {key} 无效，请恢复已验证的账户快照")
+    if not isinstance(state.get("positions"), dict):
+        # Legacy pristine accounts contained just the creation date and balances.
+        if ("positions" not in state and state.get("created_at") and state["cash"] == state["initial_cash"]
+                and not any(state.get(key) for key in ("trade_log", "pending_decisions", "decision_log"))
+                and not _has_existing_account_boundary()):
+            state["positions"] = {}
+        else:
+            raise ValueError("模拟账户快照缺少有效持仓，请恢复已验证的账户快照")
+    return state
+
+
+def load_state() -> dict[str, Any]:
+    try:
+        state = _read_account_snapshot()
+    except FileNotFoundError:
+        with state_file_write_lock():
+            try:
+                state = _read_account_snapshot()
+            except FileNotFoundError:
+                if _has_existing_account_boundary():
+                    raise RuntimeError("已有账户记录但模拟账户快照缺失，请恢复已验证的账户快照") from None
+                state = default_state()
+                save_state(state)
+                return state
     base = default_state()
+    # A changed new-account default must not reprice an existing account.
+    base["fee_schedule"] = LEGACY_FEE_SCHEDULE.to_dict()
     base.update(state)
+    account_fee_schedule(base)  # Invalid persisted assumptions fail closed.
     base.setdefault("positions", {})
     base.setdefault("trade_log", [])
     base.setdefault("decision_log", [])
@@ -1807,6 +1844,8 @@ def save_state(state: dict[str, Any]) -> None:
         # writer that loaded stale state from replacing a newer decision record.
         if STATE_FILE.exists():
             current = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            if account_fee_schedule(current) != account_fee_schedule(state):
+                raise ValueError("account fee schedule is frozen; archive and create a new account to change it")
             current.pop(_PENDING_EQUITY_DB_SYNC_TIME, None)
             reconcile_current_day_cash_from_ledger(current)
             reconcile_current_day_equity_history_from_ledger(current)
@@ -2789,6 +2828,7 @@ def enrich_portfolio(state: dict[str, Any]) -> dict[str, Any]:
         "source_updated_at": str(state.get("updated_at") or ""),
         "source_last_equity_time": source_last_equity_time,
         "initial_cash": float(state.get("initial_cash") or INITIAL_CASH),
+        "fee_schedule": account_fee_schedule(state).to_dict(),
         "cash": round(cash, 2),
         "market_value": round(total_mv, 2),
         "total_equity": round(total_equity, 2),
@@ -3019,9 +3059,11 @@ def account_today_pnl(
     return daily_pnl, pnl_pct
 
 
-def calc_trade_fees(amount: float, side: str) -> dict[str, float]:
-    """Calculate A-share paper-trading fees for 万一免五 account."""
-    return calculate_a_share_trade_fees(amount, side)
+def calc_trade_fees(
+    amount: float, side: str, state: Mapping[str, Any] | None = None,
+) -> dict[str, float]:
+    """Use the account's frozen fees, retaining legacy defaults for old callers."""
+    return calculate_a_share_trade_fees(amount, side, account_fee_schedule(state))
 
 
 def dynamic_risk_order_ceiling(
@@ -3042,6 +3084,7 @@ def dynamic_risk_order_ceiling(
     existing_sector_risk_pct: float,
     required_cash_pct: float,
     board_lot: int = 100,
+    fee_schedule: FeeSchedule = LEGACY_FEE_SCHEDULE,
 ) -> dict[str, Any]:
     """Return the largest whole-lot order allowed by every sizing ceiling.
 
@@ -3120,7 +3163,7 @@ def dynamic_risk_order_ceiling(
     reduced_for_reserve = False
     while maximum_shares > 0:
         gross = maximum_shares * resolved_price
-        fees = calc_trade_fees(gross, "BUY")
+        fees = calculate_a_share_trade_fees(gross, "BUY", fee_schedule)
         total_cost = gross + float(fees["total_fee"])
         if total_cost > float(cash) + 1e-9:
             reduced_for_cash = True
@@ -3151,6 +3194,93 @@ def dynamic_risk_order_ceiling(
         ),
         "binding_constraints": sorted(set(binding)),
     }
+
+
+def preview_niuone_buy_capacity(
+    state: Mapping[str, Any],
+    candidates: list[dict[str, Any]],
+    market_strategy_ctx: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Read-only, independent-order risk ceilings at the scan price.
+
+    These are sizing bounds, not execution approvals. Lifecycle/add/replacement
+    eligibility and fresh-quote checks remain exclusively in execute_actions.
+    No hypothetical sale proceeds or previous preview orders alter the snapshot.
+    """
+    positions = state.get("positions") or {}
+    cash = float(state.get("cash") or 0)
+    equity = portfolio_total_equity_for_limits(cash, positions)
+    schedule = account_fee_schedule(state)
+    results: list[dict[str, Any]] = []
+    for candidate in candidates:
+        strategy = str(candidate.get("best_strategy") or "")
+        if not is_niuone_strategy(strategy):
+            continue
+        candidate = complete_niuone_entry_fields(candidate)
+        code = normalize_code(candidate.get("code") or "")
+        price = _safe_float(candidate.get("price"), 0.0)
+        position = positions.get(code) or {}
+        regime = str(candidate.get("market_regime") or "")
+        subroute = str(candidate.get("niuone_entry_subroute") or "")
+        theme = niuone_position_theme(position) if position_qty(position) else niuone_candidate_theme(candidate)
+        row: dict[str, Any] = {"code": code, "reference_price": price,
+                               "scope": "independent_snapshot_risk_ceiling",
+                               "execution_recheck_required": True}
+        if price <= 0 or not theme or regime not in NIUONE_ENTRY_REGIMES:
+            row.update(maximum_permitted_shares=0, binding_constraints=["invalid_risk_inputs"])
+            results.append(row)
+            continue
+        budget = niuone_risk_budget(regime, strategy)
+        cap = niuone_opening_position_cap(strategy, candidate, opening=position_qty(position) <= 0)
+        stop = max(_safe_float(candidate.get("stop_price"), 0.0),
+                   _safe_float(position.get("entry_stop_price"), 0.0))
+        stop_distance = structural_stop_distance_pct(price, stop)
+        atr = _safe_float(candidate.get("atr") or candidate.get("atr14") or candidate.get("atr20"), 0.0)
+        stop_atr = (price - stop) / atr if atr > 0 and stop > 0 else 0.0
+        loss = effective_loss_distance_pct(
+            price, stop,
+            gap_buffer_pct=max(_safe_float(candidate.get("gap_buffer_pct"), 0.0),
+                               _safe_float(position.get("gap_buffer_pct"), 0.0)),
+            execution_buffer_pct=max(SECTOR_TIDE_EXECUTION_BUFFER_PCT,
+                                     _safe_float(candidate.get("execution_buffer_pct"), 0.0),
+                                     _safe_float(position.get("execution_buffer_pct"), 0.0)),
+        )
+        total_cap = min(budget["max_total_position_pct"],
+                        float(market_strategy_ctx.get("max_total_position_pct", MAX_TOTAL_POSITION_PCT)),
+                        100.0 - max(MIN_CASH_RESERVE_PCT, float(market_strategy_ctx.get("min_cash_reserve_pct", MIN_CASH_RESERVE_PCT))))
+        current_value = position_market_value(position, price)
+        market_value = max(0.0, portfolio_market_value(positions) - position_market_value(position) + current_value)
+        row.update(dynamic_risk_order_ceiling(
+            price=price, total_equity=equity, cash=cash,
+            current_position_value=current_value, current_market_value=market_value,
+            other_industry_value=sum(position_market_value(pos) for key, pos in positions.items()
+                                     if key != code and isinstance(pos, dict) and position_qty(pos) > 0
+                                     and dynamic_strategy_exposure_key(pos, position_entry_strategy(pos)) == theme),
+            dynamic_position_cap_pct=risk_sized_position_cap_pct(
+                per_trade_risk_pct=budget["per_trade_risk_pct"],
+                effective_loss_distance_pct_value=loss, absolute_cap_pct=cap),
+            total_position_cap_pct=total_cap, sector_position_cap_pct=budget["max_sector_position_pct"],
+            effective_loss_distance_pct_value=loss,
+            max_open_risk_pct=budget["max_open_risk_pct"],
+            existing_open_risk_pct=dynamic_strategy_existing_open_risk_pct(positions, equity, persona="niuone", excluding_code=code),
+            max_sector_risk_pct=budget["max_sector_risk_pct"],
+            existing_sector_risk_pct=dynamic_strategy_existing_open_risk_pct(positions, equity, persona="niuone", excluding_code=code, industry=theme),
+            required_cash_pct=100.0 - total_cap, fee_schedule=schedule,
+        ))
+        blockers = []
+        if (candidate.get("market_hard_stop")
+                or not candidate.get("market_allows_buys", False)
+                or market_strategy_ctx.get("allow_new_buys") is False):
+            blockers.append("market_guidance")
+        if not niuone_structure_risk_ok(stop_distance, stop_atr, regime, strategy, subroute):
+            blockers.append("structural_stop")
+        if blockers:
+            row.update(maximum_permitted_shares=0, maximum_permitted_gross=0.0, binding_constraints=blockers)
+        gross = float(row.get("maximum_permitted_gross") or 0)
+        row["estimated_buy_fee"] = calculate_a_share_trade_fees(gross, "BUY", schedule)["total_fee"]
+        row["one_lot_cash_required"] = round(price * 100 + calculate_a_share_trade_fees(price * 100, "BUY", schedule)["total_fee"], 2)
+        results.append(row)
+    return results
 
 
 def position_qty(pos: dict[str, Any]) -> int:
@@ -3232,7 +3362,8 @@ def decision_candidate_rows(b1_payload: dict[str, Any]) -> list[Any]:
     for key in ("trade_items", "items", "candidates"):
         if key in b1_payload:
             value = b1_payload.get(key)
-            return value if isinstance(value, list) else []
+            return [complete_niuone_entry_fields(c) if isinstance(c, dict) else c
+                    for c in value] if isinstance(value, list) else []
     return []
 
 
@@ -3241,7 +3372,8 @@ def observed_candidate_rows(b1_payload: dict[str, Any]) -> list[Any]:
     for key in ("observed_items", "items", "candidates", "trade_items"):
         if key in b1_payload:
             value = b1_payload.get(key)
-            return value if isinstance(value, list) else []
+            return [complete_niuone_entry_fields(c) if isinstance(c, dict) else c
+                    for c in value] if isinstance(value, list) else []
     return []
 
 
@@ -3758,6 +3890,7 @@ DECISION_INTELLIGENCE_ENABLED = env_bool("DASHBOARD_DECISION_INTELLIGENCE_ENABLE
 DECISION_INTELLIGENCE_TTL_SECONDS = max(15, env_int("DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS", 75))
 DECISION_INTELLIGENCE_MAX_ITEMS = max(1, min(8, env_int("DASHBOARD_DECISION_INTELLIGENCE_MAX_ITEMS", 5)))
 DECISION_INTELLIGENCE_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
+DECISION_INTELLIGENCE_LOCK = threading.Lock()
 NEWSNOW_DECISION_ENABLED = env_bool("NEWSNOW_DECISION_ENABLED", True)
 
 
@@ -4817,53 +4950,43 @@ def fetch_global_decision_sources(force: bool = False) -> dict[str, Any]:
     """
     if not DECISION_INTELLIGENCE_ENABLED:
         return {"enabled": False, "generated_at": now_ts(), "sources": {}}
-    now_value = time.time()
-    cached = DECISION_INTELLIGENCE_CACHE.get("data")
-    if (
-        not force
-        and isinstance(cached, dict)
-        and now_value - float(DECISION_INTELLIGENCE_CACHE.get("ts") or 0) < DECISION_INTELLIGENCE_TTL_SECONDS
-    ):
-        return cached
+    observed = DECISION_INTELLIGENCE_CACHE.get('data')
+    with DECISION_INTELLIGENCE_LOCK:
+        now_value = time.time()
+        cached = DECISION_INTELLIGENCE_CACHE.get('data')
+        if (isinstance(cached, dict)
+                and (not force or cached is not observed)
+                and now_value - float(DECISION_INTELLIGENCE_CACHE.get('ts') or 0) < DECISION_INTELLIGENCE_TTL_SECONDS):
+            return cached
+        data = _collect_global_decision_sources()
+        DECISION_INTELLIGENCE_CACHE.update(ts=now_value, data=data)
+        return data
 
-    data: dict[str, Any] = {"enabled": True, "generated_at": now_ts(), "sources": {}}
+
+def _collect_global_decision_sources() -> dict[str, Any]:
+    data: dict[str, Any] = {'enabled': True, 'generated_at': now_ts(), 'sources': {}, 'source_timings_s': {}}
+    jobs = {}
     try:
-        from indices_dashboard_api import fetch_indices_data
-        data["sources"]["indices"] = _fetch_decision_source(
-            "indices",
-            fetch_indices_data,
-            {"items": []},
-        )
+        import indices_dashboard_api as indices_api
+        jobs['indices'] = (getattr(indices_api, 'fetch_indices_quote_data', indices_api.fetch_indices_data), {'items': []})
     except Exception as exc:
         data["sources"]["indices"] = {"items": [], "error": f"{type(exc).__name__}: {exc}"}
 
     try:
         from sectors_dashboard_api import fetch_sector_data
-        data["sources"]["sectors"] = _fetch_decision_source(
-            "sectors",
-            fetch_sector_data,
-            {"gain_top": [], "loss_top": [], "items": []},
-        )
+        jobs['sectors'] = (fetch_sector_data, {'gain_top': [], 'loss_top': [], 'items': []})
     except Exception as exc:
         data["sources"]["sectors"] = {"gain_top": [], "loss_top": [], "items": [], "error": f"{type(exc).__name__}: {exc}"}
 
     try:
         from money_flow_dashboard_api import fetch_money_flow
-        data["sources"]["money_flow"] = _fetch_decision_source(
-            "money_flow",
-            fetch_money_flow,
-            {"inflow": [], "outflow": []},
-        )
+        jobs['money_flow'] = (fetch_money_flow, {'inflow': [], 'outflow': []})
     except Exception as exc:
         data["sources"]["money_flow"] = {"inflow": [], "outflow": [], "error": f"{type(exc).__name__}: {exc}"}
 
     try:
         from hot_stocks_dashboard_api import fetch_hot_stocks
-        data["sources"]["hot_stocks"] = _fetch_decision_source(
-            "hot_stocks",
-            lambda: fetch_hot_stocks("amount"),
-            {"items": [], "amount_top": [], "turnover_top": [], "gain_top": []},
-        )
+        jobs['hot_stocks'] = (lambda: fetch_hot_stocks('amount'), {'items': [], 'amount_top': [], 'turnover_top': [], 'gain_top': []})
     except Exception as exc:
         data["sources"]["hot_stocks"] = {
             "items": [],
@@ -4875,11 +4998,7 @@ def fetch_global_decision_sources(force: bool = False) -> dict[str, Any]:
 
     try:
         from market_flow_dashboard_api import fetch_market_flow
-        data["sources"]["market_flow"] = _fetch_decision_source(
-            "market_flow",
-            fetch_market_flow,
-            {"total_inflow_yi": None, "total_outflow_yi": None, "net_flow_yi": None},
-        )
+        jobs['market_flow'] = (fetch_market_flow, {'total_inflow_yi': None, 'total_outflow_yi': None, 'net_flow_yi': None})
     except Exception as exc:
         data["sources"]["market_flow"] = {
             "total_inflow_yi": None,
@@ -4888,7 +5007,17 @@ def fetch_global_decision_sources(force: bool = False) -> dict[str, Any]:
             "error": f"{type(exc).__name__}: {exc}",
         }
 
-    DECISION_INTELLIGENCE_CACHE.update({"ts": now_value, "data": data})
+    def collect(label, fetcher, empty):
+        started = time.monotonic()
+        value = _fetch_decision_source(label, fetcher, empty)
+        return value, round(time.monotonic() - started, 3)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {label: pool.submit(collect, label, *job) for label, job in jobs.items()}
+        for label, future in futures.items():
+            value, elapsed = future.result()
+            data['sources'][label] = value
+            data['source_timings_s'][label] = elapsed
     return data
 
 
@@ -5103,6 +5232,7 @@ def build_decision_intelligence_context(
     ctx = {
         "enabled": True,
         "generated_at": raw.get("generated_at") if isinstance(raw, dict) else now_ts(),
+        "source_timings_s": raw.get("source_timings_s", {}) if isinstance(raw, dict) else {},
         "source_status": source_status,
         "portfolio": compact_portfolio_exposure_for_decision(portfolio),
         "market_guidance": compact_market_strategy_context(market_strategy_ctx),
@@ -5282,10 +5412,13 @@ def get_volatility_adjustment(code: str) -> float:
 
 def get_adaptive_params() -> dict[str, float]:
     """根据市场情绪自适应调整仓位参考。"""
-    sent = check_market_sentiment()
-    if sent["sentiment"] == "hot":
+    return adaptive_params_for_sentiment(check_market_sentiment())
+
+
+def adaptive_params_for_sentiment(sent: Mapping[str, Any]) -> dict[str, Any]:
+    if sent.get("sentiment") == "hot":
         return {"position_mult": 1.0, "label": "热-只排序不放宽风控"}
-    elif sent["sentiment"] == "cold":
+    elif sent.get("sentiment") == "cold":
         return {"position_mult": 0.5, "label": "冷-减半观察"}
     else:
         return {"position_mult": 1.0, "label": "中性"}
@@ -6041,6 +6174,9 @@ PRACTICE_CANDIDATE_EVIDENCE_FIELDS = (
     "selection_same_stage_candidate_count",
     "selection_same_stage_candidate_rank",
     "selection_same_stage_top_score_gap",
+    "gap_buffer_pct", "stop_atr", "max_stop_atr", "atr_period",
+    "max_entry_extension_atr", "absolute_position_cap_pct", "max_position_pct_by_risk",
+    *NIUONE_ENTRY_GEOMETRY_FIELDS,
 )
 
 
@@ -8963,7 +9099,7 @@ def check_auto_exits(
         entry_mark = compact_position_strategy_mark(pos, entry_strategy)
         exit_mark = apply_exit_strategy_mark(pos, entry_strategy, exit_rule, exit_reason, source="AUTO_EXIT")
         
-        fees = calc_trade_fees(gross, "SELL")
+        fees = calc_trade_fees(gross, "SELL", state)
         net_proceeds = gross - fees["total_fee"]
         cost_basis = qty * avg_cost
         realized_pnl = net_proceeds - cost_basis
@@ -9610,6 +9746,8 @@ def compact_portfolio_for_decision(portfolio: dict[str, Any]) -> dict[str, Any]:
     return {
         "generated_at": portfolio.get("generated_at"),
         "initial_cash": portfolio.get("initial_cash"),
+        "fee_schedule": account_fee_schedule(portfolio).to_dict(),
+        "execution_preflight": portfolio.get("_execution_preflight") or [],
         "cash": portfolio.get("cash"),
         "market_value": portfolio.get("market_value"),
         "total_equity": portfolio.get("total_equity"),
@@ -10103,8 +10241,6 @@ def call_model_decision(
     prompt_replacement_margin = float(
         prompt_feedback_parameters["replacement_priority_margin"]
     )
-    market_env = check_market_environment()
-    market_sent = check_market_sentiment()
     market_strategy_ctx = market_strategy_ctx or current_market_strategy_context()
     strategy_suite = current_strategy_suite()
     active_strategy_ids = active_strategy_ids_for_decision()
@@ -10115,9 +10251,6 @@ def call_model_decision(
         market_strategy_ctx,
         niuone_only=niuone_only,
     )
-    sentiment_note = ""
-    if market_sent.get("sentiment") == "cold":
-        sentiment_note = f"⚠️市场情绪偏冷({market_sent.get('detail','')})，建议仓位减半"
     
     # === 实时消息面预检（top5候选） ===
     news_context = ""
@@ -10133,9 +10266,29 @@ def call_model_decision(
         news_precheck_error = f"precheck_{type(exc).__name__}"
         news_context = ""
     
-    compact_candidates = candidates[:100] if strategy_suite == STRATEGY_SOURCE_PRESET_TEXT else candidates[:8]
-    # 自适应参数（市场情绪驱动）
-    adaptive = get_adaptive_params()
+    if strategy_suite == STRATEGY_SOURCE_PRESET_TEXT:
+        compact_candidates = candidates[:100]
+    elif niuone_only:
+        compact_candidates = candidates
+    else:
+        compact_candidates = candidates[:8]
+    inputs_started = time.monotonic()
+    # Independent read-only feeds share a critical path; model and order calls
+    # remain on the decision thread with its original absolute deadline.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        env_future = pool.submit(check_market_environment)
+        sentiment_future = pool.submit(check_market_sentiment)
+        intelligence_started = time.monotonic()
+        decision_intelligence_ctx = safe_decision_intelligence_context(
+            portfolio, compact_candidates, market_strategy_ctx, news_context,
+        )
+        intelligence_elapsed = time.monotonic() - intelligence_started
+        market_env, market_sent = env_future.result(), sentiment_future.result()
+    inputs_elapsed = time.monotonic() - inputs_started
+    adaptive = adaptive_params_for_sentiment(market_sent)
+    sentiment_note = ""
+    if market_sent.get("sentiment") == "cold":
+        sentiment_note = f"⚠️市场情绪偏冷({market_sent.get('detail','')})，建议仓位减半"
     # 多战法上下文：统计战法分布，给每个候选标注最优战法
     preset_strategy_text = current_preset_strategy_text()
     portfolio_positions = [p for p in (portfolio.get("positions") or []) if isinstance(p, dict)]
@@ -10222,6 +10375,7 @@ def call_model_decision(
                 f"外部确认调整:{c.get('external_context_adjustment','-')} "
             )
         elif is_niuone_strategy(strat):
+            c = complete_niuone_entry_fields(c)
             candidate_priority = niuone_portfolio_priority(c, strat)["score"]
             tide_detail = (
                 f"市场:{c.get('market_regime','-')}/{c.get('market_score','-')} "
@@ -10240,6 +10394,8 @@ def call_model_decision(
                 f"单笔预算:{c.get('per_trade_risk_budget_pct','-')}% "
                 f"动态仓位上限:{c.get('max_position_pct_by_risk','-')}% "
                 f"组合优先级:{candidate_priority} "
+                f"买点核验（turnover为换手率%，成交额分位为0–100，扩张和止损距离以ATR计）："
+                f"{json.dumps({key: c.get(key) for key in NIUONE_MODEL_ENTRY_FIELDS}, ensure_ascii=False, separators=(',', ':'))} "
                 f"消息面:{candidate_news_tone_for_decision(c)} "
             )
         cand_lines.append(
@@ -10289,12 +10445,11 @@ def call_model_decision(
         )
     held_candidates_section = "\n".join(held_candidate_lines) if held_candidate_lines else "（无当前持仓进入本轮候选池）"
     decision_portfolio = compact_portfolio_for_decision(portfolio)
-    decision_intelligence_ctx = safe_decision_intelligence_context(
-        portfolio,
-        compact_candidates,
-        market_strategy_ctx,
-        news_context,
-    )
+    attempt = portfolio.get('_decision_attempt')
+    if isinstance(attempt, dict):
+        attempt['intelligence'] = decision_intelligence_ctx
+        attempt['timing']['intelligence_elapsed_s'] = round(intelligence_elapsed, 3)
+        attempt['timing']['market_inputs_elapsed_s'] = round(inputs_elapsed, 3)
     if news_precheck_error:
         precheck_audit = decision_intelligence_ctx.setdefault(
             "news_precheck",
@@ -10335,7 +10490,7 @@ def call_model_decision(
         if preset_output_lines
         else ""
     )
-    prompt = f"""你是A股模拟账户交易决策器。账户初始资金100万，只做A股模拟交易，不是真实下单。
+    prompt = f"""你是A股模拟账户交易决策器。账户初始资金{float(portfolio.get('initial_cash') or INITIAL_CASH):g}元，只做A股模拟交易，不是真实下单。
 必须遵守：
 {trade_discipline_text}
 
@@ -10365,6 +10520,8 @@ def call_model_decision(
 
 当前账户JSON：
 {json.dumps(decision_portfolio, ensure_ascii=False)}
+手续费按账户 fee_schedule 计算：买卖双向佣金每笔取成交额×commission_rate与commission_min的较大者，双向过户费，卖出另计印花税；报价金额不等于含费支出，预留费用后才可买入100股整手。
+execution_preflight 是按扫描价、当前账户独立计算的风险数量上限，不是成交许可；未计入假设卖出所得，也不能将各股票上限同时用满。数量为0时说明当前快照连100股整手都不能容纳；持仓阶段升级、加仓资格、T+1、换仓、实时价格和其余硬风控仍以执行时复核为准，不能据此绕过。不存在预检数据时不得自行编造。
 
 {news_context}
 
@@ -10410,14 +10567,21 @@ def call_model_decision(
     if DECISION_REASONING_EFFORT:
         payload["reasoning_effort"] = DECISION_REASONING_EFFORT
 
-    result = request_chat_json_object(
-        base_url,
-        api_key,
-        payload,
-        MODEL,
-        max_parse_attempts=DECISION_JSON_MAX_PARSE_ATTEMPTS,
-        timeout=DECISION_REQUEST_TIMEOUT,
-    )
+    transport_started = time.monotonic()
+    if isinstance(attempt, dict):
+        attempt['timing']['transport_started_at'] = now_ts()
+        attempt['timing']['request_budget_s'] = 0.0
+    try:
+        request_budget = remaining_model_seconds(DECISION_REQUEST_TIMEOUT)
+        if isinstance(attempt, dict):
+            attempt['timing']['request_budget_s'] = round(request_budget, 3)
+        result = request_chat_json_object(
+            base_url, api_key, payload, MODEL,
+            max_parse_attempts=DECISION_JSON_MAX_PARSE_ATTEMPTS, timeout=DECISION_REQUEST_TIMEOUT,
+        )
+    finally:
+        if isinstance(attempt, dict):
+            attempt['timing']['transport_elapsed_s'] = round(time.monotonic() - transport_started, 2)
     result["model"] = MODEL
     result["provider"] = PROVIDER_DISPLAY_NAME
     result["market_guidance"] = compact_market_strategy_context(market_strategy_ctx)
@@ -11755,6 +11919,7 @@ def execute_actions(
                 exposure_label = "主题" if niuone_buy else "行业"
                 risk_persona = "niuone" if niuone_buy else "sector_tide"
                 if niuone_buy:
+                    candidate = complete_niuone_entry_fields(candidate)
                     niuone_entry_subroute = str(
                         candidate.get("niuone_entry_subroute") or ""
                     )
@@ -11854,20 +12019,10 @@ def execute_actions(
                     else sector_tide_risk_budget(regime)
                 )
                 single_limit_pct = (
-                    float(NIUONE_ABSOLUTE_POSITION_CAP_PCT[buy_strategy])
+                    niuone_opening_position_cap(buy_strategy, candidate, opening=old_qty <= 0)
                     if niuone_buy
                     else strategy_position_limit_pct(buy_strategy)
                 )
-                if (
-                    niuone_buy
-                    and old_qty <= 0
-                    and niuone_entry_subroute
-                    == NIUONE_MARKUP_MOMENTUM_PROBE_SUBROUTE
-                ):
-                    single_limit_pct = min(
-                        single_limit_pct,
-                        NIUONE_MARKUP_MOMENTUM_PROBE_POSITION_CAP_PCT,
-                    )
                 if niuone_buy and niuone_markup_scale_add:
                     if buy_strategy == "niu_emerging":
                         markup_stage_cap_pct = (
@@ -12077,6 +12232,7 @@ def execute_actions(
                     ),
                     existing_sector_risk_pct=existing_sector_risk_pct,
                     required_cash_pct=100.0 - tide_total_limit_pct,
+                    fee_schedule=account_fee_schedule(state),
                 )
                 maximum_permitted_shares = int(
                     risk_order_ceiling["maximum_permitted_shares"]
@@ -12215,7 +12371,7 @@ def execute_actions(
                     continue
             qty = shares
             gross = qty * float(price)
-            fees = calc_trade_fees(gross, "BUY")
+            fees = calc_trade_fees(gross, "BUY", state)
             total_cost = gross + fees["total_fee"]
             if total_cost > cash:
                 add_execution_block(
@@ -13169,7 +13325,7 @@ def execute_actions(
             position_after_trade_value = max(0.0, current_position_value - gross)
             position_after_trade_pct = position_pct_of_equity(position_after_trade_value, total_equity)
             total_position_after_trade_pct = position_pct_of_equity(max(0.0, current_market_value - gross), total_equity)
-            fees = calc_trade_fees(gross, "SELL")
+            fees = calc_trade_fees(gross, "SELL", state)
             net_proceeds = gross - fees["total_fee"]
             cost_basis = qty * avg_cost
             realized_pnl = net_proceeds - cost_basis
@@ -13940,9 +14096,6 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
     state["market_decision_context"] = compact_market_ctx
     frozen_prompt_version = active_frozen_prompt_strategy()
 
-    # 自适应参数
-    adaptive = get_adaptive_params()
-    
     raw_candidates = decision_candidate_rows(b1_payload)
     observed_candidates = observed_candidate_rows(b1_payload)
     candidates = [
@@ -14007,14 +14160,12 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
     if buy_budget_exceeded:
         trade_reason = f"{trade_reason}；日内亏损预算触发，仅允许SELL/HOLD"
     deferred_due_at = "" if trade_allowed else deferred_execution_due_at(schedule_slot)
-    market_env = check_market_environment()
-    market_sent = check_market_sentiment()
-    # 市场情绪过冷时降低仓位上限（模型自行判断，此处仅提示）
-    sentiment_note = ""
-    if market_sent["sentiment"] == "cold" and trade_allowed:
-        sentiment_note = f"⚠️市场情绪偏冷({market_sent['detail']})，建议仓位减半或不建仓"
     portfolio = enrich_portfolio(state)
     portfolio["_preset_position_policy_context"] = preset_position_policy_context(state)
+    if env_bool("DASHBOARD_EXECUTION_PREFLIGHT_ENABLED", False):
+        portfolio["_execution_preflight"] = preview_niuone_buy_capacity(state, candidates, market_strategy_ctx)
+    attempt_timing = {}
+    portfolio['_decision_attempt'] = {'timing': attempt_timing}
     has_open_positions = any(
         isinstance(pos, dict) and position_qty(pos) > 0
         for pos in (state.get("positions") or {}).values()
@@ -14027,10 +14178,13 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
         if not deferred_due_at and anchor is not None and anchor > datetime.now() + timedelta(seconds=5):
             raise ModelRequestExpired("decision_input_clock_invalid")
         expiry = decision_expiry(anchor) if anchor is not None else "invalid"
+        attempt_timing.update(signal_generated_at=generated_at, decision_expires_at=expiry,
+                              preparation_finished_at=now_ts())
         freshness = {"decision_expires_at": expiry}
         if decision_is_expired(freshness, datetime.now()):
             raise ModelRequestExpired("decision_input_expired")
         remaining = (datetime.fromisoformat(expiry) - datetime.now()).total_seconds()
+        attempt_timing['model_budget_s'] = round(min(DECISION_REQUEST_TIMEOUT, remaining), 2)
         with model_request_budget(min(DECISION_REQUEST_TIMEOUT, remaining)):
             resolved_decision = generate_decision(reason)
             resolved_decision.update(freshness)
@@ -14185,15 +14339,16 @@ def run_decision_after_b1(b1_payload: dict[str, Any], force: bool = False) -> di
             "provider": PROVIDER_DISPLAY_NAME,
             "error": f"{type(exc).__name__}: {exc}",
             "market_guidance": compact_market_ctx,
-            "decision_intelligence": safe_decision_intelligence_context(
-                portfolio if "portfolio" in locals() else enrich_portfolio(state),
-                candidates if "candidates" in locals() else [],
-                market_strategy_ctx,
-                "",
-            ),
+            # Record the inputs actually collected for this attempt. Fetching
+            # them again here would delay failure reporting and change its evidence.
+            "decision_intelligence": portfolio['_decision_attempt'].get('intelligence', {
+                'enabled': DECISION_INTELLIGENCE_ENABLED, 'status': 'not_collected_before_failure',
+            }),
         }
         executed = []
         state["last_error"] = decision["error"]
+    if attempt_timing:
+        decision['timing'] = dict(attempt_timing)
     if holding_cycle_only:
         decision["holding_cycle_only"] = True
         decision["decision_cycle_kind"] = decision_cycle_kind or "holding_fast"
@@ -14301,7 +14456,7 @@ def build_trade_rule_note() -> str:
         f"卤煮半仓、S1/S2/S3逃顶、出货五式、BBI/白线两日破位、白线死叉黄线。"
         f"板块潮汐按行业连续两日退潮、市场硬停止、时间窗、2R减半和2ATR跟踪退出。"
         f"牛牛试仓所属题材首次进入退幕即退出，3个交易日未延续右侧趋势也退出；成熟路径按龙头梯队、主线退幕、市场硬停止和时间窗退出；进攻/修复/防守试仓盘中达到0.75R先减仓50%，轮动试仓及成熟路径达到1R先减仓45%，余仓成本保护并按2ATR跟踪。"
-        f"买入按万一免五计费。"
+        f"交易费用按账户创建时冻结的手续费方案计算。"
     )
 
 
@@ -14430,11 +14585,12 @@ def get_dashboard_payload() -> dict[str, Any]:
     payload["strategy_performance"] = build_strategy_performance(state)
     payload["trade_rule_note"] = build_trade_rule_note()
     payload["fee_rule"] = {
-        "commission_rate": COMMISSION_RATE,
-        "commission_min": COMMISSION_MIN,
-        "stamp_duty_sell_rate": STAMP_DUTY_SELL_RATE,
-        "transfer_fee_rate": TRANSFER_FEE_RATE,
-        "label": "万一免五；买入=佣金+过户费，卖出=佣金+过户费+印花税",
+        **account_fee_schedule(state).to_dict(),
+        "label": (
+            f"佣金万{account_fee_schedule(state).commission_rate * 10000:g}，"
+            f"每笔最低{account_fee_schedule(state).commission_min:g}元；"
+            "买入=佣金+过户费，卖出=佣金+过户费+印花税"
+        ),
     }
     payload["decision_model"] = MODEL
     payload["decision_provider"] = PROVIDER_DISPLAY_NAME

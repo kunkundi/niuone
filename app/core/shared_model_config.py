@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 try:
     import yaml
@@ -55,6 +56,17 @@ class SharedModelConfig:
 
 def _value(values: Mapping[str, Any], name: str) -> str:
     return str(values.get(name) or "").strip()
+
+
+def model_provider_display_name(base_url: str) -> str:
+    """Identify official OpenAI without exposing endpoint paths or credentials."""
+    try:
+        parsed = urlsplit(str(base_url or "").strip())
+        if parsed.scheme == "https" and parsed.hostname == "api.openai.com":
+            return "OpenAI"
+    except ValueError:
+        pass
+    return "Crossdesk.ccwu.cc"  # Preserve the legacy gateway display contract.
 
 
 def resolve_shared_model_config(
