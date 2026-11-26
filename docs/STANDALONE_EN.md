@@ -182,7 +182,7 @@ docker volume ls --filter label=com.docker.compose.volume=niuone-data
 
 ## Model and Data-Source Configuration
 
-Cron Scheduler refreshes existing industry and concept classifications at 16:40 Beijing time on trading days. Configure another after-close time with `DASHBOARD_MARKET_CLASSIFICATION_CRON` in Settings; it applies to the next run. See the [operations manual](OPERATIONS_EN.md#32-market-data-and-fund-flow-settings).
+Cron Scheduler verifies industry and concept classifications at 16:40 Beijing time on trading days to create the first closing snapshot or update an existing one. Configure another after-close time with `DASHBOARD_MARKET_CLASSIFICATION_CRON` in Settings for the next run. See the [operations manual](OPERATIONS_EN.md#32-market-data-and-fund-flow-settings).
 
 NiuOne uses large language models for market summaries and trading decisions.
 

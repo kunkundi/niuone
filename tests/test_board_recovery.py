@@ -122,16 +122,20 @@ class BoardRecoveryTests(unittest.TestCase):
         self.assertFalse(lock.exists())
         self.assertEqual(boards.read_eastmoney_board_snapshot(self.path).captured_at,self.day+" 15:00:00")
 
-    def test_cold_start_and_holidays_do_not_trigger_chart_requests(self):
-        with patch.object(recovery,"fetch_exchange_listing") as listing:
+    def test_cold_start_requests_listings_only_after_a_confirmed_trading_close(self):
+        missing = self.directory / "missing.json"
+        with patch.object(recovery, "fetch_exchange_listing", side_effect=OSError("offline")) as listing:
             with patch.object(recovery,"trading_day_status",return_value={"calendar_cached":False}):
                 recovery.recover_if_due(self.path,self.now)
             with patch.object(recovery,"trading_day_status",return_value={"calendar_cached":True,"is_trading_day":False}):
                 recovery.recover_if_due(self.path,self.now)
             with patch.object(recovery,"trading_day_status",return_value={"calendar_cached":True,"is_trading_day":True,"date":self.day}):
-                recovery.recover_if_due(self.directory/"missing.json",self.now)
-                recovery.recover_if_due(self.path,self.now.replace(hour=10))
-        listing.assert_not_called()
+                recovery.recover_if_due(missing, self.now.replace(hour=10))
+                listing.assert_not_called()
+                with self.assertRaises(OSError):
+                    recovery.recover_if_due(missing, self.now)
+        listing.assert_called_once_with({self.day})
+        self.assertFalse(missing.exists())
 
     def test_failed_recovery_releases_lease_and_keeps_published_bytes(self):
         before = self.path.read_bytes()

@@ -1,4 +1,4 @@
-"""Rebuild an existing Eastmoney classification snapshot outside the live scan."""
+"""Build a verified closing Eastmoney classification snapshot outside the live scan."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -85,7 +85,7 @@ def get_chart(query: str, deadline: float) -> tuple[int, list[Mapping[str, Any]]
     raise EastmoneyBoardError("classification request failed or exceeded its budget") from cause
 
 
-def verified_snapshot(previous: EastmoneyBoardSnapshot, listed: set[str], session: str, *,
+def verified_snapshot(previous: EastmoneyBoardSnapshot | None, listed: set[str], session: str, *,
                       now: datetime, deadline: float, chart: Chart = get_chart) -> EastmoneyBoardSnapshot:
     """Old codes identify requests; all labels and observation times come from new responses."""
     if not MIN_LISTED <= len(listed) <= MAX_CODES:
@@ -121,7 +121,7 @@ def verified_snapshot(previous: EastmoneyBoardSnapshot, listed: set[str], sessio
     # Use old identifiers only when needed to account for a published shortfall.
     for group in SEGMENTS:
         current = {code for code in candidates if _segment(code) == group}
-        if len(current) < totals[group]:
+        if len(current) < totals[group] and previous is not None:
             historical = sorted(code for code in previous.stocks if code not in current and _segment(code) == group)
             if len(current) + len(historical) > totals[group]:
                 # Some old IDs have disappeared. Ask the same source which still resolve.
@@ -180,16 +180,14 @@ def recover_if_due(path: Path, now: datetime) -> str:
         return "无已确认的当日交易时段"
     session = str(status["date"])
     previous = read_eastmoney_board_snapshot(path)
-    if previous is None:
-        return "等待首次完整分类快照"
-    if previous.captured_at >= session + " 15:00:00":
+    if previous is not None and previous.captured_at >= session + " 15:00:00":
         return "当日收盘分类已就绪"
     lease = FileLease(path.with_name(path.name + ".recover.lock"), stale_after_seconds=300)
     if not lease.acquire():
         return "分类刷新进行中"
     try:
         previous = read_eastmoney_board_snapshot(path)
-        if previous is None or previous.captured_at >= session + " 15:00:00":
+        if previous is not None and previous.captured_at >= session + " 15:00:00":
             return "无需刷新"
         deadline = time.monotonic() + JOB_BUDGET_SECONDS
         listed = {code for code, _ in fetch_exchange_listing({session})}
