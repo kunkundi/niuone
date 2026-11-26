@@ -75,8 +75,10 @@ def get_chart(query: str, deadline: float) -> tuple[int, list[Mapping[str, Any]]
             total = data.get("total") if isinstance(data, dict) else None
             if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
                 raise EastmoneyBoardError("invalid classification response")
-            if type(total) is not int or not 0 < len(rows) <= total <= MAX_CODES:
+            if type(total) is not int or not len(rows) <= total <= MAX_CODES:
                 raise EastmoneyBoardError("invalid classification total")
+            if not rows and (total != 0 or not query.startswith("i:")):
+                raise EastmoneyBoardError("empty classification market response")
             return total, rows
         except (OSError, ValueError, EastmoneyBoardError) as exc:
             cause = exc
@@ -88,7 +90,7 @@ def verified_snapshot(previous: EastmoneyBoardSnapshot, listed: set[str], sessio
     """Old codes identify requests; all labels and observation times come from new responses."""
     if not MIN_LISTED <= len(listed) <= MAX_CODES:
         raise EastmoneyBoardError("incomplete exchange stock list")
-    candidates = set(previous.stocks) | listed
+    candidates = set(listed)
 
     def fetch(query: str):
         if time.monotonic() >= deadline:
@@ -107,15 +109,36 @@ def verified_snapshot(previous: EastmoneyBoardSnapshot, listed: set[str], sessio
             candidates.update(codes)
             totals[group] = total
 
-    if (len(candidates) != totals[EASTMONEY_A_SHARE_FILTER] or
-            any(sum(_segment(code) == group for code in candidates) != totals[group] for group in SEGMENTS)):
+    def lookup(codes: list[str]) -> list[Mapping[str, Any]]:
+        query = ",".join(f"i:{int(code.startswith('6'))}.{code}" for code in codes)
+        total, rows = fetch(query)
+        observed = {_verify_row(row) for row in rows}
+        if total != len(rows) or len(observed) != total or not observed.issubset(codes):
+            raise EastmoneyBoardError("invalid classification batch identities")
+        return rows
+
+    # Current listings and source samples take precedence in each segment.
+    # Use old identifiers only when needed to account for a published shortfall.
+    for group in SEGMENTS:
+        current = {code for code in candidates if _segment(code) == group}
+        if len(current) < totals[group]:
+            historical = sorted(code for code in previous.stocks if code not in current and _segment(code) == group)
+            if len(current) + len(historical) > totals[group]:
+                # Some old IDs have disappeared. Ask the same source which still resolve.
+                for start in range(0, len(historical), BATCH_SIZE):
+                    current.update(row["f12"] for row in lookup(historical[start:start + BATCH_SIZE]))
+            else:
+                current.update(historical)
+        if len(current) != totals[group]:
+            raise EastmoneyBoardError("classification universe does not match the published market totals")
+        candidates.update(current)
+    if len(candidates) != totals[EASTMONEY_A_SHARE_FILTER]:
         raise EastmoneyBoardError("classification universe does not match the published market totals")
 
     def batch(codes: list[str]) -> list[Mapping[str, Any]]:
-        query = ",".join(f"i:{int(code.startswith('6'))}.{code}" for code in codes)
-        total, rows = fetch(query)
-        if total != len(rows) or total != len(codes) or {_verify_row(row) for row in rows} != set(codes):
-            raise EastmoneyBoardError("incomplete or mismatched classification batch")
+        rows = lookup(codes)
+        if len(rows) != len(codes):
+            raise EastmoneyBoardError("incomplete classification batch")
         return rows
 
     ordered = sorted(candidates)
