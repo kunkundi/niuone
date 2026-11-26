@@ -76,7 +76,7 @@ def fetch_tencent_spot_snapshot(
     chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
     industry_map = _industry_map(Path(dashboard_home))
 
-    def fetch_chunk(chunk: list[str]) -> list[dict[str, Any]]:
+    def fetch_chunk(chunk: list[str]) -> tuple[list[dict[str, Any]], set[str]]:
         remaining = deadline - time.monotonic()
         if remaining <= 1:
             raise TimeoutError("腾讯行情总时限已用尽")
@@ -92,21 +92,30 @@ def fetch_tencent_spot_snapshot(
         with urlopen(req, timeout=min(6, max(1, remaining))) as response:
             body = response.read().decode("gb18030", errors="ignore")
         output: list[dict[str, Any]] = []
+        requested = set(chunk)
+        observed: set[str] = set()
         for raw in body.split(";"):
-            match = re.search(r'="(.*)"', raw, re.S)
+            match = re.fullmatch(r'\s*v_((?:sh|sz|bj)\d{6})="([^"]*)"\s*', raw)
             if not match:
                 continue
-            parts = match.group(1).split("~")
+            symbol, quote = match.groups()
+            parts = quote.split("~")
             if len(parts) < 38:
                 continue
             code, name = _normalize_code(parts[2]), parts[1].strip()
-            if not _is_full_market_a_share(code, name):
+            if symbol not in requested or symbol[2:] != code or not name or not _is_full_market_a_share(code, name):
                 continue
             if not report_common.is_bse_a_share(code) and code not in listed_codes:
                 continue
-            price = _safe_float(parts[3])
+            price = _safe_float(parts[3], -1.0)
             prev_close = _safe_float(parts[4])
-            if price <= 0 or prev_close <= 0:
+            # A suspended listing may explicitly report zero and a valid previous close.
+            if price < 0 or prev_close <= 0:
+                continue
+            if code in observed:
+                raise ValueError("重复的腾讯证券报价")
+            observed.add(code)
+            if price == 0:
                 continue
             quote_time = parts[30] if re.fullmatch(r"\d{14}", parts[30]) else ""
             quote_ts = 0
@@ -133,9 +142,10 @@ def fetch_tencent_spot_snapshot(
                 "industry": industry_map.get(code) or "所属方向待复核",
                 "quote_ts": quote_ts,
             })
-        return output
+        return output, observed
 
     rows: list[dict[str, Any]] = []
+    observed_codes: set[str] = set()
     errors: list[str] = []
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
@@ -143,7 +153,9 @@ def fetch_tencent_spot_snapshot(
         try:
             for future in as_completed(futures, timeout=max(1, deadline - time.monotonic())):
                 try:
-                    rows.extend(future.result())
+                    batch_rows, batch_codes = future.result()
+                    rows.extend(batch_rows)
+                    observed_codes.update(batch_codes)
                 except Exception as exc:
                     errors.append(f"{type(exc).__name__}: {exc}")
         except FuturesTimeoutError:
@@ -159,4 +171,7 @@ def fetch_tencent_spot_snapshot(
         if errors:
             detail += f"；{errors[0]}"
         return [], detail
+    missing = listed_codes - observed_codes
+    if missing:
+        return [], f"腾讯全市场行情缺少 {len(missing)} 只沪深在市证券，等待完整快照"
     return result, None
