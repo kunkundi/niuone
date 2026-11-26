@@ -100,10 +100,7 @@ def _model_response(req: urllib.request.Request, api_key: str, opener: UrlOpen,
     # Admission and spacing stay credential-wide; a provider 429 only cools
     # down the model that returned it.
     model_scope = rate_limit_scope(scope, model) if model else None
-    # Queue for as long as the result would still be usable, bounded by
-    # MAX_QUEUE_SECONDS for callers that run outside an explicit budget. The
-    # queue window is a floor, not a ceiling: a request that must wait longer
-    # than its own budget is abandoned instead of admitted too late to finish.
+    # Bound queueing by both the caller's deadline and the shared queue limit.
     queue_deadline = min(deadline, time.monotonic() + MAX_QUEUE_SECONDS)
     while True:
         try:
@@ -117,10 +114,9 @@ def _model_response(req: urllib.request.Request, api_key: str, opener: UrlOpen,
             if exc.reason not in {"spacing", "busy"} or time.monotonic() >= queue_deadline:
                 raise
             now = time.monotonic()
-            # Leave room for the round trip: waiting for a slot that would be
-            # admitted with no budget left only burns the caller's own deadline.
-            if exc.retry_after > 0 and now + exc.retry_after >= deadline:
-                raise ModelAdmissionError(exc.reason, exc.retry_after) from None
+            # Spacing has a fixed end. A busy lease can be released at any time.
+            if exc.reason == "spacing" and now + exc.retry_after >= queue_deadline:
+                raise
             time.sleep(min(0.1, max(0.0, queue_deadline - now)))
     success = False
     try:
