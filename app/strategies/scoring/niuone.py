@@ -8,7 +8,7 @@ from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from ..niuone_risk import (
     NIUONE_ABSOLUTE_POSITION_CAP_PCT,
@@ -1500,7 +1500,7 @@ def _theme_state(
 
 
 def build_niuone_context(
-    prepared_items: list[dict[str, Any]],
+    prepared_items: Iterable[dict[str, Any]],
     *,
     reference_pool_count: int | None = None,
     market_snapshot: dict[str, Any] | None = None,
@@ -1522,7 +1522,9 @@ def build_niuone_context(
     members: list[dict[str, Any]] = []
     insufficient_history_count = 0
     invalid_metrics_count = 0
+    prepared_count = 0
     for item in prepared_items:
+        prepared_count += 1
         raw_rows = item.get("rows")
         rows = (
             raw_rows
@@ -1539,10 +1541,10 @@ def build_niuone_context(
             continue
         members.append(metric)
     resolved_reference_pool_count = max(
-        len(prepared_items),
+        prepared_count,
         int(reference_pool_count or 0),
     )
-    unavailable_kline_count = max(0, resolved_reference_pool_count - len(prepared_items))
+    unavailable_kline_count = max(0, resolved_reference_pool_count - prepared_count)
     resolved_theme_basis = str(theme_basis or "industry_proxy").strip() or "industry_proxy"
     previous_context = previous_context if isinstance(previous_context, dict) else {}
     previous_version = previous_context.get("version")
@@ -2397,7 +2399,7 @@ def build_niuone_context(
         ),
         "coverage_diagnostics": {
             "reference_pool_count": resolved_reference_pool_count,
-            "prepared_stock_count": len(prepared_items),
+            "prepared_stock_count": prepared_count,
             "covered_stock_count": covered_count,
             "uncovered_stock_count": uncovered_count,
             "reasons": coverage_reasons,

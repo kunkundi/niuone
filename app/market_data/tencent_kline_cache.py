@@ -17,7 +17,8 @@ import time
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +104,10 @@ def _open_database(path: Path) -> sqlite3.Connection:
             error_summary TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL DEFAULT ''
         );
+        CREATE TABLE IF NOT EXISTS prewarm_targets (
+            target_date TEXT NOT NULL, symbol TEXT NOT NULL,
+            PRIMARY KEY (target_date, symbol)
+        );
         """
     )
     prewarm_columns = {
@@ -182,6 +187,51 @@ def normalize_kline_rows(rows: Iterable[Mapping[str, Any]], *, limit: int = DEFA
     return ordered[-max(1, int(limit or DEFAULT_KLINE_COUNT)):]
 
 
+def _unit_factor_dates(raw: bytes, symbol: str) -> tuple[str, ...]:
+    """Accept only a complete, security-bound forward-factor history of exact ones."""
+    if not raw or len(raw) > 256 * 1024 or not re.fullmatch(r"(sh|sz)\d{6}", symbol):
+        return ()
+    try:
+        text = raw.decode("utf-8")
+        prefix = re.match(r"\s*var\s+" + re.escape(symbol) + r"qfq\s*=\s*", text)
+        if not prefix:
+            return ()
+        data, end = json.JSONDecoder().raw_decode(text, prefix.end())
+        tail = text[end:].strip().removeprefix(";").strip()
+        if tail and not (tail.startswith("/*") and tail.find("*/") == len(tail) - 2):
+            return ()
+        rows = data["data"]
+        if not isinstance(rows,list) or type(data["total"]) is not int or not 2 <= len(rows) == data["total"] <= 4096:
+            return ()
+        dates = []
+        for row in rows:
+            if not isinstance(row,dict) or set(row) != {"d","f"}:
+                return ()
+            factor, stamp = row["f"], row["d"]
+            if not isinstance(factor,str) or not re.fullmatch(r"\d{1,20}(?:\.\d{1,40})?",factor) or Decimal(factor) != 1:
+                return ()
+            if not isinstance(stamp,str) or date.fromisoformat(stamp).isoformat()!=stamp:
+                return ()
+            dates.append(stamp)
+        if dates != sorted(set(dates), reverse=True) or dates[-1] != "1900-01-01":
+            return ()
+        return tuple(dates)
+    except (UnicodeError, ValueError, TypeError, KeyError):
+        return ()
+
+
+def _fetch_unit_factor_dates(symbol: str, timeout_seconds: float) -> tuple[str, ...]:
+    req = urllib.request.Request(
+        f"https://finance.sina.com.cn/realstock/company/{symbol}/qfq.js",
+        headers={"Referer": "https://finance.sina.com.cn/", "User-Agent": USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=min(6.0,max(1.0,timeout_seconds))) as response:
+            return _unit_factor_dates(response.read(256*1024+1), symbol)
+    except (OSError, ValueError):
+        return ()
+
+
 def fetch_tencent_daily_klines(
     symbol: str,
     count: int = DEFAULT_KLINE_COUNT,
@@ -199,6 +249,7 @@ def fetch_tencent_daily_klines(
     query = urllib.parse.urlencode({
         "param": f"{normalized_symbol},day,,,{bounded_count},qfq",
     })
+    unit_dates: tuple[str, ...] | None = None
     for base_url in TENCENT_KLINE_URLS:
         request = urllib.request.Request(
             f"{base_url}?{query}",
@@ -221,7 +272,14 @@ def fetch_tencent_daily_klines(
             continue
         data = payload.get("data")
         symbol_payload = data.get(normalized_symbol) if isinstance(data, Mapping) else None
-        raw_rows = symbol_payload.get("qfqday") if isinstance(symbol_payload, Mapping) else None
+        if not isinstance(symbol_payload, Mapping):
+            continue
+        raw_rows = symbol_payload.get("qfqday")
+        generic = not raw_rows
+        if generic:
+            raw_rows = symbol_payload.get("day")
+            if not raw_rows or payload.get("code",0) != 0 or symbol_payload.get("hfqday"):
+                continue
         parsed = []
         for item in raw_rows or []:
             if not isinstance(item, list) or len(item) < 6:
@@ -235,8 +293,16 @@ def fetch_tencent_daily_klines(
                 "volume": item[5],
             })
         normalized = normalize_kline_rows(parsed, limit=bounded_count)
-        if normalized:
-            return normalized
+        if not normalized:
+            continue
+        if generic:
+            # Tencent can label unchanged prices "day" even on a qfq request.
+            # Use the original numbers only with an independent identity proof.
+            if unit_dates is None:
+                unit_dates = _fetch_unit_factor_dates(normalized_symbol,timeout_seconds)
+            if not unit_dates or unit_dates[-2] > normalized[0]["date"] or unit_dates[0] > normalized[-1]["date"]:
+                continue
+        return normalized
     return []
 
 
@@ -299,15 +365,27 @@ def fetch_eastmoney_daily_klines(
     return normalize_kline_rows(parsed, limit=bounded_count)
 
 
+class IncompleteDailySeries(ValueError):
+    """All responding providers returned too few rows or an out-of-window date."""
+
+
 def fetch_a_share_daily_klines(
     symbol: str,
     count: int = DEFAULT_KLINE_COUNT,
+    *,
+    accepted_last_dates: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Fetch qfq daily bars with bounded Tencent-to-Eastmoney fallback."""
+    """Select the first same-adjustment source that also meets the warmup window."""
+    incomplete = False
     for fetcher in (fetch_tencent_daily_klines, fetch_eastmoney_daily_klines):
         rows = fetcher(symbol, count)
         if rows:
+            if accepted_last_dates and (len(rows) < 30 or rows[-1]["date"] not in accepted_last_dates):
+                incomplete = True
+                continue
             return rows
+    if incomplete:
+        raise IncompleteDailySeries("insufficient_or_stale_series")
     return []
 
 
@@ -530,7 +608,9 @@ def prewarm_completed_for_date(
     connection = _open_database(cache_path)
     try:
         row = connection.execute(
-            "SELECT requested_count, success_count, status FROM prewarm_runs WHERE target_date=?",
+            "SELECT requested_count, success_count, status, "
+            "(SELECT count(*) FROM prewarm_targets t WHERE t.target_date=r.target_date) AS targets "
+            "FROM prewarm_runs r WHERE target_date=?",
             (str(target_date)[:10],),
         ).fetchone()
     finally:
@@ -539,7 +619,7 @@ def prewarm_completed_for_date(
         return False
     requested = int(row["requested_count"] or 0)
     success = int(row["success_count"] or 0)
-    return requested > 0 and success / requested >= max(0.0, min(1.0, minimum_coverage))
+    return requested > 0 and row['targets'] == requested and success / requested >= max(0.0, min(1.0, minimum_coverage))
 
 
 def kline_cache_readiness(
@@ -599,6 +679,19 @@ def kline_cache_readiness(
                 "duration_seconds, error_summary, updated_at "
                 "FROM prewarm_runs ORDER BY target_date DESC, started_at DESC LIMIT 1"
             ).fetchone()
+            manifest_count = 0
+            if run:
+                run_day = run['target_date']
+                manifest_count = connection.execute('SELECT count(*) FROM prewarm_targets WHERE target_date=?', (run_day,)).fetchone()[0]
+                if manifest_count:
+                    date_clause = (f" AND s.last_trade_date IN ({placeholders})" if accepted else '')
+                    if accepted:
+                        date_clause += " AND (s.last_trade_date=? OR s.fetched_at >= s.last_trade_date || ' 15:00:00')"
+                    fresh_count = connection.execute(
+                        'SELECT count(*) FROM prewarm_targets t JOIN kline_series s ON s.symbol=t.symbol '
+                        'WHERE t.target_date=? AND s.row_count>=?' + date_clause,
+                        (run_day,max(1,int(min_rows or 1)),*sorted(accepted),*([max(run_day,*accepted)] if accepted else [])),
+                    ).fetchone()[0]
         finally:
             connection.close()
     except (OSError, sqlite3.Error) as exc:
@@ -613,9 +706,10 @@ def kline_cache_readiness(
     completed_count = int(run["completed_count"] or 0) if run else 0
     success_count = int(run["success_count"] or 0) if run else 0
     failure_count = int(run["failure_count"] or 0) if run else 0
-    denominator = requested_count or cached_count
+    denominator = manifest_count or max(requested_count, cached_count)
     coverage = fresh_count / denominator if denominator > 0 else 0.0
-    ready = denominator > 0 and coverage >= max(0.0, min(1.0, minimum_coverage))
+    ready = (denominator > 0 and manifest_count == requested_count and manifest_count > 0
+             and coverage >= max(0.0, min(1.0, minimum_coverage)))
     status = str(run["status"] or "unknown") if run else "untracked"
     if ready:
         error_code = ""
@@ -705,15 +799,18 @@ def prewarm_kline_cache(
         for value in (accepted_last_dates or set())
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value)[:10])
     }
-    fresh_symbols = set(
-        load_kline_series_map(
-            unique,
-            path=cache_path,
-            accepted_last_dates=accepted,
-            min_rows=30,
-            count=count,
-        )
-    ) if accepted and cache_path.exists() else set()
+    fresh_symbols = set()
+    if accepted and cache_path.exists():
+        conn = _open_database(cache_path)
+        try:
+            placeholders = ','.join('?' for _ in accepted)
+            fresh_symbols = set(unique).intersection(row[0] for row in conn.execute(
+                'SELECT symbol FROM kline_series WHERE row_count>=30 '
+                f'AND last_trade_date IN ({placeholders}) '
+                "AND (last_trade_date=? OR fetched_at >= last_trade_date || ' 15:00:00')",
+                (*sorted(accepted), run_date)))
+        finally:
+            conn.close()
     pending_symbols = [symbol for symbol in unique if symbol not in fresh_symbols]
     worker_count = max(
         1,
@@ -724,6 +821,10 @@ def prewarm_kline_cache(
     connection = _open_database(cache_path)
     try:
         with connection:
+            connection.execute('DELETE FROM prewarm_targets WHERE target_date=?', (run_date,))
+            connection.executemany('INSERT INTO prewarm_targets(target_date,symbol) VALUES(?,?)', ((run_date,s) for s in unique))
+            connection.execute('DELETE FROM prewarm_targets WHERE target_date NOT IN '
+                               '(SELECT DISTINCT target_date FROM prewarm_targets ORDER BY target_date DESC LIMIT 5)')
             connection.execute(
                 """
                 INSERT INTO prewarm_runs(
@@ -751,10 +852,18 @@ def prewarm_kline_cache(
         last_error = "empty_response"
         for attempt in range(max(1, int(max_attempts or 1))):
             try:
-                rows = normalize_kline_rows(active_fetcher(symbol, count), limit=count)
+                raw = (fetch_a_share_daily_klines(symbol, count, accepted_last_dates=accepted)
+                       if fetcher is None and accepted else active_fetcher(symbol, count))
+                rows = normalize_kline_rows(raw, limit=count)
+            except IncompleteDailySeries:
+                rows = []
+                last_error = 'insufficient_or_stale_series'
             except Exception as exc:
                 rows = []
                 last_error = type(exc).__name__
+            if rows and accepted and (len(rows) < 30 or rows[-1]['date'] not in accepted):
+                rows = []
+                last_error = 'insufficient_or_stale_series'
             if rows:
                 return symbol, rows, ""
             if attempt + 1 < max_attempts:

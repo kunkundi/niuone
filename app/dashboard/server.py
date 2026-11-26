@@ -14,6 +14,7 @@ import sqlite3
 import time
 import subprocess
 import sys
+import tempfile
 import threading
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -168,7 +169,7 @@ from screening.niuone_mainline_cache import (
     write_niuone_mainline_cache,
     write_niuone_mainline_summary_cache,
 )
-from screening.niuone_minute import NiuOneMinuteEngine
+from screening.niuone_minute import DEFAULT_MAX_QUOTE_AGE_SECONDS, NiuOneMinuteEngine
 from screening.stock_universe import (
     DEFAULT_STOCK_UNIVERSE,
     STOCK_UNIVERSE_ENV,
@@ -445,6 +446,9 @@ PRACTICE_EQUITY_HEARTBEAT_LOCK = threading.Lock()
 PRACTICE_EQUITY_HEARTBEAT_THREAD: threading.Thread | None = None
 PRACTICE_EQUITY_HEARTBEAT_POLL_SECONDS = 5.0
 INDUSTRY_FLOW_HISTORY_LOCK = threading.RLock()
+# Eastmoney drops concurrent connections with an empty reply, so every helper
+# that may hit its board endpoints runs one at a time in this process.
+INDUSTRY_FLOW_UPSTREAM_LOCK = threading.RLock()
 INDUSTRY_FLOW_SAMPLER_THREAD: threading.Thread | None = None
 MARKET_BREADTH_HISTORY_LOCK = threading.RLock()
 MARKET_BREADTH_REFRESH_LOCK = threading.Lock()
@@ -844,6 +848,24 @@ ENV_CONFIG_SCHEMA: list[dict[str, Any]] = [
 
     {"name": "DASHBOARD_DECISION_MAX_TOKENS", "label": "模型最大输出长度", "group": "模型配置", "kind": "max_tokens", "default": DEFAULT_MODEL_MAX_TOKENS, "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_TIMEOUT", "label": "买卖决策请求超时", "group": "任务调度", "kind": "int", "default": "180", "effect": "next_run"},
+    {
+        "name": "DASHBOARD_MODEL_MAX_CONCURRENCY",
+        "label": "模型请求并发数",
+        "group": "模型配置",
+        "kind": "int",
+        "default": "3",
+        "effect": "next_run",
+        "min": "1",
+        "max": "32",
+        "help_title": "影响范围",
+        "help_summary": "控制同一模型凭证同时进行的请求上限，影响选股、消息面预检和买卖决策的排队等待。",
+        "help_items": [
+            "调高可缩短排队：多个候选或决策不再互相等待前一个请求结束。",
+            "请求间隔会随并发数自动收窄，避免并发提高后总吞吐仍被间隔卡住。",
+            "调得过高会触发上游限流，反而进入 60 秒起的冷却等待。",
+        ],
+        "help_footer": "默认 3 适用于大多数网关额度。若额度明确更高，可逐步上调并观察是否出现限流冷却。",
+    },
     {"name": "DASHBOARD_PROMPT_REFINEMENT_MAX_CONCURRENCY", "label": "文字策略细化并发数", "group": "任务调度", "kind": "int", "default": "1", "effect": "restart", "min": "1", "max": "2"},
     {"name": "DASHBOARD_DECISION_INTELLIGENCE_ENABLED", "label": "启用综合决策参考", "group": "综合决策参考", "kind": "bool", "default": "1", "effect": "next_run"},
     {"name": "DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS", "label": "决策参考缓存秒数", "group": "综合决策参考", "kind": "int", "default": "75", "effect": "next_run"},
@@ -887,6 +909,8 @@ ENV_CONFIG_SCHEMA: list[dict[str, Any]] = [
     {"name": "DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED", "label": "启用 Telegram 通知", "group": "交易通知", "kind": "bool", "default": "0", "effect": "runtime"},
     {"name": "DASHBOARD_TELEGRAM_BOT_TOKEN", "label": "Telegram Bot Token", "group": "交易通知", "kind": "secret", "default": "", "effect": "runtime"},
     {"name": "DASHBOARD_TELEGRAM_CHAT_ID", "label": "Telegram Chat ID", "group": "交易通知", "kind": "text", "default": "", "effect": "runtime"},
+    {"name": "DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED", "label": "启用 Server酱通知", "group": "交易通知", "kind": "bool", "default": "0", "effect": "runtime"},
+    {"name": "DASHBOARD_SERVERCHAN_SENDKEY", "label": "Server酱 SendKey", "group": "交易通知", "kind": "secret", "default": "", "effect": "runtime"},
 
     {"name": "CROSSDESK_BASE_URL", "label": "Crossdesk Base URL", "group": "上游模型覆盖", "kind": "text", "default": "", "effect": "next_run"},
     {"name": "CROSSDESK_API_KEY", "label": "Crossdesk API Key", "group": "上游模型覆盖", "kind": "secret", "default": "", "effect": "next_run"},
@@ -965,6 +989,7 @@ ADMIN_VISIBLE_ENV_NAMES = [
     "DASHBOARD_DECISION_API_KEY",
     "DASHBOARD_DECISION_MAX_TOKENS",
     "DASHBOARD_DECISION_TIMEOUT",
+    "DASHBOARD_MODEL_MAX_CONCURRENCY",
     "DASHBOARD_DECISION_INTELLIGENCE_ENABLED",
     "DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS",
     "DASHBOARD_DECISION_INTELLIGENCE_MAX_ITEMS",
@@ -1006,6 +1031,8 @@ ADMIN_VISIBLE_ENV_NAMES = [
     "DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED",
     "DASHBOARD_TELEGRAM_BOT_TOKEN",
     "DASHBOARD_TELEGRAM_CHAT_ID",
+    "DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED",
+    "DASHBOARD_SERVERCHAN_SENDKEY",
     PRACTICE_SCHEDULE_TIMES_ENV,
     PRACTICE_FAST_CYCLE_ENABLED_ENV,
     PRACTICE_FAST_CYCLE_INTERVAL_ENV,
@@ -1052,6 +1079,7 @@ TRADER_RUNTIME_ENV_NAMES = {
     "DASHBOARD_DECISION_API_KEY",
     "DASHBOARD_DECISION_MAX_TOKENS",
     "DASHBOARD_DECISION_TIMEOUT",
+    "DASHBOARD_MODEL_MAX_CONCURRENCY",
     "DASHBOARD_DECISION_INTELLIGENCE_ENABLED",
     "DASHBOARD_DECISION_INTELLIGENCE_TTL_SECONDS",
     "DASHBOARD_DECISION_INTELLIGENCE_MAX_ITEMS",
@@ -1352,6 +1380,8 @@ def _runtime_storage_status() -> dict[str, Any]:
 
 def market_data_readiness(now: datetime | None = None) -> dict[str, Any]:
     """Build the public, non-sensitive deployment and market-data readiness view."""
+    from app.market_data.listing_cache import catalog_readiness
+
     current = now or current_cn_datetime()
     accepted_dates = accepted_kline_dates_for_dashboard(current)
     cache = kline_cache_readiness(
@@ -1364,6 +1394,7 @@ def market_data_readiness(now: datetime | None = None) -> dict[str, Any]:
     except (TypeError, ValueError):
         active_strategy = "invalid"
     requires_full_cache = practice_scan_requires_full_kline_cache()
+    listing = catalog_readiness(CRON_OUTPUT_DIR / 'a_share_listing_latest.json', current_cn_date_key(current))
     storage = _runtime_storage_status()
     offset = datetime.now().astimezone().utcoffset()
     timezone_ok = offset == timedelta(hours=8)
@@ -1373,7 +1404,7 @@ def market_data_readiness(now: datetime | None = None) -> dict[str, Any]:
         configured_workers = 6
     cpu_count = max(1, int(os.cpu_count() or 1))
     effective_workers = max(1, min(16, configured_workers, cpu_count * 2))
-    data_ready = bool(cache.get("ready")) or not requires_full_cache
+    data_ready = (bool(cache.get("ready")) and listing['ready']) or not requires_full_cache
     blockers = []
     warnings = []
     if requires_full_cache and not cache.get("ready"):
@@ -1383,6 +1414,8 @@ def market_data_readiness(now: datetime | None = None) -> dict[str, Any]:
             blockers.append("kline_prewarm_disabled")
         else:
             blockers.append(str(cache.get("error_code") or "kline_cache_incomplete"))
+    if requires_full_cache and not listing['ready']:
+        blockers.append('exchange_listing_unavailable')
     if not storage["writable"]:
         blockers.append("runtime_storage_not_writable")
     elif storage["containerized"] and not storage["persistent_storage_detected"]:
@@ -1418,6 +1451,7 @@ def market_data_readiness(now: datetime | None = None) -> dict[str, Any]:
         "requires_full_kline_cache": requires_full_cache,
         "blockers": list(dict.fromkeys(blockers)),
         "warnings": list(dict.fromkeys(warnings)),
+        "listing": listing,
         "kline": {
             **cache,
             "progress_pct": progress_pct,
@@ -1504,7 +1538,8 @@ def produce_indices_data() -> dict[str, Any]:
         if spec and spec.loader:
             indices_mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(indices_mod)
-            raw_result = indices_mod.fetch_indices_data()
+            with INDUSTRY_FLOW_UPSTREAM_LOCK:
+                raw_result = indices_mod.fetch_indices_data()
             result = raw_result if isinstance(raw_result, dict) else {"items": raw_result}
             persist_indices_snapshot(result)
             return result
@@ -1548,20 +1583,21 @@ def market_hot_stocks_available(payload: dict[str, Any]) -> bool:
 
 
 def produce_sectors_data() -> dict[str, Any]:
-    return run_dashboard_helper(
-        "sectors_dashboard_api.py",
-        {
-            "sectors": [],
-            "items": [],
-            "gain_top": [],
-            "loss_top": [],
-            "industry_gain_top": [],
-            "industry_loss_top": [],
-            "concept_gain_top": [],
-            "concept_loss_top": [],
-        },
-        timeout=120,
-    )
+    with INDUSTRY_FLOW_UPSTREAM_LOCK:
+        return run_dashboard_helper(
+            "sectors_dashboard_api.py",
+            {
+                "sectors": [],
+                "items": [],
+                "gain_top": [],
+                "loss_top": [],
+                "industry_gain_top": [],
+                "industry_loss_top": [],
+                "concept_gain_top": [],
+                "concept_loss_top": [],
+            },
+            timeout=120,
+        )
 
 
 def produce_hot_stocks_data(sort_by: str = "amount") -> dict[str, Any]:
@@ -1964,14 +2000,51 @@ def _tencent_key_for_code(code: str) -> str:
     return ("sh" if code.startswith(("6", "9")) else "sz") + code
 
 
+_B1_GENERATION_CACHE_LOCK = threading.Lock()
+_B1_GENERATION_CACHE: dict[str, Any] = {}
+
+
+def _b1_cache_identity() -> tuple[str, str, str]:
+    """Read scan time and owner together once per atomic full-scan file version."""
+    def identity(payload):
+        return tuple(str(payload.get(k) or "") for k in ("generated_at", "schedule_slot", "schedule_run_kind"))
+
+    if not callable(getattr(B1_CACHE_FILE, "stat", None)):
+        # Historical integrations inject a lightweight read_text-only path.
+        return identity(json.loads(B1_CACHE_FILE.read_text(encoding="utf-8")))
+
+    def version() -> tuple[Any, ...]:
+        stat = B1_CACHE_FILE.stat()
+        return (str(B1_CACHE_FILE.resolve()), stat.st_dev, stat.st_ino,
+                stat.st_size, stat.st_mtime_ns)
+
+    with _B1_GENERATION_CACHE_LOCK:
+        before = version()
+        if _B1_GENERATION_CACHE.get("version") == before and "identity" in _B1_GENERATION_CACHE:
+            return _B1_GENERATION_CACHE["identity"]
+        compact_path = _derived_read_model_path(PRACTICE_CANDIDATES_CACHE_FILE, B1_CACHE_FILE)
+        compact = read_versioned_json_cache(compact_path) or {}
+        expected = dict(zip(("device", "inode", "size", "mtime_ns"), before[1:]))
+        if compact.get("source_cache") == B1_CACHE_FILE.name and compact.get("source_version") == expected:
+            result = identity(compact)
+        else:
+            full = read_json_cache(B1_CACHE_FILE, None) or {}
+            result = identity(full)
+        if version() == before:
+            _B1_GENERATION_CACHE.clear()
+            _B1_GENERATION_CACHE.update(version=before, identity=result)
+        return result
+
+
+def _b1_cache_generation() -> str:
+    return _b1_cache_identity()[0]
+
+
 def b1_cache_has_newer_generation(base_payload: dict[str, Any]) -> bool:
     try:
-        if not B1_CACHE_FILE.exists():
-            return False
-        latest = json.loads(B1_CACHE_FILE.read_text(encoding="utf-8"))
+        latest_generated = _b1_cache_generation()[:19]
     except Exception:
         return False
-    latest_generated = str(latest.get("generated_at") or "")[:19]
     base_generated = str(base_payload.get("generated_at") or "")[:19]
     return bool(latest_generated and (not base_generated or latest_generated > base_generated))
 
@@ -2882,6 +2955,7 @@ def get_niuone_mainline_minute_engine() -> NiuOneMinuteEngine:
             NIUONE_MAINLINE_MINUTE_ENGINE = NiuOneMinuteEngine(
                 kline_cache_path=Path(resolved_paths[0]),
                 industry_cache_path=Path(resolved_paths[1]),
+                history_batch_size=96,
             )
             NIUONE_MAINLINE_MINUTE_ENGINE_PATHS = resolved_paths
         return NIUONE_MAINLINE_MINUTE_ENGINE
@@ -3046,6 +3120,15 @@ def _niuone_mainline_minute_worker() -> None:
                 NIUONE_MAINLINE_MINUTE_PENDING = None
         if wait_seconds > 0:
             time.sleep(wait_seconds)
+            continue
+        # Coalesced snapshots can expire while a full scan owns the CPU.
+        # Discard that work before starting an interpreter; the newest quote wins.
+        try:
+            quote_time = datetime.strptime(str(snapshot.get("generated_at") or "")[:19], "%Y-%m-%d %H:%M:%S")
+            age = (current_cn_datetime().replace(tzinfo=None) - quote_time).total_seconds()
+        except ValueError:
+            age = float("inf")
+        if age < -120 or age > DEFAULT_MAX_QUOTE_AGE_SECONDS:
             continue
         started = time.monotonic()
         try:
@@ -3220,7 +3303,8 @@ def kline_prewarm_due(now: datetime | None = None) -> bool:
     if age_seconds < 0 or age_seconds > max(0, KLINE_PREWARM_CATCHUP_MINUTES) * 60:
         return False
     if prewarm_completed_for_date(current.strftime("%Y-%m-%d"), path=kline_cache_path()):
-        return False
+        if market_data_readiness(current).get('data_ready'):
+            return False
     if KLINE_PREWARM_LOCK.locked():
         return False
     return time.time() - KLINE_PREWARM_LAST_ATTEMPT_TS >= max(30, KLINE_PREWARM_RETRY_SECONDS)
@@ -3279,7 +3363,10 @@ def run_kline_prewarm(
     KLINE_PREWARM_LAST_ATTEMPT_TS = time.time()
     try:
         run_date = str(target_date or datetime.now().strftime("%Y-%m-%d"))[:10]
-        if prewarm_completed_for_date(run_date, path=kline_cache_path()):
+        from app.market_data.listing_cache import catalog_readiness
+        if prewarm_completed_for_date(run_date, path=kline_cache_path()) and catalog_readiness(
+            CRON_OUTPUT_DIR / 'a_share_listing_latest.json', run_date
+        )['ready']:
             return {"skipped": True, "reason": "already_completed", "target_date": run_date}
         script = Path(
             os.environ.get("DASHBOARD_B1_SCANNER", ENTRYPOINT_DIR / "multi_strategy_screen.py")
@@ -3314,6 +3401,10 @@ def run_kline_prewarm(
             return {"error": error, "target_date": run_date}
         if runner is None and not prewarm_completed_for_date(run_date, path=kline_cache_path()):
             return {"error": "盘前日K预热完成但有效覆盖率不足", "target_date": run_date}
+        if runner is None and not catalog_readiness(CRON_OUTPUT_DIR / 'a_share_listing_latest.json', run_date)['ready']:
+            record_kline_prewarm_failure(run_date, 'exchange_listing_unavailable')
+            return {'error': '当日交易所股票名录尚未完整获取，等待下次有界重试',
+                    'error_code': 'exchange_listing_unavailable', 'target_date': run_date}
         print(f"[K-line cache] pre-market refresh completed for {run_date}", flush=True)
         return {"updated": True, "target_date": run_date}
     except subprocess.TimeoutExpired:
@@ -3394,6 +3485,7 @@ def _trigger_b1_scan_unlocked(
     require_ready_cache: bool = True,
 ) -> dict[str, Any]:
     import subprocess, sys
+    from app.screening.scan_artifact import PROTOCOL, load_owned_scan
     script = Path(os.environ.get("DASHBOARD_B1_SCANNER", ENTRYPOINT_DIR / "multi_strategy_screen.py")).expanduser()
     if not script.exists():
         return {"error": f"扫描脚本不存在：{script}", "items": [], "count": 0, "generated_at": "", "running": False}
@@ -3415,18 +3507,34 @@ def _trigger_b1_scan_unlocked(
         child_env = os.environ.copy()
         child_env["DASHBOARD_B1_PROGRESS_FILE"] = str(progress_file)
         child_env["DASHBOARD_B1_JOB_ID"] = resolved_job_id
+        child_env['NIUONE_SCAN_TRANSPORT'] = PROTOCOL
+        child_env['NIUONE_SCAN_SLOT'] = schedule_slot
+        child_env['NIUONE_SCAN_RUN_KIND'] = schedule_run_kind or ('scheduled' if schedule_slot else 'manual')
+        child_env["PYTHONIOENCODING"] = "utf-8"
         child_env["DASHBOARD_B1_REQUIRE_READY_CACHE"] = (
             "1" if require_ready_cache else "0"
         )
-        result = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            timeout=B1_SCAN_TIMEOUT_SECONDS,
-            env=child_env,
-        )
+        # Full scan context can exceed 100 MiB. A pipe collected by run() keeps
+        # bytes, decoded stdout, parsed context and serialization alive at once.
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as scan_output:
+            result = subprocess.run(
+                args,
+                stdout=scan_output,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                timeout=B1_SCAN_TIMEOUT_SECONDS,
+                env=child_env,
+            )
+            if result.returncode == 0:
+                scan_output.seek(0)
+                # Retain the historical injected-runner contract in tests and
+                # integrations; the production subprocess writes to the file.
+                data = json.loads(result.stdout) if result.stdout else json.load(scan_output)
+            elif not result.stdout:
+                scan_output.seek(0)
+                result.stdout = scan_output.read(4096)
         if result.returncode == 0:
-            data = json.loads(result.stdout)
             items = _candidate_rows(data, "items", "candidates")
             candidates = _candidate_rows(data, "candidates", "items")
             trade_items = _candidate_rows(data, "trade_items", "items", "candidates")
@@ -3448,8 +3556,15 @@ def _trigger_b1_scan_unlocked(
                      "generated_at": data.get("generated_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                      "running": False, "error": "", "cooldown_remaining_seconds": 0,
                      **schedule_meta}
+            archived = data.get('transport') == PROTOCOL
+            if archived:
+                cache = load_owned_scan(B1_CACHE_FILE.parent / 'multi_strategy_history', data, resolved_job_id,
+                                        schedule_slot, child_env['NIUONE_SCAN_RUN_KIND'])
             with B1_CANDIDATE_REFRESH_LOCK:
-                write_json_cache(B1_CACHE_FILE, cache)
+                if archived:
+                    cache.publish(B1_CACHE_FILE)
+                else:
+                    write_json_cache(B1_CACHE_FILE, cache)
                 write_practice_candidates_cache(
                     _derived_read_model_path(
                         PRACTICE_CANDIDATES_CACHE_FILE,
@@ -3563,6 +3678,8 @@ def trigger_b1_scan(
                     if storage_blocked
                     else "日K缓存或初始化已禁用，请在设置页启用后重启服务"
                     if error_code in {"kline_cache_disabled", "kline_prewarm_disabled"}
+                    else "当日完整股票名录尚未就绪，已在后台恢复交易所名录"
+                    if error_code == "exchange_listing_unavailable"
                     else "市场数据尚未达到安全覆盖率，已在后台初始化日K缓存"
                 ),
                 "error_code": error_code,
@@ -3669,11 +3786,31 @@ def _finish_b1_full_scan(
     }
     terminal.setdefault("job_id", job_id)
     terminal["running"] = False
+    from app.screening.scan_artifact import ArchivedScan
+    try:
+        target = B1_CACHE_FILE.with_name('b1_scan_join_result.json')
+        if isinstance(result, ArchivedScan) and result.get('job_id') == job_id and 'decision_result' not in result:
+            result.publish(target)
+        else:
+            write_json_cache(target, terminal)
+        retained_result = None
+        result_on_disk = True
+    except (OSError, TypeError, ValueError) as exc:
+        # The original caller still receives its result; joiners fail closed
+        # instead of retaining a full-market context for the process lifetime.
+        retained_result = {
+            "job_id": job_id,
+            "error": f"选股结果暂存失败：{type(exc).__name__}",
+            "error_code": "joined_scan_result_unavailable",
+            "running": False,
+        }
+        result_on_disk = False
     with B1_FULL_SCAN_CONDITION:
         B1_FULL_SCAN_LAST_RESULT.clear()
         B1_FULL_SCAN_LAST_RESULT.update({
             "job_id": job_id,
-            "result": terminal,
+            "result": retained_result,
+            "result_on_disk": result_on_disk,
             "finished_at": _b1_schedule_now_text(),
         })
         if str(B1_FULL_SCAN_ACTIVE.get("job_id") or "") == job_id:
@@ -3705,6 +3842,15 @@ def wait_for_b1_scan_result(
         with B1_FULL_SCAN_CONDITION:
             last_job_id = str(B1_FULL_SCAN_LAST_RESULT.get("job_id") or "")
             last_result = B1_FULL_SCAN_LAST_RESULT.get("result")
+            if target_job_id and last_job_id == target_job_id and B1_FULL_SCAN_LAST_RESULT.get("result_on_disk"):
+                stored = read_json_cache(B1_CACHE_FILE.with_name("b1_scan_join_result.json"), None)
+                if isinstance(stored, dict) and str(stored.get("job_id") or "") == target_job_id:
+                    return stored
+                raise PracticeCycleError(
+                    "已完成选股扫描的暂存结果不可读或任务不匹配",
+                    code="joined_scan_result_unavailable",
+                    stage="waiting_for_scan",
+                )
             if (
                 target_job_id
                 and last_job_id == target_job_id
@@ -3911,7 +4057,7 @@ def _wait_for_manual_cycle_market_data() -> None:
         )
     _set_practice_manual_cycle_state(
         stage="data_initializing",
-        stage_label="正在初始化全市场日K数据",
+        stage_label=("正在恢复当日完整股票名录" if "exchange_listing_unavailable" in blockers else "正在初始化全市场日K数据"),
         completed=int((readiness.get("kline") or {}).get("completed_count") or 0),
         total=int((readiness.get("kline") or {}).get("requested_count") or 0),
         error_code="",
@@ -3938,7 +4084,7 @@ def _wait_for_manual_cycle_market_data() -> None:
         kline = readiness.get("kline") if isinstance(readiness.get("kline"), dict) else {}
         _set_practice_manual_cycle_state(
             stage="data_initializing",
-            stage_label="正在初始化全市场日K数据",
+            stage_label=("正在恢复当日完整股票名录" if "exchange_listing_unavailable" in (readiness.get('blockers') or []) else "正在初始化全市场日K数据"),
             completed=int(kline.get("completed_count") or 0),
             total=int(kline.get("requested_count") or 0),
             cache_hits=int(kline.get("fresh_count") or 0),
@@ -3962,12 +4108,16 @@ def _wait_for_manual_cycle_market_data() -> None:
         ):
             raise PracticeCycleError(
                 (
-                    "全市场日K初始化完成，但有效覆盖率仍低于安全阈值"
+                    "当日交易所股票名录尚未完整获取，请检查名录刷新诊断"
+                    if "exchange_listing_unavailable" in blockers
+                    else "全市场日K初始化完成，但有效覆盖率仍低于安全阈值"
                     if kline_status == "completed"
                     else "全市场日K初始化失败，请检查腾讯行情连通性和持久化目录"
                 ),
                 code=(
-                    "kline_coverage_insufficient"
+                    "exchange_listing_unavailable"
+                    if "exchange_listing_unavailable" in blockers
+                    else "kline_coverage_insufficient"
                     if kline_status == "completed"
                     else str(kline.get("error_code") or "kline_prewarm_failed")
                 ),
@@ -4210,12 +4360,8 @@ def start_practice_manual_cycle() -> dict[str, Any]:
 
 def b1_cache_generated_for_slot(slot_key: str) -> bool:
     try:
-        if not B1_CACHE_FILE.exists():
-            return False
-        generated_at = (
-            json.loads(B1_CACHE_FILE.read_text(encoding="utf-8")).get("generated_at") or ""
-        )[:16]
-        return generated_at == slot_key
+        generated_at, owner, kind = _b1_cache_identity()
+        return generated_at[:16] == slot_key and (owner == slot_key or (not owner and not kind))
     except Exception:
         return False
 
@@ -4313,6 +4459,12 @@ def _mark_b1_schedule_slot(slot_key: str, status: str, **fields: Any) -> None:
         slots = state.setdefault("slots", {})
         slot = slots.setdefault(slot_key, {"scheduled_at": slot_key})
         now_text = _b1_schedule_now_text()
+        for field in ('error', 'error_code', 'failure_stage', 'reason'):
+            if field not in fields:
+                slot.pop(field, None)
+        if status == 'running':
+            slot.pop('finished_at', None)
+            slot.pop('finished_ts', None)
         slot.update({"status": status, "updated_at": now_text, **fields})
         if status == "running":
             slot.pop("error", None)
@@ -4357,12 +4509,22 @@ def claim_due_b1_schedule_slot(now: datetime | None = None) -> str | None:
                 slots.pop(key, None)
         B1_SCHEDULE_RUN_KEYS.intersection_update(key for key in B1_SCHEDULE_RUN_KEYS if key.startswith(today_prefix))
 
+        workers = {t.name for t in threading.enumerate() if t.is_alive()}
+        if any((slots.get(k) or {}).get('status') == 'running' and (
+                f'b1-scheduled-scan:{k}' in workers or
+                now_float - float(slots[k].get('started_ts') or 0) < stale_seconds)
+               for k in B1_SCHEDULE_RUN_KEYS):
+            return None
+        latest_due = max(due_slots)[1]
+
         eligible: list[tuple[datetime, str]] = []
         for slot_dt, slot_key in sorted(due_slots):
             slot = slots.get(slot_key) or {}
             status = str(slot.get("status") or "")
             if status in {"ok", "skipped"}:
                 continue
+            if status == 'error' and slot_key < latest_due:
+                continue  # Keep the old terminal evidence; the newer slot takes priority.
             started_ts = float(slot.get("started_ts") or 0)
             finished_ts = float(slot.get("finished_ts") or 0)
             if status == "running" and now_float - started_ts < stale_seconds:
@@ -4410,6 +4572,13 @@ def claim_due_b1_schedule_slot(now: datetime | None = None) -> str | None:
         return selected_key
 
 
+def _schedule_mainline_research(slot_key: str) -> None:
+    try:
+        start_independent_niuone_mainline_scan(slot_key)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"[Practice research] {slot_key}: {type(exc).__name__}: {exc}", flush=True)
+
+
 def run_scheduled_b1_scan(slot_key: str) -> None:
     try:
         lag_seconds = _b1_schedule_slot_lag_seconds(slot_key)
@@ -4444,7 +4613,7 @@ def run_scheduled_b1_scan(slot_key: str) -> None:
             return
         summary = refresh_practice_market_summary_for_decision("scheduled")
         if b1_cache_generated_for_slot(slot_key):
-            start_independent_niuone_mainline_scan(slot_key)
+            _schedule_mainline_research(slot_key)
             _mark_b1_schedule_slot(
                 slot_key,
                 "skipped",
@@ -4462,6 +4631,9 @@ def run_scheduled_b1_scan(slot_key: str) -> None:
         if cache.get("busy"):
             try:
                 cache = wait_for_b1_scan_result(cache)
+                if ((cache.get('schedule_slot') or cache.get('schedule_run_kind')) and
+                        cache.get('schedule_slot') != slot_key):
+                    raise PracticeCycleError('扫描结果属于另一计划时点', code='scan_owned_by_other_slot', stage='waiting_for_scan')
                 cache = {
                     **cache,
                     "schedule_slot": slot_key,
@@ -4484,8 +4656,8 @@ def run_scheduled_b1_scan(slot_key: str) -> None:
             API_RESPONSE_CACHE.pop(PRACTICE_CANDIDATES_CACHE_KEY, None)
             API_RESPONSE_CACHE.pop(TODAY_CANDIDATES_CACHE_KEY, None)
             API_RESPONSE_CACHE.pop(TODAY_CANDIDATE_INTRADAY_CACHE_KEY, None)
-        start_independent_niuone_mainline_scan(slot_key)
         if cache.get("error"):
+            _schedule_mainline_research(slot_key)
             _mark_b1_schedule_slot(
                 slot_key,
                 "error",
@@ -4499,12 +4671,22 @@ def run_scheduled_b1_scan(slot_key: str) -> None:
         else:
             if isinstance(summary, dict):
                 cache["market_summary"] = summary
-            decision_result = run_practice_decision_logged(
-                cache,
-                record_start=True,
-                refresh_market_summary=False,
-            )
+            try:
+                decision_result = run_practice_decision_logged(
+                    cache,
+                    record_start=True,
+                    refresh_market_summary=False,
+                )
+            finally:
+                # Even the research freshness check reads a full market cache.
+                _schedule_mainline_research(slot_key)
             cache["decision_result"] = decision_result
+            if (isinstance(decision_result, dict) and decision_result.get('skipped') is True
+                    and decision_result.get('reason') == 'already_decided_for_this_b1'
+                    and decision_result.get('durable_evidence_persisted') is not True):
+                _mark_b1_schedule_slot(slot_key, 'skipped', reason='shared_scan_already_decided',
+                                       generated_at=cache.get('generated_at') or '', run_kind=run_kind)
+                return
             decision = (
                 decision_result.get("decision")
                 if isinstance(decision_result, dict)
@@ -4564,7 +4746,7 @@ def b1_schedule_loop() -> None:
     while True:
         slot_key = claim_due_b1_schedule_slot()
         if slot_key:
-            threading.Thread(target=run_scheduled_b1_scan, args=(slot_key,), name="b1-scheduled-scan", daemon=True).start()
+            threading.Thread(target=run_scheduled_b1_scan, args=(slot_key,), name=f"b1-scheduled-scan:{slot_key}", daemon=True).start()
         time.sleep(15)
 
 
@@ -5645,12 +5827,13 @@ def fetch_and_record_money_flow(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Fetch one money-flow snapshot and immediately preserve valid history."""
 
-    money_flow = run_dashboard_helper(
-        "money_flow_dashboard_api.py",
-        {"inflow": [], "outflow": []},
-        timeout=timeout,
-        args=("--force-refresh",) if force_refresh else (),
-    )
+    with INDUSTRY_FLOW_UPSTREAM_LOCK:
+        money_flow = run_dashboard_helper(
+            "money_flow_dashboard_api.py",
+            {"inflow": [], "outflow": []},
+            timeout=timeout,
+            args=("--force-refresh",) if force_refresh else (),
+        )
     return money_flow, record_industry_flow_sample(money_flow, now=now)
 
 
@@ -5976,6 +6159,18 @@ def fetch_practice_realtime_market_snapshot(now: datetime) -> dict[str, Any]:
         ),
         "money_flow": ("money_flow_dashboard_api.py", {"inflow": [], "outflow": []}),
     }
+
+    def refresh_market_helper(script_name: str, fallback: dict[str, Any]) -> dict[str, Any]:
+        # Board and fund-flow helpers both reach Eastmoney; overlapping them
+        # makes the provider close one connection with an empty reply.
+        with INDUSTRY_FLOW_UPSTREAM_LOCK:
+            return run_dashboard_helper(
+                script_name,
+                fallback,
+                120,
+                ("--force-refresh",),
+            )
+
     payloads: dict[str, dict[str, Any]] = {}
     industry_flow_payload: dict[str, Any] = {}
     with ThreadPoolExecutor(max_workers=len(jobs) + 1) as pool:
@@ -5989,13 +6184,7 @@ def fetch_practice_realtime_market_snapshot(now: datetime) -> dict[str, Any]:
                     now=now,
                 )
                 continue
-            futures[key] = pool.submit(
-                run_dashboard_helper,
-                script_name,
-                fallback,
-                120,
-                ("--force-refresh",),
-            )
+            futures[key] = pool.submit(refresh_market_helper, script_name, fallback)
         futures["market_breadth"] = pool.submit(produce_market_breadth_data)
         for key, future in futures.items():
             try:
@@ -7194,6 +7383,13 @@ NOTIFICATION_CHANNEL_SETTINGS: tuple[dict[str, Any], ...] = (
         "description": "Bot Token 与接收消息的 Chat ID。",
         "enabled_name": "DASHBOARD_TELEGRAM_NOTIFICATION_ENABLED",
         "field_names": ("DASHBOARD_TELEGRAM_BOT_TOKEN", "DASHBOARD_TELEGRAM_CHAT_ID"),
+    },
+    {
+        "id": "serverchan",
+        "label": "Server酱",
+        "description": "Server酱 SendKey，推送消息到微信。",
+        "enabled_name": "DASHBOARD_SERVERCHAN_NOTIFICATION_ENABLED",
+        "field_names": ("DASHBOARD_SERVERCHAN_SENDKEY",),
     },
 )
 NOTIFICATION_CHANNEL_BY_ID = {

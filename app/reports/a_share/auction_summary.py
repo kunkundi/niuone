@@ -329,7 +329,7 @@ def fetch_tencent_auction_snapshot() -> tuple[list[dict[str, Any]], str | None]:
     chunk_size = max(50, min(300, safe_int(os.getenv("A_SHARE_AUCTION_FALLBACK_CHUNK", "200"), 200)))
     symbols = (
         [f"sz{i:06d}" for i in range(1, 4000)]
-        + [f"sz{i:06d}" for i in range(300001, 302000)]
+        + [f"sz{i:06d}" for i in range(300001, 303000)]
         + [f"sh{i:06d}" for i in range(600000, 606000)]
         + [f"sh{i:06d}" for i in range(688000, 690000)]
     )

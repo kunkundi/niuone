@@ -75,7 +75,7 @@ class AccountFeeTests(unittest.TestCase):
         from app.trading.niuone_forward_service import (
             PROTOCOL_DERIVED_RUNTIME_SETTING_NAMES, PROTOCOL_RUNTIME_SETTING_DEFAULTS,
         )
-        self.assertEqual(len(set(PROTOCOL_RUNTIME_SETTING_DEFAULTS) | set(PROTOCOL_DERIVED_RUNTIME_SETTING_NAMES)), 59)
+        self.assertEqual(len(set(PROTOCOL_RUNTIME_SETTING_DEFAULTS) | set(PROTOCOL_DERIVED_RUNTIME_SETTING_NAMES)), 60)
         for name in (FEE_PROFILE_ENV, "DASHBOARD_EXECUTION_PREFLIGHT_ENABLED"):
             self.assertIn(name, dashboard.ADMIN_VISIBLE_ENV_NAMES)
             self.assertIn(name, PROTOCOL_RUNTIME_SETTING_DEFAULTS)

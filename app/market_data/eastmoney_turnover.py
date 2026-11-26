@@ -42,6 +42,33 @@ _PROFILE_CACHE_LOCK = threading.Lock()
 _PROFILE_CACHE: dict[str, dict[str, Any]] = {}
 
 
+class _ProfileRetryPending(RuntimeError):
+    """A previous fetch failed and its retry interval is still active."""
+
+
+def previous_close_from_cached_profile(before_date: dt.date) -> dict[str, Any] | None:
+    """Recover the exact prior session's actual two-index total from complete bars."""
+    from app.reports.a_share.calendar import trading_day_status
+
+    calendar = trading_day_status(before_date, allow_refresh=False)
+    if not calendar.get('calendar_cached'):
+        return None
+    previous = calendar.get('previous_trading_day')
+    with _PROFILE_CACHE_LOCK:
+        profile = (_PROFILE_CACHE.get(before_date.isoformat()) or {}).get('value') or {}
+        if profile.get('profile_end') != previous or profile.get('interval_minutes') != PROFILE_INTERVAL_MINUTES:
+            return None
+        daily = next((d for d in profile.get('daily_profiles', ()) if d.get('date') == previous), {})
+        fractions = daily.get('fractions') or []
+        times = [point[0] for point in fractions]
+        required = list(range(5, 241, 5))
+        amount = _finite_float(daily.get('turnover_yi'))
+        if (times not in (required, [0, *required]) or fractions[-1][1] != 1.0
+                or amount is None or amount <= 0):
+            return None
+        return {'date': previous, 'turnover_yi': amount, 'source': '东方财富沪深指数完整5分钟成交额合计', 'source_url': SOURCE_URL}
+
+
 def _finite_float(value: Any) -> float | None:
     try:
         number = float(str(value).replace(",", "").strip())
@@ -399,7 +426,7 @@ def fetch_turnover_profile(
             _PROFILE_CACHE[cache_key] = {"value": persisted, "retry_after": 0.0}
             return dict(persisted)
         if cached and now < float(cached.get("retry_after") or 0):
-            raise RuntimeError("Eastmoney turnover profile is waiting to retry")
+            raise _ProfileRetryPending("Eastmoney turnover profile is waiting to retry")
         try:
             bodies = _download_pair(
                 PROFILE_INTERVAL_MINUTES,
@@ -496,12 +523,11 @@ def fetch_market_turnover_estimate(
             else profile_fetcher(generated_at.date())
         )
     except Exception as exc:
-        print(
-            f"[WARN] {'Auction' if uses_auction_profile else 'Eastmoney 20-day'} "
-            f"turnover profile unavailable "
-            f"error={type(exc).__name__}",
-            flush=True,
-        )
+        if not isinstance(exc, _ProfileRetryPending):
+            print(
+                f"[WARN] {'Auction' if uses_auction_profile else 'Eastmoney 20-day'} "
+                f"turnover profile unavailable error={type(exc).__name__}", flush=True,
+            )
         result["turnover_estimate_warning"] = (
             "竞价量能模型暂不可用"
             if uses_auction_profile

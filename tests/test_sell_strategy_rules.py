@@ -52,6 +52,9 @@ def complete_preset_interpretation() -> dict[str, list[str]]:
 
 class SellStrategyRuleTests(unittest.TestCase):
     def setUp(self):
+        model = patch.object(trader, "MODEL", "deepseek-v4-flash")
+        model.start()
+        self.addCleanup(model.stop)
         # 风控与提示词回归使用固定行情输入；数据源由独立回归覆盖。
         fixtures = (
             ('fetch_global_decision_sources', {'enabled': True, 'generated_at': '2026-06-24 10:00:00', 'sources': {}}),

@@ -91,7 +91,10 @@ print(json.dumps({{
         self.assertTrue(result["same_registry"])
         self.assertTrue(result["same_package_registry"])
         self.assertTrue(result["same_submodules"])
-        self.assertEqual(result["channels"][:4], ["feishu", "dingtalk", "wecom", "telegram"])
+        self.assertEqual(
+            result["channels"],
+            ["feishu", "dingtalk", "wecom", "telegram", "serverchan"],
+        )
 
     def test_messaging_registry_is_shared_when_legacy_facade_is_imported_first(self):
         result = self.run_python(
@@ -118,7 +121,7 @@ print(json.dumps({{
         self.assertTrue(result["same_registry"])
         self.assertTrue(result["same_facade_registry"])
         self.assertTrue(result["same_submodules"])
-        self.assertEqual(result["channel_count"], 4)
+        self.assertEqual(result["channel_count"], 5)
 
     def test_pure_domain_packages_support_both_import_styles(self):
         result = self.run_python(
@@ -185,7 +188,7 @@ print(json.dumps({{"channels": list(module.registered_channels())}}))
             )
         self.assertEqual(
             json.loads(output)["channels"],
-            ["feishu", "dingtalk", "wecom", "telegram"],
+            ["feishu", "dingtalk", "wecom", "telegram", "serverchan"],
         )
 
     def test_package_trade_notification_uses_runtime_dispatch_hook(self):

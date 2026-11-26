@@ -48,10 +48,10 @@ class AShareTencentSpotTests(unittest.TestCase):
             os.environ["TEST_TENCENT_WORKERS"] = "1"
             with tempfile.TemporaryDirectory() as temp_dir:
                 rows, warning = tencent_spot.fetch_tencent_spot_snapshot(
-                    Path(temp_dir), env_prefix="TEST_TENCENT", min_rows=1
+                    Path(temp_dir), env_prefix="TEST_TENCENT", min_rows=1, listed_codes={'600000'}
                 )
                 rejected, issue = tencent_spot.fetch_tencent_spot_snapshot(
-                    Path(temp_dir), env_prefix="TEST_TENCENT", min_rows=2
+                    Path(temp_dir), env_prefix="TEST_TENCENT", min_rows=2, listed_codes={'600000'}
                 )
         finally:
             tencent_spot._symbols = original_symbols
