@@ -476,6 +476,56 @@ def niuone_chase_limits(strategy_name: str, regime: str | None) -> dict[str, flo
     return dict(by_regime.get(key, fallback))
 
 
+NIUONE_ENTRY_GEOMETRY_FIELDS = (
+    "niuone_entry_subroute", "niuone_entry_subroute_label",
+    "niuone_markup_momentum_acceleration", "entry_setup", "entry_extension_atr",
+    "entry_extension_source", "min_entry_extension_atr", "extension_atr",
+    "breakout_level", "breakout_extension_atr", "volume_ratio",
+    "breakout", "pullback", "reclaim", "reclaim_previous_close",
+)
+NIUONE_MODEL_ENTRY_FIELDS = (
+    "turnover", "stock_market_amount_percentile", "stock_theme_amount_percentile",
+    "stock_volume_participation_percentile", "stock_activity_gate_required",
+    "stock_activity_data_available", "stock_activity_confirmed",
+    "atr", "atr_period", "stop_atr", "max_stop_atr", "max_entry_extension_atr",
+    "absolute_position_cap_pct", "max_position_pct_by_risk",
+    *NIUONE_ENTRY_GEOMETRY_FIELDS,
+)
+
+
+def complete_niuone_entry_fields(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Read missing fields from the selected score of the same scan generation."""
+    strategy = candidate.get("best_strategy")
+    scores = candidate.get("strategies")
+    if not isinstance(strategy, str) or strategy not in NIUONE_ABSOLUTE_POSITION_CAP_PCT or not isinstance(scores, Mapping):
+        return candidate
+    score = scores.get(strategy)
+    if not isinstance(score, Mapping):
+        return candidate
+    missing = {key: score[key] for key in NIUONE_MODEL_ENTRY_FIELDS
+               if key not in candidate and key in score}
+    return {**candidate, **missing} if missing else candidate
+
+
+def niuone_opening_position_cap(
+    strategy: str, candidate: Mapping[str, Any], *, opening: bool,
+) -> float:
+    """Apply the selected route's absolute ceiling before live risk sizing."""
+    cap = NIUONE_ABSOLUTE_POSITION_CAP_PCT[strategy]
+    if not opening:
+        return cap
+    if candidate.get("niuone_entry_subroute") == NIUONE_MARKUP_MOMENTUM_PROBE_SUBROUTE:
+        cap = min(cap, NIUONE_MARKUP_MOMENTUM_PROBE_POSITION_CAP_PCT)
+    value = candidate.get("absolute_position_cap_pct")
+    if value is None:
+        return cap
+    try:
+        scored_cap = float(value)
+    except (ValueError, TypeError, OverflowError):
+        return 0.0
+    return min(cap, scored_cap) if math.isfinite(scored_cap) and scored_cap > 0 else 0.0
+
+
 def niuone_markup_momentum_probe_eligible(values: Mapping[str, Any]) -> bool:
     """Return whether a scored emerging leader has the probe's identity gates."""
 

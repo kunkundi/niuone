@@ -12,12 +12,18 @@ sys.path.insert(0, str(APP_DIR))
 
 from core.shared_model_config import (  # noqa: E402
     load_crossdesk_provider,
+    model_provider_display_name,
     resolve_shared_model_config,
     yaml,
 )
 
 
 class SharedModelConfigTests(unittest.TestCase):
+    def test_official_provider_is_not_mislabeled_as_legacy_gateway(self):
+        self.assertEqual(model_provider_display_name("https://api.openai.com/v1/"), "OpenAI")
+        for address in ("", "https://gateway.example/v1", "https://api.openai.com.example/v1", "https://api.openai.com@other.example/private?key=hidden"):
+            self.assertEqual(model_provider_display_name(address), "Crossdesk.ccwu.cc")
+
     def test_shared_settings_drive_every_model_consumer(self):
         config = resolve_shared_model_config({
             "DASHBOARD_DECISION_MODEL": "shared-model",

@@ -399,6 +399,8 @@ NiuOne 按 SendKey 前缀自动选择推送接口：`SCT` 开头的 Turbo 密钥
 | 作用 | 环境变量 | 默认值 |
 |---|---|---|
 | 通知总开关 | `DASHBOARD_NOTIFICATION_ENABLED` | `0` |
+| 运行故障及恢复（30分钟去重） | `DASHBOARD_OPERATIONAL_NOTIFICATION_ENABLED` | `0` |
+| 盘后账户汇总（复用现有报告） | `DASHBOARD_DAILY_SUMMARY_NOTIFICATION_ENABLED` | `0` |
 | 单渠道请求超时 | `DASHBOARD_NOTIFICATION_TIMEOUT_SECONDS` | `5` |
 | 飞书渠道开关 | `DASHBOARD_FEISHU_NOTIFICATION_ENABLED` | `0` |
 | 飞书 Webhook | `DASHBOARD_FEISHU_WEBHOOK_URL` | 空 |

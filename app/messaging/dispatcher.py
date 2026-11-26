@@ -101,6 +101,17 @@ def _env_text(env: Mapping[str, Any], name: str) -> str:
     return str(value if value is not None else "").strip()
 
 
+def restrict_delivery_channels(env: Mapping[str, Any], include: set[str] | None,
+                               exclude: set[str]) -> dict[str, Any]:
+    """Narrow an existing delivery configuration without enabling any channel."""
+    settings = dict(env)
+    with _REGISTRY_LOCK:
+        for channel in _CHANNEL_REGISTRY.values():
+            if channel.name in exclude or (include is not None and channel.name not in include):
+                settings[channel.enabled_env] = "0"
+    return settings
+
+
 def _enabled(env: Mapping[str, Any], name: str) -> bool:
     return _env_text(env, name).lower() in TRUTHY_VALUES
 

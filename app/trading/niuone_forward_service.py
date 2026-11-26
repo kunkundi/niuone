@@ -56,8 +56,14 @@ PROTOCOL_SOURCE_PATHS = (
     "app/automation/cron.py",
     "app/automation/scheduler_service.py",
     "app/dashboard/server.py",
+    "app/dashboard/apis/indices_service.py",
+    "app/dashboard/apis/hot_stocks_service.py",
+    "app/dashboard/apis/sectors_service.py",
+    "app/dashboard/apis/money_flow_service.py",
+    "app/dashboard/apis/cache.py",
     "app/entrypoints/evaluate_niuone_forward.py",
     "app/market_data/cn_stock_tools.py",
+    "app/market_data/market_sentiment.py",
     "app/market_data/tencent_kline_cache.py",
     "app/market_data/exchange_listing.py",
     "app/market_data/listing_cache.py",
@@ -91,6 +97,7 @@ PROTOCOL_SOURCE_PATHS = (
     "app/trading/decision_freshness.py",
     "app/core/model_api.py",
     "app/core/model_request_guard.py",
+    "app/entrypoints/market_sentiment_worker.py",
     "app/dashboard/apis/bounded_fetch.py",
 )
 PROTOCOL_RUNTIME_SETTING_DEFAULTS = {
@@ -106,6 +113,8 @@ PROTOCOL_RUNTIME_SETTING_DEFAULTS = {
         "09:25,10:00,10:30,11:00,11:20,13:00,13:30,14:00,14:30,14:50"
     ),
     "DASHBOARD_PRACTICE_FAST_CYCLE_ENABLED": "0",
+    "DASHBOARD_PRACTICE_FEE_PROFILE": "legacy",
+    "DASHBOARD_EXECUTION_PREFLIGHT_ENABLED": "0",
     "DASHBOARD_PRACTICE_FAST_CYCLE_INTERVAL_SECONDS": "300",
     "DASHBOARD_B1_SCHEDULE_ENABLED": "1",
     "DASHBOARD_B1_SCHEDULE_CATCHUP_MINUTES": "35",
@@ -160,6 +169,7 @@ PROTOCOL_DERIVED_RUNTIME_SETTING_NAMES = (
 _BOOLEAN_PROTOCOL_SETTINGS = {
     "DASHBOARD_B1_SCHEDULE_ENABLED",
     "DASHBOARD_PRACTICE_FAST_CYCLE_ENABLED",
+    "DASHBOARD_EXECUTION_PREFLIGHT_ENABLED",
     "DASHBOARD_KLINE_CACHE_ENABLED",
     "DASHBOARD_KLINE_PREWARM_ENABLED",
     "DASHBOARD_MARKET_GUIDANCE_ENABLED",

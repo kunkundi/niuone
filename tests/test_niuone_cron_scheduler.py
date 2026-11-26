@@ -7,6 +7,7 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "app"
@@ -27,6 +28,29 @@ def load_scheduler_module():
 
 
 class NiuoneCronSchedulerTests(unittest.TestCase):
+    def test_report_timeout_respects_model_deadline_with_bounded_headroom(self):
+        scheduler = load_scheduler_module()
+        report = next(job for job in scheduler.JOBS if job.env_name == "DASHBOARD_MARKET_CLOSE_CRON")
+        settings = {"A_SHARE_MODEL_SUMMARY_DEADLINE_SECONDS": "300"}
+        self.assertEqual(scheduler.job_timeout_seconds(report, {}), 240)
+        self.assertEqual(scheduler.job_timeout_seconds(report, settings), 480)
+        self.assertEqual(scheduler.job_timeout_seconds(report, {
+            **settings, "A_SHARE_MODEL_SUMMARY_ENABLED": "0",
+        }), 180)
+        self.assertEqual(scheduler.job_timeout_seconds(report, {
+            "A_SHARE_MODEL_SUMMARY_DEADLINE_SECONDS": "999999",
+        }), 1800)
+        exit_job = next(job for job in scheduler.JOBS if job.env_name == "DASHBOARD_B3_EXIT_TIME")
+        self.assertEqual(scheduler.job_timeout_seconds(exit_job, settings), exit_job.timeout_seconds)
+        with (
+            patch.object(scheduler, "parse_env_file", return_value=settings),
+            patch.object(scheduler, "log"),
+            patch.object(scheduler.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="", stderr="")) as run,
+        ):
+            result = scheduler.run_job_once(report, datetime(2026, 11, 5, 15, 10, tzinfo=scheduler.CN_TZ))
+        self.assertTrue(result.success)
+        self.assertEqual(run.call_args.kwargs["timeout"], 480)
+
     def test_scheduler_log_rotates_at_a_bounded_size(self):
         scheduler = load_scheduler_module()
         original_values = (
@@ -176,6 +200,8 @@ class NiuoneCronSchedulerTests(unittest.TestCase):
         self.assertEqual(job.command, ("us_market_summary.py", "--store"))
         self.assertEqual(scheduler.normalize_job_expr(job, "08:00"), "0 8 * * 1-5")
         self.assertTrue(scheduler.job_enabled(job, {}))
+        self.assertFalse(scheduler.job_enabled(job, {"DASHBOARD_US_MARKET_SUMMARY_ENABLED": "0"}))
+        self.assertTrue(scheduler.job_enabled(job, {"DASHBOARD_US_MARKET_SUMMARY_ENABLED": "1"}))
 
     def test_iwencai_dragon_tiger_runs_at_18_on_weekdays_when_enabled(self):
         scheduler = load_scheduler_module()
